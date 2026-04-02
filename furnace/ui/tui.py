@@ -47,17 +47,19 @@ def _fmt_audio_track(track: Track, selected: bool) -> str:
         bitrate = f"{track.bitrate // 1000} kbps"
     title = f"'{track.title}'" if track.title else ""
     parts = [p for p in [lang, codec_layout, bitrate, title] if p]
-    return f"[{mark}]  {'  '.join(parts)}"
+    # Escape brackets so Rich doesn't interpret them as markup tags
+    return f"\\[{mark}]  {'  '.join(parts)}"
 
 
 def _fmt_subtitle_track(track: Track, selected: bool) -> str:
     mark = "x" if selected else " "
     lang = (track.language or "und").ljust(4)
     codec = track.codec_name.upper()
-    forced = "[FORCED]" if track.is_forced else ""
+    forced = "\\[FORCED]" if track.is_forced else ""
     title = f"'{track.title}'" if track.title else ""
     parts = [p for p in [lang, codec, forced, title] if p]
-    return f"[{mark}]  {'  '.join(parts)}"
+    # Escape brackets so Rich doesn't interpret them as markup tags
+    return f"\\[{mark}]  {'  '.join(parts)}"
 
 
 # ---------------------------------------------------------------------------
