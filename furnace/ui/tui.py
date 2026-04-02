@@ -5,9 +5,9 @@ from pathlib import Path
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Container, Horizontal
+from textual.containers import Container
 from textual.screen import Screen
-from textual.widgets import Button, Footer, Header, Input, ListItem, ListView, Static
+from textual.widgets import Footer, Header, Input, ListItem, ListView, Static
 
 from furnace.core.models import CropRect, Movie, Track, TrackType
 
@@ -123,10 +123,6 @@ class TrackSelectorScreen(Screen[list[Track]]):
 
         yield ListView(*items, id="track-list")
 
-        yield Horizontal(
-            Button("Done", variant="primary", id="btn-done"),
-            id="track-buttons",
-        )
         yield Footer()
 
     # ------------------------------------------------------------------
@@ -186,9 +182,10 @@ class TrackSelectorScreen(Screen[list[Track]]):
                 except ValueError:
                     pass
 
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "btn-done":
-            self.action_done()
+    def on_click(self, event: object) -> None:
+        """Handle click on the Done label."""
+        # The Static with id btn-done triggers action_done via the D keybinding
+        # No additional click handling needed — D key is the primary interaction
 
 
 # ---------------------------------------------------------------------------
@@ -205,6 +202,9 @@ class CropConfirmScreen(Screen[CropRect | None]):
 
     BINDINGS = [
         Binding("escape", "reject", "Reject"),
+        Binding("a", "accept", "Accept"),
+        Binding("r", "reject", "Reject"),
+        Binding("e", "edit", "Edit"),
     ]
 
     def __init__(self, crop: CropRect, source_width: int, source_height: int) -> None:
@@ -228,39 +228,31 @@ class CropConfirmScreen(Screen[CropRect | None]):
                 placeholder="w:h:x:y  e.g. 1920:800:0:140",
                 id="crop-input",
             ),
-            Horizontal(
-                Button("Accept", variant="primary", id="btn-accept"),
-                Button("Reject (no crop)", variant="error", id="btn-reject"),
-                Button("Edit", id="btn-edit"),
-                id="crop-buttons",
-            ),
+            Static("(A)ccept   (R)eject   (E)dit", id="crop-actions", classes="clickable-btn"),
             id="crop-dialog",
         )
         yield Footer()
         # Hide input initially
         self.query_one("#crop-input", Input).display = False
 
+    def action_accept(self) -> None:
+        if self._edit_mode:
+            self._confirm_edit()
+        else:
+            self.dismiss(self._crop)
+
     def action_reject(self) -> None:
         self.dismiss(None)
 
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        btn_id = event.button.id
-
-        if btn_id == "btn-accept":
-            self.dismiss(self._crop)
-
-        elif btn_id == "btn-reject":
-            self.dismiss(None)
-
-        elif btn_id == "btn-edit":
-            inp = self.query_one("#crop-input", Input)
-            if not self._edit_mode:
-                self._edit_mode = True
-                inp.display = True
-                inp.focus()
-                event.button.label = "Confirm"
-            else:
-                self._confirm_edit()
+    def action_edit(self) -> None:
+        inp = self.query_one("#crop-input", Input)
+        if not self._edit_mode:
+            self._edit_mode = True
+            inp.display = True
+            inp.focus()
+            self.query_one("#crop-actions", Static).update("(A)ccept/Confirm   (R)eject   editing...")
+        else:
+            self._confirm_edit()
 
     def _confirm_edit(self) -> None:
         inp = self.query_one("#crop-input", Input)
@@ -324,15 +316,17 @@ class FurnacePlanApp(App[list[_PlanResult]]):
     #track-list {
         height: 1fr;
     }
-    #track-buttons {
-        height: 3;
-        align: center middle;
-        padding: 1 0 0 0;
+    .clickable-btn {
+        background: $surface;
+        color: $text;
+        padding: 0 1;
+        height: 1;
+        margin-top: 1;
     }
     #crop-dialog {
         width: 60;
         height: auto;
-        border: solid $primary;
+        border: dashed $primary;
         padding: 1 2;
         margin: 2 auto;
     }

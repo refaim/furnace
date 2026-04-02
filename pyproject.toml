@@ -1,6 +1,6 @@
 [project]
 name = "furnace"
-version = "0.1.0"
+version = "1.1.0"
 description = "Movie collection transcoding tool for NAS archival"
 requires-python = ">=3.13"
 dependencies = [
