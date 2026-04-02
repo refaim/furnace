@@ -104,10 +104,44 @@ def plan(
         if movie is not None:
             movies_with_paths.append((movie, sr.output_path))
 
-    # 7. PlannerService.create_plan() with TUI
+    # 7. PlannerService.create_plan() with TUI track selector
+    from .core.models import Track, TrackType
+    from .ui.tui import TrackSelectorScreen
+
+    def _select_tracks_tui(movie: Movie, candidates: list[Track], track_type: TrackType) -> list[Track]:
+        """Run Textual TrackSelectorScreen synchronously for user to pick tracks."""
+        from textual.app import App, ComposeResult
+        from textual.widgets import Header
+
+        selected: list[Track] = []
+
+        class _SelectorApp(App[list[Track]]):
+            def compose(self) -> ComposeResult:
+                yield Header()
+
+            def on_mount(self) -> None:
+                def _on_dismiss(result: list[Track] | None) -> None:
+                    nonlocal selected
+                    selected = result or []
+                    self.exit(selected)
+
+                self.push_screen(
+                    TrackSelectorScreen(
+                        movie=movie,
+                        tracks=candidates,
+                        track_type=track_type,
+                        preview_cb=None,
+                    ),
+                    _on_dismiss,
+                )
+
+        _SelectorApp().run()
+        return selected
+
     planner = PlannerService(
         prober=ffmpeg_adapter,
         previewer=mpv_adapter,
+        track_selector=_select_tracks_tui if not dry_run else None,
     )
     plan_obj = planner.create_plan(
         movies=movies_with_paths,

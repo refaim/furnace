@@ -6,6 +6,8 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from collections.abc import Callable
+
 from ..core.models import (
     AudioInstruction,
     CropRect,
@@ -16,6 +18,7 @@ from ..core.models import (
     Plan,
     SubtitleInstruction,
     Track,
+    TrackType,
     VideoInfo,
     VideoParams,
 )
@@ -30,6 +33,9 @@ from ..core.rules import get_audio_action, get_subtitle_action
 
 logger = logging.getLogger(__name__)
 
+# Callback type: (movie, candidate_tracks, track_type) -> selected_tracks
+TrackSelectorFn = Callable[[Movie, list[Track], TrackType], list[Track]]
+
 FURNACE_VERSION = "0.1.0"
 
 
@@ -38,9 +44,11 @@ class PlannerService:
         self,
         prober: Prober,
         previewer: Previewer | None,  # None in --dry-run
+        track_selector: TrackSelectorFn | None = None,  # None = include all (headless)
     ) -> None:
         self._prober = prober
         self._previewer = previewer
+        self._track_selector = track_selector
 
     def create_plan(
         self,
@@ -110,21 +118,37 @@ class PlannerService:
         # Auto-select audio tracks
         selected_audio = self._auto_select_tracks(movie.audio_tracks, lang_filter)
         if selected_audio is None:
-            # TUI would be shown here; in headless mode, include all filtered tracks
-            logger.info(
-                "Multiple tracks per language for %s; including all matching lang_filter",
-                movie.main_file.name,
-            )
-            selected_audio = self._filter_tracks_by_lang(movie.audio_tracks, lang_filter)
+            # Multiple tracks per language — need user selection
+            candidates = self._filter_tracks_by_lang(movie.audio_tracks, lang_filter)
+            if self._track_selector is not None:
+                logger.info(
+                    "Multiple audio tracks per language for %s; showing TUI",
+                    movie.main_file.name,
+                )
+                selected_audio = self._track_selector(movie, candidates, TrackType.AUDIO)
+            else:
+                logger.warning(
+                    "Multiple audio tracks per language for %s; no track_selector, including all",
+                    movie.main_file.name,
+                )
+                selected_audio = candidates
 
         # Auto-select subtitle tracks
         selected_subs = self._auto_select_tracks(movie.subtitle_tracks, lang_filter)
         if selected_subs is None:
-            logger.info(
-                "Multiple subtitle tracks per language for %s; including all matching lang_filter",
-                movie.main_file.name,
-            )
-            selected_subs = self._filter_tracks_by_lang(movie.subtitle_tracks, lang_filter)
+            candidates = self._filter_tracks_by_lang(movie.subtitle_tracks, lang_filter)
+            if self._track_selector is not None:
+                logger.info(
+                    "Multiple subtitle tracks per language for %s; showing TUI",
+                    movie.main_file.name,
+                )
+                selected_subs = self._track_selector(movie, candidates, TrackType.SUBTITLE)
+            else:
+                logger.warning(
+                    "Multiple subtitle tracks per language for %s; no track_selector, including all",
+                    movie.main_file.name,
+                )
+                selected_subs = candidates
 
         # Build audio instructions
         audio_instructions: list[AudioInstruction] = []
