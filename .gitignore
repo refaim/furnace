@@ -1,0 +1,8 @@
+/.claude
+/.mypy_cache
+/.omc
+/.pytest_cache
+/.ruff_cache
+/.venv
+/furnace.toml
+__pycache__/
