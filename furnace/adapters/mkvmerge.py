@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import logging
-import subprocess
 from pathlib import Path
 from typing import Any
+
+from ._subprocess import OutputCallback, run_tool
 
 logger = logging.getLogger(__name__)
 
@@ -34,8 +35,13 @@ _COLOR_TRANSFER_MAP: dict[str, str] = {
 class MkvmergeAdapter:
     """Implements Muxer."""
 
-    def __init__(self, mkvmerge_path: Path) -> None:
+    def __init__(self, mkvmerge_path: Path, on_output: OutputCallback = None, log_dir: Path | None = None) -> None:
         self._mkvmerge = mkvmerge_path
+        self._on_output = on_output
+        self._log_dir = log_dir
+
+    def set_log_dir(self, log_dir: Path | None) -> None:
+        self._log_dir = log_dir
 
     def mux(
         self,
@@ -62,18 +68,13 @@ class MkvmergeAdapter:
             video_path, audio_files, subtitle_files, attachments,
             chapters_source, output_path, furnace_version, video_meta,
         )
-        logger.info("mkvmerge mux cmd: %s", " ".join(str(c) for c in cmd))
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        # mkvmerge returns 1 for warnings (non-fatal), 2+ for errors
-        if result.returncode >= 2:
-            logger.error(
-                "mkvmerge mux failed (rc=%d): %s", result.returncode, result.stderr
-            )
-        elif result.returncode == 1:
-            logger.warning(
-                "mkvmerge mux completed with warnings (rc=1): %s", result.stdout
-            )
-        return result.returncode
+        log_path = self._log_dir / "mkvmerge.log" if self._log_dir else None
+        rc, stderr = run_tool(cmd, on_output=self._on_output, log_path=log_path)
+        if rc >= 2:
+            logger.error("mkvmerge mux failed (rc=%d): %s", rc, stderr[-500:])
+        elif rc == 1:
+            logger.warning("mkvmerge mux completed with warnings (rc=1)")
+        return rc
 
     def _build_mux_cmd(
         self,
@@ -176,9 +177,14 @@ class MkvmergeAdapter:
                 "--attach-file", str(att_path),
             ]
 
-        # Chapters
+        # Chapters: add source MKV as input with all tracks suppressed,
+        # mkvmerge reads chapters directly from the MKV container
         if chapters_source is not None:
-            cmd += ["--chapters", str(chapters_source)]
+            cmd += [
+                "--no-video", "--no-audio", "--no-subtitles",
+                "--no-attachments", "--no-track-tags",
+                str(chapters_source),
+            ]
 
         # Track order: video first (0:0), then audio, then subtitles
         audio_count = len(audio_files)

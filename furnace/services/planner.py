@@ -31,12 +31,12 @@ from ..core.quality import (
 )
 from ..core.rules import get_audio_action, get_subtitle_action
 
+from furnace import VERSION as FURNACE_VERSION
+
 logger = logging.getLogger(__name__)
 
 # Callback type: (movie, candidate_tracks, track_type) -> selected_tracks
 TrackSelectorFn = Callable[[Movie, list[Track], TrackType], list[Track]]
-
-FURNACE_VERSION = "0.1.0"
 
 
 class PlannerService:
@@ -108,7 +108,20 @@ class PlannerService:
                     crop = align_crop(raw_crop.w, raw_crop.h, raw_crop.x, raw_crop.y)
                     # Skip crop if it equals full frame (no black bars)
                     if crop.w == movie.video.width and crop.h == movie.video.height:
+                        logger.info(
+                            "%s: no black bars detected (crop equals full frame %dx%d)",
+                            movie.main_file.name, movie.video.width, movie.video.height,
+                        )
                         crop = None
+                    else:
+                        logger.info(
+                            "%s: crop detected %d:%d:%d:%d (source %dx%d)",
+                            movie.main_file.name,
+                            crop.w, crop.h, crop.x, crop.y,
+                            movie.video.width, movie.video.height,
+                        )
+                else:
+                    logger.warning("%s: cropdetect unable to determine crop", movie.main_file.name)
             except Exception as exc:
                 logger.warning("Crop detection failed for %s: %s", movie.main_file.name, exc)
 
@@ -121,7 +134,7 @@ class PlannerService:
             # Multiple tracks per language — need user selection
             candidates = self._filter_tracks_by_lang(movie.audio_tracks, lang_filter)
             if self._track_selector is not None:
-                logger.info(
+                logger.debug(
                     "Multiple audio tracks per language for %s; showing TUI",
                     movie.main_file.name,
                 )
@@ -138,7 +151,7 @@ class PlannerService:
         if selected_subs is None:
             candidates = self._filter_tracks_by_lang(movie.subtitle_tracks, lang_filter)
             if self._track_selector is not None:
-                logger.info(
+                logger.debug(
                     "Multiple subtitle tracks per language for %s; showing TUI",
                     movie.main_file.name,
                 )
@@ -269,6 +282,7 @@ class PlannerService:
             fps_den=video.fps_den,
             source_width=video.width,
             source_height=video.height,
+            source_codec=video.codec_name,
         )
 
     def _build_audio_instruction(self, track: Track, is_default: bool) -> AudioInstruction:

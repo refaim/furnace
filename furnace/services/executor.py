@@ -4,7 +4,6 @@ import logging
 import shutil
 import tempfile
 import threading
-from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -28,10 +27,10 @@ from ..core.ports import (
     Tagger,
 )
 from ..plan import update_job_status
+from furnace import VERSION as FURNACE_VERSION
 
 logger = logging.getLogger(__name__)
-
-FURNACE_VERSION = "0.1.0"
+MAX_STDERR_LINES = 6
 
 # Extension mapping for audio codec names to file extensions
 _AUDIO_CODEC_EXT: dict[str, str] = {
@@ -73,6 +72,8 @@ class Executor:
         tagger: Tagger,
         cleaner: Cleaner,
         prober: Prober,
+        progress: Any | None = None,  # EncodingProgress (optional, avoids circular import)
+        log_dir: Path | None = None,
     ) -> None:
         self._encoder = encoder
         self._audio_extractor = audio_extractor
@@ -82,13 +83,26 @@ class Executor:
         self._tagger = tagger
         self._cleaner = cleaner
         self._prober = prober
+        self._progress = progress
+        self._log_dir = log_dir
         self._shutdown_event = threading.Event()
+        self._adapters = [encoder, audio_extractor, audio_decoder, aac_encoder, muxer, tagger, cleaner]
+
+    def _set_adapters_log_dir(self, job_name: str) -> None:
+        """Create per-job log subdirectory and update all adapters."""
+        if self._log_dir is None:
+            return
+        job_log_dir = self._log_dir / job_name
+        job_log_dir.mkdir(parents=True, exist_ok=True)
+        for adapter in self._adapters:
+            set_fn = getattr(adapter, "set_log_dir", None)
+            if set_fn is not None:
+                set_fn(job_log_dir)
 
     def run(
         self,
         plan: Plan,
         plan_path: Path,
-        on_job_progress: Callable[..., None] | None = None,
     ) -> None:
         """Execute all pending/error jobs sequentially.
         Update JSON after each via update_job_status.
@@ -99,21 +113,28 @@ class Executor:
             if job.status in (JobStatus.PENDING, JobStatus.ERROR)
         ]
 
-        logger.info(
+        logger.debug(
             "Starting execution: %d jobs to process (total: %d)",
             len(pending_jobs),
             len(plan.jobs),
         )
 
-        for job in pending_jobs:
+        for i, job in enumerate(pending_jobs):
             if self._shutdown_event.is_set():
-                logger.info("Shutdown requested, stopping before job %s", job.id)
+                logger.debug("Shutdown requested, stopping before job %s", job.id)
                 break
 
-            logger.info("Starting job %s -> %s", job.id, job.output_file)
+            logger.debug("Starting job %s -> %s", job.id, job.output_file)
+
+            # Set per-job log directory for all adapters
+            job_name = Path(job.output_file).stem
+            self._set_adapters_log_dir(job_name)
+
+            if self._progress is not None:
+                self._progress.start_job(job, i)
 
             try:
-                self._execute_job(job, on_job_progress)
+                self._execute_job(job)
                 output_size: int | None = None
                 output_path = Path(job.output_file)
                 if output_path.exists():
@@ -125,7 +146,10 @@ class Executor:
                     error=None,
                     output_size=output_size,
                 )
-                logger.info("Job %s completed successfully", job.id)
+                logger.debug("Job %s completed successfully", job.id)
+                if self._progress is not None:
+                    job.output_size = output_size
+                    self._progress.finish_job(job)
             except Exception as exc:
                 error_msg = str(exc)
                 logger.error("Job %s failed: %s", job.id, error_msg)
@@ -136,24 +160,14 @@ class Executor:
                     error=error_msg,
                 )
 
-    def _execute_job(self, job: Job, on_progress: Callable[..., None] | None) -> None:
-        """Full pipeline for one job:
-        1. Encode video
-        2. Process audio tracks
-        3. Process subtitle tracks
-        4. Mux
-        5. Set ENCODER tag (mkvpropedit)
-        6. mkclean
-        7. Post-encoding bloat check
-        8. Optional VMAF (placeholder)
-        9. Cleanup temp (try/finally)
-        """
+    def _execute_job(self, job: Job) -> None:
+        """Full pipeline for one job."""
         output_path = Path(job.output_file)
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
         temp_dir = Path(tempfile.mkdtemp(prefix="furnace_"))
         try:
-            self._run_pipeline(job, output_path, temp_dir, on_progress)
+            self._run_pipeline(job, output_path, temp_dir)
         finally:
             # Always clean up temp files
             try:
@@ -166,28 +180,16 @@ class Executor:
         job: Job,
         output_path: Path,
         temp_dir: Path,
-        on_progress: Callable[..., None] | None,
     ) -> None:
-        """Inner pipeline logic (separated so finally in _execute_job always runs)."""
+        """Inner pipeline logic (separated so finally in _execute_job always runs).
+
+        Order: audio -> subtitles -> video -> mux -> tag -> mkclean
+        Audio/subs are fast (seconds), processed first so everything is ready
+        when the long video encode finishes.
+        """
         main_source = Path(job.source_files[0])
 
-        # Step 1: Encode video
-        if self._shutdown_event.is_set():
-            return
-
-        video_output = temp_dir / "video.mkv"
-        logger.info("Encoding video: %s -> %s", main_source, video_output)
-        rc = self._encoder.encode(
-            input_path=main_source,
-            output_path=video_output,
-            video_params=job.video_params,
-            source_size=job.source_size,
-            on_progress=on_progress,
-        )
-        if rc != 0:
-            raise RuntimeError(f"Video encoding failed with return code {rc}")
-
-        # Step 2: Process audio tracks
+        # Step 1: Process audio tracks (fast)
         if self._shutdown_event.is_set():
             return
 
@@ -195,10 +197,13 @@ class Executor:
         for i, audio_instr in enumerate(job.audio):
             if self._shutdown_event.is_set():
                 return
-            logger.info(
-                "Processing audio track %d/%d (lang=%s, action=%s)",
-                i + 1, len(job.audio), audio_instr.language, audio_instr.action.value,
+            status_msg = (
+                f"Processing audio {i + 1}/{len(job.audio)} "
+                f"({audio_instr.codec_name} {audio_instr.language})"
             )
+            logger.info(status_msg)
+            if self._progress is not None:
+                self._progress.update_status(status_msg)
             audio_path = self._process_audio_track(audio_instr, temp_dir)
             audio_meta = {
                 "language": audio_instr.language,
@@ -207,7 +212,7 @@ class Executor:
             }
             audio_files.append((audio_path, audio_meta))
 
-        # Step 3: Process subtitle tracks
+        # Step 2: Process subtitle tracks (fast)
         if self._shutdown_event.is_set():
             return
 
@@ -215,10 +220,13 @@ class Executor:
         for i, sub_instr in enumerate(job.subtitles):
             if self._shutdown_event.is_set():
                 return
-            logger.info(
-                "Processing subtitle track %d/%d (lang=%s, action=%s)",
-                i + 1, len(job.subtitles), sub_instr.language, sub_instr.action.value,
+            status_msg = (
+                f"Processing subtitle {i + 1}/{len(job.subtitles)} "
+                f"({sub_instr.codec_name} {sub_instr.language})"
             )
+            logger.info(status_msg)
+            if self._progress is not None:
+                self._progress.update_status(status_msg)
             sub_path = self._process_subtitle_track(sub_instr, temp_dir)
             sub_meta = {
                 "language": sub_instr.language,
@@ -228,12 +236,38 @@ class Executor:
             }
             subtitle_files.append((sub_path, sub_meta))
 
+        # Step 3: Encode video (slow — main bottleneck)
+        if self._shutdown_event.is_set():
+            return
+
+        video_output = temp_dir / "video.mkv"
+        logger.info("Encoding video: %s", main_source.name)
+
+        def _encode_progress(pct: float, status_line: str) -> None:
+            speed = ""
+            if "speed=" in status_line:
+                speed = status_line.rsplit("speed=", maxsplit=1)[-1].strip()
+            if self._progress is not None:
+                self._progress.update_encode(pct, speed)
+
+        rc = self._encoder.encode(
+            input_path=main_source,
+            output_path=video_output,
+            video_params=job.video_params,
+            source_size=job.source_size,
+            on_progress=_encode_progress,
+        )
+        if rc != 0:
+            raise RuntimeError(f"Video encoding failed with return code {rc}")
+
         # Step 4: Mux
         if self._shutdown_event.is_set():
             return
 
         muxed_path = temp_dir / "muxed.mkv"
-        logger.info("Muxing to %s", muxed_path)
+        logger.info("Muxing tracks")
+        if self._progress is not None:
+            self._progress.update_status("Muxing...")
 
         # Build attachments list: (path, filename, mime_type)
         attachments: list[tuple[Path, str, str]] = []
@@ -281,7 +315,9 @@ class Executor:
         if self._shutdown_event.is_set():
             return
 
-        logger.info("Setting ENCODER tag on %s", muxed_path)
+        logger.info("Setting ENCODER tag")
+        if self._progress is not None:
+            self._progress.update_status("Setting metadata...")
         tag_value = f"Furnace/{FURNACE_VERSION}"
         rc = self._tagger.set_encoder_tag(muxed_path, tag_value)
         if rc != 0:
@@ -292,7 +328,9 @@ class Executor:
             return
 
         cleaned_path = temp_dir / "cleaned.mkv"
-        logger.info("Running mkclean: %s -> %s", muxed_path, cleaned_path)
+        logger.info("Optimizing MKV index (mkclean)")
+        if self._progress is not None:
+            self._progress.update_status("Optimizing MKV index...")
         rc = self._cleaner.clean(muxed_path, cleaned_path)
         if rc != 0:
             logger.warning("mkclean returned %d, using muxed output", rc)
@@ -310,7 +348,7 @@ class Executor:
 
         # Move cleaned output to final destination
         shutil.move(str(cleaned_path), str(output_path))
-        logger.info("Job output written to %s", output_path)
+        logger.debug("Job output written to %s", output_path)
 
     def _process_audio_track(self, instr: AudioInstruction, temp_dir: Path) -> Path:
         """Returns path to processed audio file.
@@ -325,6 +363,7 @@ class Executor:
         ext = _AUDIO_CODEC_EXT.get(instr.codec_name, ".audio")
 
         if instr.action == AudioAction.COPY:
+            logger.info("Extracting audio stream %d (copy)", track_idx)
             out_path = temp_dir / f"audio_{track_idx}{ext}"
             rc = self._audio_extractor.extract_track(
                 source_path, track_idx, out_path, instr.codec_name
@@ -336,6 +375,7 @@ class Executor:
             return out_path
 
         if instr.action == AudioAction.DENORM:
+            logger.info("Extracting audio stream %d", track_idx)
             extracted = temp_dir / f"audio_{track_idx}_raw{ext}"
             rc = self._audio_extractor.extract_track(
                 source_path, track_idx, extracted, instr.codec_name
@@ -344,6 +384,7 @@ class Executor:
                 raise RuntimeError(
                     f"Audio extract (DENORM) failed with rc={rc} for stream {track_idx}"
                 )
+            logger.info("Denormalizing with eac3to")
             denormed = temp_dir / f"audio_{track_idx}_denorm{ext}"
             rc = self._audio_decoder.denormalize(extracted, denormed, instr.delay_ms)
             if rc != 0:
@@ -353,6 +394,7 @@ class Executor:
             return denormed
 
         if instr.action == AudioAction.DECODE_ENCODE:
+            logger.info("Extracting audio stream %d", track_idx)
             extracted = temp_dir / f"audio_{track_idx}_raw{ext}"
             rc = self._audio_extractor.extract_track(
                 source_path, track_idx, extracted, instr.codec_name
@@ -361,12 +403,14 @@ class Executor:
                 raise RuntimeError(
                     f"Audio extract (DECODE_ENCODE) failed with rc={rc} for stream {track_idx}"
                 )
+            logger.info("Decoding lossless with eac3to")
             wav_path = temp_dir / f"audio_{track_idx}_decoded.wav"
             rc = self._audio_decoder.decode_lossless(extracted, wav_path, instr.delay_ms)
             if rc != 0:
                 raise RuntimeError(
                     f"Audio decode_lossless failed with rc={rc} for stream {track_idx}"
                 )
+            logger.info("Encoding AAC with qaac64")
             m4a_path = temp_dir / f"audio_{track_idx}.m4a"
             rc = self._aac_encoder.encode_aac(wav_path, m4a_path)
             if rc != 0:
@@ -376,12 +420,14 @@ class Executor:
             return m4a_path
 
         if instr.action == AudioAction.FFMPEG_ENCODE:
+            logger.info("Decoding with ffmpeg to WAV")
             wav_path = temp_dir / f"audio_{track_idx}_ffmpeg.wav"
             rc = self._audio_extractor.ffmpeg_to_wav(source_path, track_idx, wav_path)
             if rc != 0:
                 raise RuntimeError(
                     f"ffmpeg_to_wav failed with rc={rc} for stream {track_idx}"
                 )
+            logger.info("  Encoding AAC with qaac64")
             m4a_path = temp_dir / f"audio_{track_idx}.m4a"
             rc = self._aac_encoder.encode_aac(wav_path, m4a_path)
             if rc != 0:
@@ -476,7 +522,7 @@ class Executor:
 
     def graceful_shutdown(self) -> None:
         """Called on ESC. Kill ffmpeg process tree via psutil."""
-        logger.info("Graceful shutdown requested")
+        logger.debug("Graceful shutdown requested")
         self._shutdown_event.set()
         try:
             import os as _os

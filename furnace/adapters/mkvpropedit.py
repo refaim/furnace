@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import logging
-import subprocess
 import tempfile
 from pathlib import Path
+
+from ._subprocess import OutputCallback, run_tool
 
 logger = logging.getLogger(__name__)
 
@@ -22,8 +23,13 @@ _TAGS_XML_TEMPLATE = """\
 class MkvpropeditAdapter:
     """Implements Tagger. Sets ENCODER tag via mkvpropedit."""
 
-    def __init__(self, mkvpropedit_path: Path) -> None:
+    def __init__(self, mkvpropedit_path: Path, on_output: OutputCallback = None, log_dir: Path | None = None) -> None:
         self._mkvpropedit = mkvpropedit_path
+        self._on_output = on_output
+        self._log_dir = log_dir
+
+    def set_log_dir(self, log_dir: Path | None) -> None:
+        self._log_dir = log_dir
 
     def set_encoder_tag(self, mkv_path: Path, tag_value: str) -> int:
         """Set global ENCODER tag.
@@ -50,13 +56,9 @@ class MkvpropeditAdapter:
                 str(mkv_path),
                 "--tags", f"global:{tmp_path}",
             ]
-            logger.info("mkvpropedit set_encoder_tag cmd: %s", " ".join(cmd))
-            result = subprocess.run(cmd, capture_output=True, text=True)
-            if result.returncode != 0:
-                logger.error(
-                    "mkvpropedit failed (rc=%d): %s", result.returncode, result.stderr
-                )
-            return result.returncode
+            log_path = self._log_dir / "mkvpropedit.log" if self._log_dir else None
+            rc, _stderr = run_tool(cmd, on_output=self._on_output, log_path=log_path)
+            return rc
         finally:
             try:
                 tmp_path.unlink()

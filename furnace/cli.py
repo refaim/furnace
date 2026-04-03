@@ -12,16 +12,28 @@ app = typer.Typer()
 logger = logging.getLogger(__name__)
 
 
-def _setup_logging(log_dir: Path) -> None:
-    """Create furnace.log in log_dir with a standard format."""
+def _setup_logging(log_dir: Path, *, console: bool = True) -> None:
+    """Create furnace.log in log_dir. Optionally add console output for INFO+."""
     log_dir.mkdir(parents=True, exist_ok=True)
+    root = logging.getLogger()
+    root.setLevel(logging.DEBUG)
+
+    # File: everything (DEBUG+)
     log_path = log_dir / "furnace.log"
-    handler = logging.FileHandler(log_path, encoding="utf-8")
-    handler.setFormatter(
+    file_handler = logging.FileHandler(log_path, encoding="utf-8")
+    file_handler.setFormatter(
         logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s")
     )
-    logging.getLogger().addHandler(handler)
-    logging.getLogger().setLevel(logging.DEBUG)
+    root.addHandler(file_handler)
+
+    if not console:
+        return
+
+    # Console: INFO+ with short format
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.INFO)
+    console_handler.setFormatter(logging.Formatter("[furnace] %(message)s"))
+    root.addHandler(console_handler)
 
 
 def _start_esc_watcher(shutdown_event: threading.Event) -> None:
@@ -75,7 +87,7 @@ def plan(
     output.mkdir(parents=True, exist_ok=True)
     _setup_logging(output)
 
-    logger.info(
+    logger.debug(
         "plan command started: source=%s output=%s lang=%s names=%s dry_run=%s vmaf=%s",
         source, output, lang, names, dry_run, vmaf,
     )
@@ -161,7 +173,7 @@ def plan(
         typer.echo(f"Plan saved: {plan_path}")
         typer.echo(f"Jobs: {len(plan_obj.jobs)} total, {len(pending)} pending")
 
-    logger.info("plan command finished: jobs=%d", len(plan_obj.jobs))
+    logger.debug("plan command finished: jobs=%d", len(plan_obj.jobs))
 
 
 @app.command()
@@ -180,7 +192,7 @@ def run(
     from .config import load_config
     from .plan import load_plan
     from .services.executor import Executor
-    from .ui.progress import ReportPrinter
+    from .ui.progress import EncodingProgress, ReportPrinter
 
     # 1. Load config
     cfg = load_config(config)
@@ -191,27 +203,35 @@ def run(
     # 3. Setup file logging -> destination/furnace.log
     destination = Path(plan_obj.destination)
     destination.mkdir(parents=True, exist_ok=True)
-    _setup_logging(destination)
+    _setup_logging(destination, console=False)
 
-    logger.info("run command started: plan_file=%s", plan_file)
+    logger.debug("run command started: plan_file=%s", plan_file)
 
-    # 4. Create adapters (all needed for execution)
-    ffmpeg_adapter = FFmpegAdapter(cfg.ffmpeg, cfg.ffprobe)
-    eac3to_adapter = Eac3toAdapter(cfg.eac3to)
-    qaac_adapter = QaacAdapter(cfg.qaac64)
-    mkvmerge_adapter = MkvmergeAdapter(cfg.mkvmerge)
-    mkvpropedit_adapter = MkvpropeditAdapter(cfg.mkvpropedit)
-    mkclean_adapter = MkcleanAdapter(cfg.mkclean)
-
-    # 5. Start ESC watcher thread
-    shutdown_event = threading.Event()
-    _start_esc_watcher(shutdown_event)
-
-    # 6. Create console for output
+    # 4. Create progress display first (adapters need the output callback)
     from rich.console import Console
     console = Console()
 
-    # 7. Executor.run()
+    pending_count = sum(
+        1 for j in plan_obj.jobs
+        if j.status.value in ("pending", "error")
+    )
+    progress = EncodingProgress(console, total_jobs=pending_count)
+    tool_output = progress.add_tool_line  # callback for all adapters
+
+    # 5. Create adapters with output callback (log_dir managed by executor per-job)
+    ffmpeg_adapter = FFmpegAdapter(cfg.ffmpeg, cfg.ffprobe, on_output=tool_output)
+    eac3to_adapter = Eac3toAdapter(cfg.eac3to, on_output=tool_output)
+    qaac_adapter = QaacAdapter(cfg.qaac64, on_output=tool_output)
+    mkvmerge_adapter = MkvmergeAdapter(cfg.mkvmerge, on_output=tool_output)
+    mkvpropedit_adapter = MkvpropeditAdapter(cfg.mkvpropedit, on_output=tool_output)
+    mkclean_adapter = MkcleanAdapter(cfg.mkclean, on_output=tool_output)
+    log_dir = destination / "logs"
+
+    # 6. Start ESC watcher thread
+    shutdown_event = threading.Event()
+    _start_esc_watcher(shutdown_event)
+
+    # 7. Executor.run() with progress display
     executor = Executor(
         encoder=ffmpeg_adapter,
         audio_extractor=ffmpeg_adapter,
@@ -221,11 +241,16 @@ def run(
         tagger=mkvpropedit_adapter,
         cleaner=mkclean_adapter,
         prober=ffmpeg_adapter,
+        progress=progress,
+        log_dir=log_dir,
     )
-    executor.run(plan_obj, plan_file)
+    try:
+        executor.run(plan_obj, plan_file)
+    finally:
+        progress.stop()
 
     # 8. ReportPrinter.print_report()
     printer = ReportPrinter()
     printer.print_report(plan_obj, console)
 
-    logger.info("run command finished")
+    logger.debug("run command finished")

@@ -57,7 +57,7 @@ class Scanner:
             ))
             logger.debug("Scanned %s -> %s (%d satellites)", path, output_path, len(satellites))
 
-        logger.info("Scan complete: %d video files found in %s", len(results), source)
+        logger.debug("Scan complete: %d video files found in %s", len(results), source)
         return results
 
     def find_satellites(self, video_path: Path) -> list[Path]:

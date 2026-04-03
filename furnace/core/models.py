@@ -214,6 +214,7 @@ class VideoParams:
     fps_den: int
     source_width: int                  # до crop, для информации
     source_height: int
+    source_codec: str = ""             # ffprobe codec_name (h264, hevc, mpeg2video...)
 
 
 @dataclass
