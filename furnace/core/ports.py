@@ -47,6 +47,20 @@ class Encoder(Protocol):
         """
         ...
 
+    def compute_vmaf(
+        self,
+        reference: Path,
+        distorted: Path,
+        duration_s: float,
+        on_progress: Callable[[float, str], None] | None = None,
+        crop: CropRect | None = None,
+    ) -> float | None:
+        """Calculate VMAF score. Returns mean VMAF or None on failure.
+
+        If crop is provided, reference is cropped to match distorted dimensions.
+        """
+        ...
+
 
 @runtime_checkable
 class AudioExtractor(Protocol):

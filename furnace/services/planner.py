@@ -283,6 +283,7 @@ class PlannerService:
             source_width=video.width,
             source_height=video.height,
             source_codec=video.codec_name,
+            source_bitrate=video.bitrate,
         )
 
     def _build_audio_instruction(self, track: Track, is_default: bool) -> AudioInstruction:

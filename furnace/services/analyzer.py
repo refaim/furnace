@@ -178,6 +178,19 @@ class Analyzer:
         elif color_space_raw in ("bt2020nc", "bt2020c", "bt2020"):
             color_space = ColorSpace.BT2020
 
+        # Bitrate: from stream, fallback to format
+        bitrate = 0
+        if "bit_rate" in stream:
+            try:
+                bitrate = int(stream["bit_rate"])
+            except (ValueError, TypeError):
+                pass
+        if bitrate == 0 and "bit_rate" in format_data:
+            try:
+                bitrate = int(format_data["bit_rate"])
+            except (ValueError, TypeError):
+                pass
+
         # HDR metadata
         side_data = stream.get("side_data_list")
         hdr = detect_hdr(stream, side_data)
@@ -199,6 +212,7 @@ class Analyzer:
             pix_fmt=pix_fmt,
             hdr=hdr,
             source_file=path,
+            bitrate=bitrate,
         )
 
     def _parse_audio_tracks(self, streams: list[dict[str, Any]], path: Path) -> list[Track]:

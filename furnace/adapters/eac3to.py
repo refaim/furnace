@@ -33,24 +33,26 @@ class Eac3toAdapter:
         return [f"{delay_ms}ms"]
 
     def denormalize(self, input_path: Path, output_path: Path, delay_ms: int) -> int:
-        """eac3to input output -removeDialnorm [+Xms/-Xms]"""
+        """eac3to input output -removeDialnorm -progressnumbers -nolog [+Xms/-Xms]"""
         cmd = [
             str(self._eac3to),
             str(input_path),
             str(output_path),
             "-removeDialnorm",
+            "-progressnumbers",
             *self._delay_arg(delay_ms),
         ]
         rc, _out = run_tool(cmd, on_output=self._on_output, log_path=self._log_path("denorm"))
         return rc
 
     def decode_lossless(self, input_path: Path, output_path: Path, delay_ms: int) -> int:
-        """eac3to input output.wav -removeDialnorm [+Xms/-Xms]"""
+        """eac3to input output.wav -removeDialnorm -progressnumbers -nolog [+Xms/-Xms]"""
         cmd = [
             str(self._eac3to),
             str(input_path),
             str(output_path),
             "-removeDialnorm",
+            "-progressnumbers",
             *self._delay_arg(delay_ms),
         ]
         rc, _out = run_tool(cmd, on_output=self._on_output, log_path=self._log_path("decode"))

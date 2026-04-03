@@ -131,6 +131,7 @@ class MkvmergeAdapter:
             if max_fall is not None:
                 video_flags += ["--max-frame-light", f"0:{max_fall}"]
 
+        video_flags += ["--no-chapters"]  # chapters come only from chapters_source
         video_flags.append(str(video_path))
         cmd += video_flags
 
@@ -148,6 +149,7 @@ class MkvmergeAdapter:
                 cmd += ["--default-track-flag", "0:no"]
             if delay_ms != 0:
                 cmd += ["--sync", f"0:{delay_ms}"]
+            cmd += ["--no-chapters"]
             cmd.append(str(audio_path))
 
         # Subtitle tracks
@@ -167,6 +169,7 @@ class MkvmergeAdapter:
                 cmd += ["--forced-display-flag", "0:yes"]
             if encoding:
                 cmd += ["--sub-charset", f"0:{encoding}"]
+            cmd += ["--no-chapters"]
             cmd.append(str(sub_path))
 
         # Attachments

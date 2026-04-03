@@ -192,7 +192,8 @@ def run(
     from .config import load_config
     from .plan import load_plan
     from .services.executor import Executor
-    from .ui.progress import EncodingProgress, ReportPrinter
+    from .ui.progress import ReportPrinter
+    from .ui.run_tui import RunApp
 
     # 1. Load config
     cfg = load_config(config)
@@ -200,56 +201,66 @@ def run(
     # 2. Load plan (need destination for log dir)
     plan_obj = load_plan(plan_file)
 
-    # 3. Setup file logging -> destination/furnace.log
+    # 3. Setup file logging -> destination/furnace.log (console OFF — Textual owns terminal)
     destination = Path(plan_obj.destination)
     destination.mkdir(parents=True, exist_ok=True)
     _setup_logging(destination, console=False)
 
     logger.debug("run command started: plan_file=%s", plan_file)
 
-    # 4. Create progress display first (adapters need the output callback)
-    from rich.console import Console
-    console = Console()
-
     pending_count = sum(
         1 for j in plan_obj.jobs
         if j.status.value in ("pending", "error")
     )
-    progress = EncodingProgress(console, total_jobs=pending_count)
-    tool_output = progress.add_tool_line  # callback for all adapters
 
-    # 5. Create adapters with output callback (log_dir managed by executor per-job)
-    ffmpeg_adapter = FFmpegAdapter(cfg.ffmpeg, cfg.ffprobe, on_output=tool_output)
-    eac3to_adapter = Eac3toAdapter(cfg.eac3to, on_output=tool_output)
-    qaac_adapter = QaacAdapter(cfg.qaac64, on_output=tool_output)
-    mkvmerge_adapter = MkvmergeAdapter(cfg.mkvmerge, on_output=tool_output)
-    mkvpropedit_adapter = MkvpropeditAdapter(cfg.mkvpropedit, on_output=tool_output)
-    mkclean_adapter = MkcleanAdapter(cfg.mkclean, on_output=tool_output)
+    # 4. ESC handling: RunApp binds ESC via Textual; shutdown_event shared with executor
+    shutdown_event = threading.Event()
     log_dir = destination / "logs"
 
-    # 6. Start ESC watcher thread
-    shutdown_event = threading.Event()
-    _start_esc_watcher(shutdown_event)
+    # 5. Define executor factory — RunApp calls this in a worker thread,
+    #    passing itself as the progress object.
+    def _run_executor(progress: RunApp) -> None:
+        tool_output = progress.add_tool_line
 
-    # 7. Executor.run() with progress display
-    executor = Executor(
-        encoder=ffmpeg_adapter,
-        audio_extractor=ffmpeg_adapter,
-        audio_decoder=eac3to_adapter,
-        aac_encoder=qaac_adapter,
-        muxer=mkvmerge_adapter,
-        tagger=mkvpropedit_adapter,
-        cleaner=mkclean_adapter,
-        prober=ffmpeg_adapter,
-        progress=progress,
-        log_dir=log_dir,
+        ffmpeg_adapter = FFmpegAdapter(cfg.ffmpeg, cfg.ffprobe, on_output=tool_output)
+        eac3to_adapter = Eac3toAdapter(cfg.eac3to, on_output=tool_output)
+        qaac_adapter = QaacAdapter(cfg.qaac64, on_output=tool_output)
+        mkvmerge_adapter = MkvmergeAdapter(cfg.mkvmerge, on_output=tool_output)
+        mkvpropedit_adapter = MkvpropeditAdapter(cfg.mkvpropedit, on_output=tool_output)
+        mkclean_adapter = MkcleanAdapter(cfg.mkclean, on_output=tool_output)
+
+        executor = Executor(
+            encoder=ffmpeg_adapter,
+            audio_extractor=ffmpeg_adapter,
+            audio_decoder=eac3to_adapter,
+            aac_encoder=qaac_adapter,
+            muxer=mkvmerge_adapter,
+            tagger=mkvpropedit_adapter,
+            cleaner=mkclean_adapter,
+            prober=ffmpeg_adapter,
+            progress=progress,
+            log_dir=log_dir,
+        )
+        try:
+            executor.run(plan_obj, plan_file)
+        finally:
+            progress.stop()
+
+    # 6. Run the Textual app (blocks until all jobs done or ESC)
+    run_app = RunApp(
+        total_jobs=pending_count,
+        shutdown_event=shutdown_event,
+        executor_fn=_run_executor,
+        vmaf_enabled=plan_obj.vmaf_enabled,
     )
-    try:
-        executor.run(plan_obj, plan_file)
-    finally:
-        progress.stop()
+    run_app.run()
 
-    # 8. ReportPrinter.print_report()
+    # 7. Reload plan from disk (executor updates JSON after each job)
+    plan_obj = load_plan(plan_file)
+
+    # 8. ReportPrinter.print_report() — after TUI exits, console is free
+    from rich.console import Console
+    console = Console()
     printer = ReportPrinter()
     printer.print_report(plan_obj, console)
 

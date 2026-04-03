@@ -147,11 +147,11 @@ def should_skip_file(
 ) -> tuple[bool, str]:
     """Возвращает (skip, reason). Skip если:
     - output_path существует
-    - encoder_tag начинается с 'Furnace/'
+    - encoder_tag начинается с 'Furnace'
     """
     if output_path.exists():
         return True, f"output file already exists: {output_path}"
-    if encoder_tag is not None and encoder_tag.startswith("Furnace/"):
+    if encoder_tag is not None and encoder_tag.startswith("Furnace"):
         return True, f"file already encoded by Furnace (tag: {encoder_tag})"
     return False, ""
 

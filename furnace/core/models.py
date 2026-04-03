@@ -148,6 +148,7 @@ class VideoInfo:
     pix_fmt: str                       # yuv420p, yuv420p10le, ...
     hdr: HdrMetadata
     source_file: Path
+    bitrate: int = 0                   # video stream bitrate in bps
 
 
 @dataclass
@@ -215,6 +216,7 @@ class VideoParams:
     source_width: int                  # до crop, для информации
     source_height: int
     source_codec: str = ""             # ffprobe codec_name (h264, hevc, mpeg2video...)
+    source_bitrate: int = 0            # video stream bitrate in bps (from ffprobe)
 
 
 @dataclass

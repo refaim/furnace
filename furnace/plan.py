@@ -91,6 +91,8 @@ def _load_video_params(raw: dict[str, Any]) -> VideoParams:
         fps_den=raw["fps_den"],
         source_width=raw["source_width"],
         source_height=raw["source_height"],
+        source_codec=raw.get("source_codec", ""),
+        source_bitrate=raw.get("source_bitrate", 0),
     )
 
 
