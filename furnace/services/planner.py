@@ -24,7 +24,6 @@ from ..core.models import (
 )
 from ..core.ports import Previewer, Prober
 from ..core.quality import (
-    align_crop,
     calculate_gop,
     determine_color_space,
     interpolate_cq,
@@ -53,7 +52,8 @@ class PlannerService:
     def create_plan(
         self,
         movies: list[tuple[Movie, Path]],
-        lang_filter: list[str] | None,
+        audio_lang_filter: list[str],
+        sub_lang_filter: list[str],
         vmaf_enabled: bool,
         dry_run: bool,
     ) -> Plan:
@@ -73,13 +73,13 @@ class PlannerService:
         destination = str(movies[0][1].parent) if movies else ""
 
         for movie, output_path in movies:
-            job = self._build_job(movie, output_path, lang_filter, vmaf_enabled, dry_run)
+            job = self._build_job(movie, output_path, audio_lang_filter, sub_lang_filter, vmaf_enabled, dry_run)
             if job is not None:
                 jobs.append(job)
 
         now = datetime.datetime.now(datetime.UTC).isoformat()
         return Plan(
-            version="1",
+            version="2",
             furnace_version=FURNACE_VERSION,
             created_at=now,
             source=source,
@@ -92,7 +92,8 @@ class PlannerService:
         self,
         movie: Movie,
         output_path: Path,
-        lang_filter: list[str] | None,
+        audio_lang_filter: list[str],
+        sub_lang_filter: list[str],
         vmaf_enabled: bool,
         dry_run: bool,
     ) -> Job | None:
@@ -105,7 +106,7 @@ class PlannerService:
                     movie.main_file, movie.video.duration_s
                 )
                 if raw_crop is not None:
-                    crop = align_crop(raw_crop.w, raw_crop.h, raw_crop.x, raw_crop.y)
+                    crop = raw_crop
                     # Skip crop if it equals full frame (no black bars)
                     if crop.w == movie.video.width and crop.h == movie.video.height:
                         logger.info(
@@ -129,39 +130,38 @@ class PlannerService:
         video_params = self._build_video_params(movie.video, crop)
 
         # Auto-select audio tracks
-        selected_audio = self._auto_select_tracks(movie.audio_tracks, lang_filter)
+        audio_candidates = self._filter_audio_tracks_by_lang(movie.audio_tracks, audio_lang_filter)
+        selected_audio = self._auto_select_from_candidates(audio_candidates)
         if selected_audio is None:
-            # Multiple tracks per language — need user selection
-            candidates = self._filter_tracks_by_lang(movie.audio_tracks, lang_filter)
             if self._track_selector is not None:
                 logger.debug(
                     "Multiple audio tracks per language for %s; showing TUI",
                     movie.main_file.name,
                 )
-                selected_audio = self._track_selector(movie, candidates, TrackType.AUDIO)
+                selected_audio = self._track_selector(movie, audio_candidates, TrackType.AUDIO)
             else:
                 logger.warning(
                     "Multiple audio tracks per language for %s; no track_selector, including all",
                     movie.main_file.name,
                 )
-                selected_audio = candidates
+                selected_audio = audio_candidates
 
         # Auto-select subtitle tracks
-        selected_subs = self._auto_select_tracks(movie.subtitle_tracks, lang_filter)
+        sub_candidates = self._filter_sub_tracks_by_lang(movie.subtitle_tracks, sub_lang_filter)
+        selected_subs = self._auto_select_from_candidates(sub_candidates)
         if selected_subs is None:
-            candidates = self._filter_tracks_by_lang(movie.subtitle_tracks, lang_filter)
             if self._track_selector is not None:
                 logger.debug(
                     "Multiple subtitle tracks per language for %s; showing TUI",
                     movie.main_file.name,
                 )
-                selected_subs = self._track_selector(movie, candidates, TrackType.SUBTITLE)
+                selected_subs = self._track_selector(movie, sub_candidates, TrackType.SUBTITLE)
             else:
                 logger.warning(
                     "Multiple subtitle tracks per language for %s; no track_selector, including all",
                     movie.main_file.name,
                 )
-                selected_subs = candidates
+                selected_subs = sub_candidates
 
         # Build audio instructions
         audio_instructions: list[AudioInstruction] = []
@@ -212,36 +212,45 @@ class PlannerService:
         )
         return job
 
-    def _filter_tracks_by_lang(
-        self, tracks: list[Track], lang_filter: list[str] | None
+    def _filter_audio_tracks_by_lang(
+        self, tracks: list[Track], lang_filter: list[str],
     ) -> list[Track]:
-        """Filter tracks by language list. If no filter, return all."""
-        if not lang_filter:
-            return list(tracks)
-        return [t for t in tracks if t.language in lang_filter]
+        """Filter audio tracks: keep matching languages + 'und', sort by lang_filter order."""
+        filtered = [t for t in tracks if t.language in lang_filter or t.language == "und"]
+        lang_order = {lang: i for i, lang in enumerate(lang_filter)}
+        filtered.sort(key=lambda t: lang_order.get(t.language, len(lang_filter)))
+        return filtered
 
-    def _auto_select_tracks(
-        self, tracks: list[Track], lang_filter: list[str] | None
+    def _filter_sub_tracks_by_lang(
+        self, tracks: list[Track], lang_filter: list[str],
+    ) -> list[Track]:
+        """Filter subtitle tracks: keep matching languages + 'und', discard forced, sort by lang_filter order."""
+        filtered = [
+            t for t in tracks
+            if not t.is_forced and (t.language in lang_filter or t.language == "und")
+        ]
+        lang_order = {lang: i for i, lang in enumerate(lang_filter)}
+        filtered.sort(key=lambda t: lang_order.get(t.language, len(lang_filter)))
+        return filtered
+
+    def _auto_select_from_candidates(
+        self, candidates: list[Track],
     ) -> list[Track] | None:
         """If exactly one track per language -> auto-select.
         If multiple tracks for any language -> return None (caller shows TUI).
         """
-        filtered = self._filter_tracks_by_lang(tracks, lang_filter)
-        if not filtered:
-            return filtered
+        if not candidates:
+            return candidates
 
-        # Group by language
         lang_groups: dict[str, list[Track]] = {}
-        for track in filtered:
+        for track in candidates:
             lang_groups.setdefault(track.language, []).append(track)
 
-        # If any language has more than one track, cannot auto-select
-        for lang, group in lang_groups.items():
+        for group in lang_groups.values():
             if len(group) > 1:
                 return None
 
-        # Exactly one per language -> auto-select all
-        return filtered
+        return candidates
 
     def _build_video_params(self, video: VideoInfo, crop: CropRect | None) -> VideoParams:
         """CQ interpolation, GOP calc, colorspace determination, deinterlace detection."""
@@ -284,6 +293,8 @@ class PlannerService:
             source_height=video.height,
             source_codec=video.codec_name,
             source_bitrate=video.bitrate,
+            sar_num=video.sar_num,
+            sar_den=video.sar_den,
         )
 
     def _build_audio_instruction(self, track: Track, is_default: bool) -> AudioInstruction:

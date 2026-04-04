@@ -37,19 +37,20 @@ def calculate_gop(fps_num: int, fps_den: int) -> int:
     return math.ceil(fps_num / fps_den) * 5
 
 
-def align_crop(w: int, h: int, x: int, y: int) -> CropRect:
-    """Выравнивание crop по сетке 16x8 (требование NVENC).
+def align_dimensions(w: int, h: int, x: int = 0, y: int = 0) -> CropRect:
+    """Align dimensions to multiples of 8 (HEVC CU alignment).
 
-    w округляется вниз до кратного 16, h -- до кратного 8.
-    x и y корректируются чтобы центрировать обрезку: dw // 2, dh // 2.
+    Trims symmetrically: excess pixels split evenly to offset.
     """
-    dw = w % 16
-    dh = h % 8
-    new_w = w - dw
-    new_h = h - dh
-    new_x = x + dw // 2
-    new_y = y + dh // 2
-    return CropRect(w=new_w, h=new_h, x=new_x, y=new_y)
+    trim_w = w % 8
+    trim_h = h % 8
+    return CropRect(
+        w=w - trim_w,
+        h=h - trim_h,
+        x=x + trim_w // 2,
+        y=y + trim_h // 2,
+    )
+
 
 
 def determine_color_space(

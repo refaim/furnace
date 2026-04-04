@@ -44,6 +44,7 @@ from furnace.core.models import (
 _EAC3TO_RE = re.compile(r"^process:\s*(\d+)%$")              # eac3to: "process: 42%"
 _MKVMERGE_RE = re.compile(r"^Progress:\s*(\d+)%$")            # mkvmerge: "Progress: 42%"
 _MKCLEAN_RE = re.compile(r"^Progress\s+(\d)/3:\s*(\d+)%$")    # mkclean: "Progress 1/3:   42%"
+_QAAC_RE = re.compile(r"^\[(\d+(?:\.\d+)?)%\]")               # qaac: "[42.5%] 0:30/1:43"
 
 BAR_WIDTH = 40
 
@@ -499,23 +500,28 @@ class RunApp(App[None]):
         progress_w = self.query_one("#progress", ProgressWidget)
         progress_w.update(message)
 
+    def _set_tool_pct(self, pct: float) -> None:
+        """Update progress percentage, resetting timer if a new tool started."""
+        if pct < self._pct:
+            # Progress went backwards — new tool started
+            self._start_time = time.monotonic()
+        self._encoding = True
+        self._pct = pct
+        self._refresh_progress()
+
     def _do_add_tool_line(self, line: str) -> None:
         stripped = line.strip()
 
         # eac3to: "process: 42%"
         m = _EAC3TO_RE.match(stripped)
         if m:
-            self._encoding = True
-            self._pct = float(m.group(1))
-            self._refresh_progress()
+            self._set_tool_pct(float(m.group(1)))
             return
 
         # mkvmerge: "Progress: 42%"
         m = _MKVMERGE_RE.match(stripped)
         if m:
-            self._encoding = True
-            self._pct = float(m.group(1))
-            self._refresh_progress()
+            self._set_tool_pct(float(m.group(1)))
             return
 
         # mkclean: "Progress 1/3:   42%" → stage 1=0-33%, stage 2=33-66%, stage 3=66-100%
@@ -523,9 +529,13 @@ class RunApp(App[None]):
         if m:
             stage = int(m.group(1))  # 1, 2, or 3
             stage_pct = float(m.group(2))
-            self._encoding = True
-            self._pct = (stage - 1) * 33.3 + stage_pct * 0.333
-            self._refresh_progress()
+            self._set_tool_pct((stage - 1) * 33.3 + stage_pct * 0.333)
+            return
+
+        # qaac: "[42.5%] 0:30/1:43:01.600 (30.5x), ETA 3:20"
+        m = _QAAC_RE.match(stripped)
+        if m:
+            self._set_tool_pct(float(m.group(1)))
             return
 
         output_log = self.query_one("#output", OutputLog)

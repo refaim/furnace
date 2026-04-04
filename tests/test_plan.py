@@ -130,14 +130,15 @@ def make_job(
     )
 
 
-def make_plan(jobs: list[Job] | None = None) -> Plan:
+def make_plan(jobs: list[Job] | None = None, demux_dir: str | None = None) -> Plan:
     return Plan(
-        version="1",
+        version="2",
         furnace_version="0.1.0",
         created_at="2026-04-01T00:00:00",
         source="/src",
         destination="/out",
         vmaf_enabled=False,
+        demux_dir=demux_dir,
         jobs=[make_job()] if jobs is None else jobs,
     )
 
@@ -299,12 +300,12 @@ class TestPlanRoundtrip:
 
 class TestPlanVersionValidation:
     def test_correct_version_loads(self, tmp_path):
-        """Plan with version '1' loads without error."""
+        """Plan with version '2' loads without error."""
         plan = make_plan()
         plan_path = tmp_path / "plan.json"
         save_plan(plan, plan_path)
         loaded = load_plan(plan_path)
-        assert loaded.version == "1"
+        assert loaded.version == "2"
 
     def test_wrong_version_raises(self, tmp_path):
         """Plan with wrong version -> ValueError."""
@@ -445,3 +446,23 @@ class TestAtomicWrite:
         target = subdir / "plan.json"
         atomic_write(target, "content")
         assert target.read_text(encoding="utf-8") == "content"
+
+
+# ---------------------------------------------------------------------------
+# test_plan_demux_dir
+# ---------------------------------------------------------------------------
+
+class TestPlanDemuxDir:
+    def test_roundtrip_with_demux_dir(self, tmp_path):
+        plan = make_plan(demux_dir="/src/.furnace_demux")
+        plan_path = tmp_path / "plan.json"
+        save_plan(plan, plan_path)
+        loaded = load_plan(plan_path)
+        assert loaded.demux_dir == "/src/.furnace_demux"
+
+    def test_roundtrip_without_demux_dir(self, tmp_path):
+        plan = make_plan(demux_dir=None)
+        plan_path = tmp_path / "plan.json"
+        save_plan(plan, plan_path)
+        loaded = load_plan(plan_path)
+        assert loaded.demux_dir is None

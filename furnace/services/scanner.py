@@ -46,6 +46,9 @@ class Scanner:
         for path in sorted(source.rglob("*")):
             if not path.is_file():
                 continue
+            # Skip .furnace_demux directory
+            if ".furnace_demux" in path.parts:
+                continue
             if path.suffix.lower() not in VIDEO_EXTENSIONS:
                 continue
             satellites = self.find_satellites(path)

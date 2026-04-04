@@ -397,7 +397,7 @@ class Executor:
                 distorted=output_path,
                 duration_s=duration_s,
                 on_progress=_vmaf_progress,
-                crop=job.video_params.crop,
+                video_params=job.video_params,
             )
             if vmaf_score is not None:
                 job.vmaf_score = vmaf_score

@@ -34,3 +34,11 @@ class MpvAdapter:
         ]
         logger.info("mpv preview_subtitle cmd: %s", " ".join(cmd))
         subprocess.run(cmd)
+
+    def preview_file(self, path: Path, *, aspect_override: str | None = None) -> None:
+        """mpv file. Blocks until mpv closes."""
+        cmd = [str(self._mpv), str(path)]
+        if aspect_override:
+            cmd.append(f"--video-aspect-override={aspect_override}")
+        logger.info("mpv preview_file cmd: %s", " ".join(cmd))
+        subprocess.run(cmd)

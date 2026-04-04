@@ -5,7 +5,7 @@ import pytest
 from furnace.core.models import ColorSpace, CropRect
 from furnace.core.quality import (
     CQ_ANCHORS,
-    align_crop,
+    align_dimensions,
     calculate_gop,
     determine_color_space,
     interpolate_cq,
@@ -87,54 +87,46 @@ class TestInterpolateCq:
 
 
 # ---------------------------------------------------------------------------
-# test_align_crop
+# test_align_dimensions
 # ---------------------------------------------------------------------------
 
-class TestAlignCrop:
+class TestAlignDimensions:
     def test_already_aligned(self):
-        """Values already aligned -> unchanged w/h, same x/y."""
-        result = align_crop(1920, 1080, 0, 0)
+        """Values already aligned to 8 -> unchanged."""
+        result = align_dimensions(1920, 1080, 0, 0)
         assert result == CropRect(w=1920, h=1080, x=0, y=0)
 
-    def test_16x8_alignment(self):
-        """w not multiple of 16, h not multiple of 8 -> aligned down, x/y adjusted."""
-        # w=1922 -> dw=2 -> new_w=1920, new_x=x+1
-        # h=1082 -> dh=2 -> new_h=1080, new_y=y+1
-        result = align_crop(1922, 1082, 10, 20)
+    def test_8x8_alignment(self):
+        """Both w and h trimmed to multiples of 8, offset centered."""
+        # w=1922 -> trim=2 -> new_w=1920, new_x=x+1
+        # h=1082 -> trim=2 -> new_h=1080, new_y=y+1
+        result = align_dimensions(1922, 1082, 10, 20)
         assert result.w == 1920
         assert result.h == 1080
-        assert result.x == 10 + 1   # dw=2 -> dw//2=1
-        assert result.y == 20 + 1   # dh=2 -> dh//2=1
+        assert result.x == 11
+        assert result.y == 21
 
-    def test_zero_xy(self):
-        """Zero x and y with alignment needed."""
-        result = align_crop(1920, 1082, 0, 0)
+    def test_default_zero_offset(self):
+        """x and y default to 0."""
+        result = align_dimensions(1922, 1082)
+        assert result.x == 1
+        assert result.y == 1
+
+    def test_centering_integer_division(self):
+        """trim=1 -> trim//2=0 (floors)."""
+        result = align_dimensions(1921, 1080)
         assert result.w == 1920
-        assert result.h == 1080
-        assert result.x == 0       # dw=0, x stays 0
-        assert result.y == 1       # dh=2, dh//2=1
+        assert result.x == 0
 
-    def test_centering_via_dw_half(self):
-        """dw=1 -> dw//2=0 (integer division floors), not 0.5."""
-        result = align_crop(1921, 1080, 0, 0)
-        assert result.w == 1920    # dw=1 -> 1921-1=1920
-        assert result.x == 0      # dw//2=0 (1//2=0)
-
-    def test_large_alignment_offset(self):
-        """w=1935 -> dw=15 -> new_w=1920, new_x=x+7."""
-        result = align_crop(1935, 1080, 5, 5)
-        assert result.w == 1920
-        assert result.x == 5 + 7   # dw=15 -> 15//2=7
-
-    def test_h_alignment_dh_7(self):
-        """h=1087 -> dh=7 -> new_h=1080, new_y=y+3."""
-        result = align_crop(1920, 1087, 0, 10)
-        assert result.h == 1080
-        assert result.y == 10 + 3  # dh=7 -> 7//2=3
+    def test_trim_7(self):
+        """w=1007 -> trim=7 -> new_w=1000, offset=3."""
+        result = align_dimensions(1007, 1080, 5, 0)
+        assert result.w == 1000
+        assert result.x == 5 + 3
 
     def test_zero_values(self):
         """All zeros -> CropRect(0,0,0,0)."""
-        result = align_crop(0, 0, 0, 0)
+        result = align_dimensions(0, 0, 0, 0)
         assert result == CropRect(w=0, h=0, x=0, y=0)
 
 

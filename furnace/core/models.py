@@ -76,6 +76,11 @@ class ColorSpace(enum.Enum):
     BT2020 = "bt2020"
 
 
+class DiscType(enum.Enum):
+    DVD = "dvd"
+    BLURAY = "bluray"
+
+
 @dataclass(frozen=True)
 class HdrMetadata:
     """HDR10 static metadata. None означает отсутствие."""
@@ -100,6 +105,21 @@ class ScanResult:
     main_file: Path
     satellite_files: list[Path]
     output_path: Path
+
+
+@dataclass(frozen=True)
+class DiscSource:
+    """A detected disc structure in the source directory."""
+    path: Path
+    disc_type: DiscType
+
+
+@dataclass(frozen=True)
+class DiscTitle:
+    """One playlist/VTS entry from eac3to listing."""
+    number: int
+    duration_s: float
+    raw_label: str
 
 
 @dataclass
@@ -149,6 +169,8 @@ class VideoInfo:
     hdr: HdrMetadata
     source_file: Path
     bitrate: int = 0                   # video stream bitrate in bps
+    sar_num: int = 1                   # sample aspect ratio numerator
+    sar_den: int = 1                   # sample aspect ratio denominator
 
 
 @dataclass
@@ -217,6 +239,8 @@ class VideoParams:
     source_height: int
     source_codec: str = ""             # ffprobe codec_name (h264, hevc, mpeg2video...)
     source_bitrate: int = 0            # video stream bitrate in bps (from ffprobe)
+    sar_num: int = 1                   # sample aspect ratio numerator
+    sar_den: int = 1                   # sample aspect ratio denominator
 
 
 @dataclass
@@ -247,4 +271,5 @@ class Plan:
     source: str                        # исходный путь/директория
     destination: str                   # выходная директория
     vmaf_enabled: bool
+    demux_dir: str | None = None       # path to .furnace_demux/ or None
     jobs: list[Job] = field(default_factory=list)

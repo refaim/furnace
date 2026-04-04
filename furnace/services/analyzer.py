@@ -195,6 +195,17 @@ class Analyzer:
         side_data = stream.get("side_data_list")
         hdr = detect_hdr(stream, side_data)
 
+        # SAR (sample aspect ratio)
+        sar_num, sar_den = 1, 1
+        sar_raw = stream.get("sample_aspect_ratio", "1:1")
+        if sar_raw and ":" in sar_raw:
+            sar_parts = sar_raw.split(":")
+            try:
+                sar_num = int(sar_parts[0])
+                sar_den = int(sar_parts[1])
+            except (ValueError, IndexError):
+                sar_num, sar_den = 1, 1
+
         return VideoInfo(
             index=index,
             codec_name=codec_name,
@@ -213,6 +224,8 @@ class Analyzer:
             hdr=hdr,
             source_file=path,
             bitrate=bitrate,
+            sar_num=sar_num,
+            sar_den=sar_den,
         )
 
     def _parse_audio_tracks(self, streams: list[dict[str, Any]], path: Path) -> list[Track]:

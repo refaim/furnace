@@ -21,7 +21,7 @@ from .core.models import (
     VideoParams,
 )
 
-PLAN_VERSION = "1"
+PLAN_VERSION = "2"
 
 
 class _PlanEncoder(json.JSONEncoder):
@@ -93,6 +93,8 @@ def _load_video_params(raw: dict[str, Any]) -> VideoParams:
         source_height=raw["source_height"],
         source_codec=raw.get("source_codec", ""),
         source_bitrate=raw.get("source_bitrate", 0),
+        sar_num=raw.get("sar_num", 1),
+        sar_den=raw.get("sar_den", 1),
     )
 
 
@@ -158,6 +160,7 @@ def load_plan(path: Path) -> Plan:
         source=raw["source"],
         destination=raw["destination"],
         vmaf_enabled=raw["vmaf_enabled"],
+        demux_dir=raw.get("demux_dir"),
         jobs=[_load_job(j) for j in raw.get("jobs", [])],
     )
 

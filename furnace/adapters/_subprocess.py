@@ -18,6 +18,7 @@ def run_tool(
     cmd: Sequence[str | Path],
     on_output: OutputCallback = None,
     log_path: Path | None = None,
+    cwd: Path | None = None,
 ) -> tuple[int, str]:
     """Run a subprocess, streaming both stdout and stderr to callback in real-time.
 
@@ -41,7 +42,10 @@ def run_tool(
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         bufsize=1,
+        cwd=str(cwd) if cwd else None,
     )
 
     all_lines: list[str] = []

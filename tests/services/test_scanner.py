@@ -214,3 +214,28 @@ class TestBuildOutputPath:
         output = scanner.build_output_path(source, tmp_path, dest, None)
 
         assert output.parent == dest
+
+
+# ---------------------------------------------------------------------------
+# test_scanner_ignores_demux_dir
+# ---------------------------------------------------------------------------
+
+class TestScannerIgnoresDemuxDir:
+    def test_scanner_ignores_furnace_demux(self, tmp_path: Path) -> None:
+        """Scanner skips .furnace_demux directory."""
+        movie = tmp_path / "movie.mkv"
+        movie.touch()
+        demux_dir = tmp_path / ".furnace_demux"
+        demux_dir.mkdir()
+        demuxed = demux_dir / "demuxed.mkv"
+        demuxed.touch()
+
+        dest = tmp_path / "output"
+        dest.mkdir()
+
+        scanner = make_scanner()
+        results = scanner.scan(tmp_path, dest)
+
+        found_files = [r.main_file for r in results]
+        assert movie in found_files
+        assert demuxed not in found_files

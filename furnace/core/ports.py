@@ -4,7 +4,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
-from .models import CropRect, VideoParams
+from .models import CropRect, DiscTitle, VideoParams
 
 
 @runtime_checkable
@@ -53,11 +53,11 @@ class Encoder(Protocol):
         distorted: Path,
         duration_s: float,
         on_progress: Callable[[float, str], None] | None = None,
-        crop: CropRect | None = None,
+        video_params: VideoParams | None = None,
     ) -> float | None:
         """Calculate VMAF score. Returns mean VMAF or None on failure.
 
-        If crop is provided, reference is cropped to match distorted dimensions.
+        If video_params is provided, reference is cropped/scaled to match distorted dimensions.
         """
         ...
 
@@ -169,4 +169,23 @@ class Previewer(Protocol):
 
     def preview_subtitle(self, video_path: Path, sub_path: Path, stream_index: int) -> None:
         """Open mpv with the specified subtitles."""
+        ...
+
+
+@runtime_checkable
+class DiscDemuxerPort(Protocol):
+    """Demux disc structures (DVD/Blu-ray) to MKV."""
+
+    def list_titles(self, disc_path: Path) -> list[DiscTitle]:
+        """List titles from a disc structure."""
+        ...
+
+    def demux_title(
+        self,
+        disc_path: Path,
+        title_num: int,
+        output_dir: Path,
+        on_progress: Callable[[str], None] | None = None,
+    ) -> list[Path]:
+        """Demux one title to MKV file(s) in output_dir. Returns paths to created files."""
         ...

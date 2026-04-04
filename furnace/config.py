@@ -17,6 +17,7 @@ class ToolPaths:
     eac3to: Path
     qaac64: Path
     mpv: Path
+    makemkvcon: Path
 
 
 def load_config(config_path: Path | None = None) -> ToolPaths:
@@ -61,7 +62,7 @@ def load_config(config_path: Path | None = None) -> ToolPaths:
 
     tools_section: dict[str, Any] = data.get("tools", {})
 
-    tool_names = ("ffmpeg", "ffprobe", "mkvmerge", "mkvpropedit", "mkclean", "eac3to", "qaac64", "mpv")
+    tool_names = ("ffmpeg", "ffprobe", "mkvmerge", "mkvpropedit", "mkclean", "eac3to", "qaac64", "mpv", "makemkvcon")
     resolved: dict[str, Path] = {}
 
     for name in tool_names:
@@ -83,4 +84,5 @@ def load_config(config_path: Path | None = None) -> ToolPaths:
         eac3to=resolved["eac3to"],
         qaac64=resolved["qaac64"],
         mpv=resolved["mpv"],
+        makemkvcon=resolved["makemkvcon"],
     )

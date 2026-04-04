@@ -64,21 +64,31 @@ def _start_esc_watcher(shutdown_event: threading.Event) -> None:
 def plan(
     source: Path = typer.Argument(..., help="Video file or directory"),
     output: Path = typer.Option(..., "-o", help="Output directory"),
-    lang: list[str] | None = typer.Option(None, "--lang", help="Language filter (e.g. rus eng)"),
+    audio_lang: str = typer.Option(..., "--audio-lang", "-al", help="Audio languages, comma-separated (e.g. jpn or rus,eng)"),
+    sub_lang: str = typer.Option(..., "--sub-lang", "-sl", help="Subtitle languages, comma-separated (e.g. rus,eng)"),
     names: Path | None = typer.Option(None, "--names", help="Rename map file"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Show plan without saving"),
     vmaf: bool = typer.Option(False, "--vmaf", help="Enable VMAF"),
     config: Path | None = typer.Option(None, "--config", help="Path to config file"),
 ) -> None:
     """Scan source, show TUI for track selection, save JSON plan."""
+    # Parse comma-separated language lists
+    audio_lang_list = [x.strip() for x in audio_lang.split(",") if x.strip()]
+    sub_lang_list = [x.strip() for x in sub_lang.split(",") if x.strip()]
+
     # Lazy imports to avoid circular imports
+    from .adapters.eac3to import Eac3toAdapter
     from .adapters.ffmpeg import FFmpegAdapter
+    from .adapters.makemkv import MakemkvAdapter
     from .adapters.mpv import MpvAdapter
     from .config import load_config
+    from .core.models import DiscTitle, DiscSource, DiscType, Movie, ScanResult, Track, TrackType
     from .plan import save_plan
     from .services.analyzer import Analyzer
+    from .services.disc_demuxer import DiscDemuxer
     from .services.planner import PlannerService
     from .services.scanner import Scanner
+    from .ui.tui import FileSelection, FileSelectorScreen, PlaylistSelectorScreen, TrackSelectorScreen
 
     # 1. Load config
     cfg = load_config(config)
@@ -88,38 +98,181 @@ def plan(
     _setup_logging(output)
 
     logger.debug(
-        "plan command started: source=%s output=%s lang=%s names=%s dry_run=%s vmaf=%s",
-        source, output, lang, names, dry_run, vmaf,
+        "plan command started: source=%s output=%s audio_lang=%s sub_lang=%s names=%s dry_run=%s vmaf=%s",
+        source, output, audio_lang, sub_lang, names, dry_run, vmaf,
     )
 
     # 3. Create adapters (only those needed for planning)
     ffmpeg_adapter = FFmpegAdapter(cfg.ffmpeg, cfg.ffprobe)
     mpv_adapter = MpvAdapter(cfg.mpv)
 
-    # 4. Load names map if provided
+    import re
+    import sys
+    _progress_re = re.compile(r"(?:Current progress|^\d+%$|^analyze:|^process:|^Progress:)", re.IGNORECASE)
+    _pct_re = re.compile(r"(\d+)%")
+
+    def _console_output(line: str) -> None:
+        """Print tool output to console. Progress lines shown inline on one line."""
+        if _progress_re.search(line):
+            pct_match = _pct_re.search(line)
+            if pct_match:
+                sys.stderr.write(f"\r[furnace] {pct_match.group(1)}%  ")
+                sys.stderr.flush()
+        else:
+            sys.stderr.write("\r\033[K")  # clear progress line
+            sys.stderr.flush()
+            typer.echo(line)
+
+    eac3to_adapter = Eac3toAdapter(cfg.eac3to, on_output=_console_output)
+    makemkv_adapter = MakemkvAdapter(cfg.makemkvcon, on_output=_console_output)
+
+    # 4. Disc demux phase
+    disc_demuxer = DiscDemuxer(bd_port=eac3to_adapter, dvd_port=makemkv_adapter, mkvmerge_path=cfg.mkvmerge)
+    typer.echo("[furnace] Scanning for disc structures...")
+    detected_discs = disc_demuxer.detect(source)
+    demux_dir: Path | None = None
+    demuxed_paths: list[Path] = []
+    sar_override_paths: set[Path] = set()
+
+    if detected_discs and not dry_run:
+        from textual.app import App, ComposeResult
+        from textual.widgets import Header
+
+        typer.echo(f"[furnace] Found {len(detected_discs)} disc(s)")
+
+        # For each disc, list titles and let user pick
+        selected_titles: dict[DiscSource, list[DiscTitle]] = {}
+        for disc in detected_discs:
+            typer.echo(f"[furnace] Listing titles for {disc.disc_type.value.upper()}: {disc.path}")
+            playlists = disc_demuxer.list_titles(disc)
+            if not playlists:
+                logger.warning("No playlists found for disc at %s", disc.path)
+                continue
+
+            # Auto-select if only one title, otherwise show TUI
+            if len(playlists) == 1:
+                selected_titles[disc] = playlists
+                continue
+
+            disc_label = disc.path.parent.name
+            selected_playlists_for_disc: list[DiscTitle] = []
+
+            def _run_playlist_selector(
+                _disc_label: str = disc_label,
+                _playlists: list[DiscTitle] = playlists,
+            ) -> None:
+                nonlocal selected_playlists_for_disc
+
+                class _PlaylistApp(App[list[DiscTitle]]):
+                    def compose(self) -> ComposeResult:
+                        yield Header()
+
+                    def on_mount(self) -> None:
+                        def _on_dismiss(result: list[DiscTitle] | None) -> None:
+                            nonlocal selected_playlists_for_disc
+                            selected_playlists_for_disc = result or []
+                            self.exit(selected_playlists_for_disc)
+
+                        self.push_screen(
+                            PlaylistSelectorScreen(disc_label=_disc_label, playlists=_playlists),
+                            _on_dismiss,
+                        )
+
+                _PlaylistApp().run()
+
+            _run_playlist_selector()
+            if selected_playlists_for_disc:
+                selected_titles[disc] = selected_playlists_for_disc
+
+        # Demux selected titles
+        if selected_titles:
+            total_titles = sum(len(t) for t in selected_titles.values())
+            typer.echo(f"[furnace] Demuxing {total_titles} title(s)...")
+            demux_dir = source / ".furnace_demux"
+            demuxed_paths = disc_demuxer.demux(
+                discs=detected_discs,
+                selected_titles=selected_titles,
+                demux_dir=demux_dir,
+                on_progress=_console_output,
+            )
+
+            # Track which demuxed files came from DVD
+            dvd_demuxed: set[Path] = set()
+            for disc in detected_discs:
+                if disc.disc_type == DiscType.DVD and disc in selected_titles:
+                    for p in demuxed_paths:
+                        disc_label = disc.path.parent.name
+                        if p.name.startswith(disc_label):
+                            dvd_demuxed.add(p)
+
+            # Show file selector for DVD files (SAR override) or if >1 file
+            if dvd_demuxed or len(demuxed_paths) > 1:
+                file_infos: list[tuple[Path, float, int]] = []
+                for mkv_path in demuxed_paths:
+                    probe_data = ffmpeg_adapter.probe(mkv_path)
+                    fmt = probe_data.get("format", {})
+                    duration_s = float(fmt.get("duration", 0))
+                    size_bytes = int(fmt.get("size", 0))
+                    file_infos.append((mkv_path, duration_s, size_bytes))
+
+                file_selection: FileSelection | None = None
+
+                class _FileApp(App[FileSelection]):
+                    def compose(self) -> ComposeResult:
+                        yield Header()
+
+                    def on_mount(self) -> None:
+                        def _on_dismiss(result: FileSelection | None) -> None:
+                            nonlocal file_selection
+                            file_selection = result
+                            self.exit(result)
+
+                        self.push_screen(
+                            FileSelectorScreen(
+                                files=file_infos,
+                                dvd_files=dvd_demuxed,
+                                preview_cb=lambda p, a: mpv_adapter.preview_file(p, aspect_override=a),
+                            ),
+                            _on_dismiss,
+                        )
+
+                _FileApp().run()
+                if file_selection is not None:
+                    demuxed_paths = file_selection.selected
+                    sar_override_paths = file_selection.sar_override
+
+    # 5. Load names map if provided
     names_map: dict[str, str] | None = None
     if names is not None:
         import json
         with names.open("r", encoding="utf-8") as f:
             names_map = json.load(f)
 
-    # 5. Scanner.scan() -> list[ScanResult]
+    # 6. Scanner.scan() -> list[ScanResult]
     scanner = Scanner(prober=ffmpeg_adapter)
     scan_results = scanner.scan(source, output, names_map)
 
-    # 6. Analyzer.analyze() -> list[tuple[Movie, Path]]
+    # Add demuxed MKVs as extra ScanResult entries
+    for mkv_path in demuxed_paths:
+        scan_results.append(ScanResult(
+            main_file=mkv_path,
+            satellite_files=[],
+            output_path=output / mkv_path.stem / (mkv_path.stem + ".mkv"),
+        ))
+
+    # 7. Analyzer.analyze() -> list[tuple[Movie, Path]]
     analyzer = Analyzer(prober=ffmpeg_adapter)
-    from .core.models import Movie
     movies_with_paths: list[tuple[Movie, Path]] = []
     for sr in scan_results:
         movie = analyzer.analyze(sr)
         if movie is not None:
+            # Apply SAR override for DVD files marked by user
+            if sr.main_file in sar_override_paths:
+                movie.video.sar_num = 64
+                movie.video.sar_den = 45
             movies_with_paths.append((movie, sr.output_path))
 
-    # 7. PlannerService.create_plan() with TUI track selector
-    from .core.models import Track, TrackType
-    from .ui.tui import TrackSelectorScreen
-
+    # 8. PlannerService.create_plan() with TUI track selector
     def _select_tracks_tui(movie: Movie, candidates: list[Track], track_type: TrackType) -> list[Track]:
         """Run Textual TrackSelectorScreen synchronously for user to pick tracks."""
         from textual.app import App, ComposeResult
@@ -157,12 +310,17 @@ def plan(
     )
     plan_obj = planner.create_plan(
         movies=movies_with_paths,
-        lang_filter=lang,
+        audio_lang_filter=audio_lang_list,
+        sub_lang_filter=sub_lang_list,
         vmaf_enabled=vmaf,
         dry_run=dry_run,
     )
 
-    # 8. save_plan() if not dry_run
+    # Set demux_dir on the plan if disc demux happened
+    if demux_dir is not None:
+        plan_obj.demux_dir = str(demux_dir)
+
+    # 9. save_plan() if not dry_run
     if dry_run:
         pending = [j for j in plan_obj.jobs if j.status.value == "pending"]
         typer.echo(f"Dry run: {len(plan_obj.jobs)} job(s) planned, {len(pending)} pending. Plan NOT saved.")
@@ -263,5 +421,16 @@ def run(
     console = Console()
     printer = ReportPrinter()
     printer.print_report(plan_obj, console)
+
+    # Cleanup demux directory after successful run
+    if plan_obj.demux_dir:
+        from .core.models import JobStatus
+        demux_path = Path(plan_obj.demux_dir)
+        if demux_path.exists():
+            all_done = all(j.status == JobStatus.DONE for j in plan_obj.jobs)
+            if all_done:
+                import shutil
+                shutil.rmtree(demux_path, ignore_errors=True)
+                logger.info("Cleaned up demux directory: %s", demux_path)
 
     logger.debug("run command finished")

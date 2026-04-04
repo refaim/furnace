@@ -11,9 +11,60 @@ from pathlib import Path
 from typing import Any
 
 from ..core.models import CropRect, VideoParams
+from ..core.quality import align_dimensions
 from ._subprocess import OutputCallback, run_tool
 
 logger = logging.getLogger(__name__)
+
+
+def _build_vf_chain(vp: VideoParams, *, use_cuda: bool = False) -> list[str]:
+    """Build ffmpeg video filter chain from VideoParams.
+
+    Handles deinterlace, crop, SAR correction, and final alignment in correct order.
+    use_cuda selects CUDA filter variants (bwdif_cuda, scale_cuda).
+    Final output dimensions are guaranteed to be multiples of 8.
+    """
+    parts: list[str] = []
+    # Track current dimensions through the chain
+    cur_w = vp.source_width
+    cur_h = vp.source_height
+    last_is_crop = False
+
+    if vp.deinterlace:
+        if use_cuda:
+            parts.append("bwdif_cuda=mode=send_frame:parity=auto")
+        else:
+            parts.append("bwdif=mode=send_frame:parity=auto")
+        last_is_crop = False
+
+    if vp.crop is not None:
+        c = vp.crop
+        parts.append(f"crop={c.w}:{c.h}:{c.x}:{c.y}")
+        cur_w, cur_h = c.w, c.h
+        last_is_crop = True
+
+    if vp.sar_num != vp.sar_den:
+        display_w = round(cur_w * vp.sar_num / vp.sar_den)
+        if use_cuda:
+            parts.append(f"scale_cuda={display_w}:{cur_h}")
+        else:
+            parts.append(f"scale={display_w}:{cur_h}")
+        parts.append("setsar=1:1")
+        cur_w = display_w
+        last_is_crop = False
+
+    # Align final dimensions to multiples of 8
+    if last_is_crop and vp.crop is not None:
+        aligned = align_dimensions(vp.crop.w, vp.crop.h, vp.crop.x, vp.crop.y)
+        if aligned.w != vp.crop.w or aligned.h != vp.crop.h:
+            parts.pop()
+            parts.append(f"crop={aligned.w}:{aligned.h}:{aligned.x}:{aligned.y}")
+    else:
+        aligned = align_dimensions(cur_w, cur_h)
+        if aligned.w != cur_w or aligned.h != cur_h:
+            parts.append(f"crop={aligned.w}:{aligned.h}:{aligned.x}:{aligned.y}")
+
+    return parts
 
 
 class FFmpegAdapter:
@@ -246,9 +297,11 @@ class FFmpegAdapter:
         - CUDA: when source_codec is nvdec-supported AND no crop (no crop_cuda in ffmpeg)
         - CPU:  otherwise (fallback)
         """
+        needs_sar_fix = vp.sar_num != vp.sar_den
         use_cuda = (
             vp.source_codec in self._NVDEC_CODECS
             and vp.crop is None
+            and not needs_sar_fix
         )
 
         cmd: list[str] = [str(self._ffmpeg), "-hide_banner", "-loglevel", "warning"]
@@ -279,17 +332,8 @@ class FFmpegAdapter:
             "-g", str(vp.gop),
         ]
 
-        # Video filters (CUDA or CPU variants)
-        vf_parts: list[str] = []
-        if vp.deinterlace:
-            if use_cuda:
-                vf_parts.append("bwdif_cuda=mode=send_frame:parity=auto")
-            else:
-                vf_parts.append("bwdif=mode=send_frame:parity=auto")
-        if vp.crop is not None:
-            # crop is always CPU path (use_cuda is False when crop is set)
-            c = vp.crop
-            vf_parts.append(f"crop={c.w}:{c.h}:{c.x}:{c.y}")
+        # Video filters
+        vf_parts = _build_vf_chain(vp, use_cuda=use_cuda)
         if vf_parts:
             cmd += ["-vf", ",".join(vf_parts)]
 
@@ -343,11 +387,11 @@ class FFmpegAdapter:
         distorted: Path,
         duration_s: float,
         on_progress: Callable[[float, str], None] | None = None,
-        crop: CropRect | None = None,
+        video_params: VideoParams | None = None,
     ) -> float | None:
         """Calculate VMAF score using libvmaf filter. Returns mean VMAF or None.
 
-        If crop is provided, reference is cropped to match distorted dimensions.
+        If video_params is provided, reference is cropped/scaled to match distorted dimensions.
         """
         import json as _json
         import tempfile
@@ -358,10 +402,15 @@ class FFmpegAdapter:
         log_path_lavfi = tmp.name.replace("\\", "/").replace(":", "\\\\:")
         n_threads = max(1, (os.cpu_count() or 4) - 2)
 
-        # If crop was applied to distorted, apply same crop to reference for matching dimensions
-        if crop is not None:
+        # Build reference filter chain — same as encode (CPU path)
+        ref_filters: list[str] = []
+        if video_params is not None:
+            ref_filters = _build_vf_chain(video_params, use_cuda=False)
+
+        if ref_filters:
+            chain = ",".join(ref_filters)
             lavfi = (
-                f"[0:v]crop={crop.w}:{crop.h}:{crop.x}:{crop.y}[ref];"
+                f"[0:v]{chain}[ref];"
                 f"[ref][1:v]libvmaf=log_fmt=json:n_threads={n_threads}:log_path={log_path_lavfi}"
             )
         else:

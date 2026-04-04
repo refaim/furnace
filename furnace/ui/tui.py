@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 
 from textual.app import App, ComposeResult
@@ -9,7 +10,7 @@ from textual.containers import Container
 from textual.screen import Screen
 from textual.widgets import Footer, Header, Input, ListItem, ListView, Static
 
-from furnace.core.models import CropRect, Movie, Track, TrackType
+from furnace.core.models import CropRect, DiscTitle, Movie, Track, TrackType
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -183,6 +184,212 @@ class TrackSelectorScreen(Screen[list[Track]]):
         """Handle click on the Done label."""
         # The Static with id btn-done triggers action_done via the D keybinding
         # No additional click handling needed — D key is the primary interaction
+
+
+# ---------------------------------------------------------------------------
+# PlaylistSelectorScreen
+# ---------------------------------------------------------------------------
+
+class PlaylistSelectorScreen(Screen[list[DiscTitle]]):
+    """Screen for selecting disc playlists to demux.
+
+    Pre-selects playlists > 10 minutes.
+    """
+
+    BINDINGS = [
+        Binding("up", "move_up", "Up", show=False),
+        Binding("down", "move_down", "Down", show=False),
+        Binding("space", "toggle_item", "Toggle"),
+        Binding("d", "done", "Done"),
+    ]
+
+    MIN_DURATION_S = 600  # 10 minutes
+
+    def __init__(self, disc_label: str, playlists: list[DiscTitle]) -> None:
+        super().__init__()
+        self._disc_label = disc_label
+        self._playlists = playlists
+        self._selected: list[bool] = [
+            p.duration_s >= self.MIN_DURATION_S for p in playlists
+        ]
+        self._cursor: int = 0
+
+    def compose(self) -> ComposeResult:
+        yield Header()
+        yield Static(
+            f"Disc: {self._disc_label}  |  Select playlists to demux  (Space=toggle  D=done)",
+            id="playlist-hint",
+        )
+
+        items: list[ListItem] = []
+        for i in range(len(self._playlists)):
+            label = self._render_line(i)
+            items.append(ListItem(Static(label, id=f"pl-label-{i}"), id=f"pl-item-{i}"))
+
+        yield ListView(*items, id="playlist-list")
+        yield Footer()
+
+    def _render_line(self, index: int) -> str:
+        pl = self._playlists[index]
+        mark = "x" if self._selected[index] else " "
+        duration = _fmt_duration(pl.duration_s)
+        return f"\\[{mark}]  {pl.raw_label}  ({duration})"
+
+    def _refresh_item(self, index: int) -> None:
+        label_widget = self.query_one(f"#pl-label-{index}", Static)
+        label_widget.update(self._render_line(index))
+
+    def action_move_up(self) -> None:
+        lv = self.query_one("#playlist-list", ListView)
+        lv.action_cursor_up()
+        self._cursor = max(0, self._cursor - 1)
+
+    def action_move_down(self) -> None:
+        lv = self.query_one("#playlist-list", ListView)
+        lv.action_cursor_down()
+        self._cursor = min(len(self._playlists) - 1, self._cursor + 1)
+
+    def action_toggle_item(self) -> None:
+        if not self._playlists:
+            return
+        self._selected[self._cursor] = not self._selected[self._cursor]
+        self._refresh_item(self._cursor)
+
+    def action_done(self) -> None:
+        result = [p for p, sel in zip(self._playlists, self._selected) if sel]
+        self.dismiss(result)
+
+    def on_list_view_highlighted(self, event: ListView.Highlighted) -> None:
+        if event.item is not None:
+            item_id = event.item.id or ""
+            if item_id.startswith("pl-item-"):
+                try:
+                    self._cursor = int(item_id.removeprefix("pl-item-"))
+                except ValueError:
+                    pass
+
+
+# ---------------------------------------------------------------------------
+# FileSelection result
+# ---------------------------------------------------------------------------
+
+@dataclass
+class FileSelection:
+    """Result from FileSelectorScreen."""
+    selected: list[Path]
+    sar_override: set[Path]  # files with SAR override (64:45)
+
+
+# ---------------------------------------------------------------------------
+# FileSelectorScreen
+# ---------------------------------------------------------------------------
+
+class FileSelectorScreen(Screen[FileSelection]):
+    """Screen for selecting demuxed MKV files to process.
+
+    All files pre-selected. DVD files can be marked for SAR override.
+    """
+
+    BINDINGS = [
+        Binding("up", "move_up", "Up", show=False),
+        Binding("down", "move_down", "Down", show=False),
+        Binding("space", "toggle_item", "Toggle"),
+        Binding("s", "toggle_sar", "SAR fix"),
+        Binding("p", "preview", "Preview"),
+        Binding("d", "done", "Done"),
+    ]
+
+    def __init__(
+        self,
+        files: list[tuple[Path, float, int]],  # (path, duration_s, size_bytes)
+        dvd_files: set[Path] | None = None,    # which files are from DVD (SAR toggle available)
+        preview_cb: Callable[[Path, str | None], None] | None = None,  # (path, aspect_override)
+    ) -> None:
+        super().__init__()
+        self._files = files
+        self._dvd_files = dvd_files or set()
+        self._preview_cb = preview_cb
+        self._selected: list[bool] = [True] * len(files)
+        self._sar_override: list[bool] = [False] * len(files)
+        self._cursor: int = 0
+
+    def compose(self) -> ComposeResult:
+        yield Header()
+        has_dvd = any(f[0] in self._dvd_files for f in self._files)
+        hint = "Select files  (Space=toggle  P=preview"
+        if has_dvd:
+            hint += "  S=SAR fix"
+        hint += "  D=done)"
+        yield Static(hint, id="file-hint")
+
+        items: list[ListItem] = []
+        for i in range(len(self._files)):
+            label = self._render_line(i)
+            items.append(ListItem(Static(label, id=f"file-label-{i}"), id=f"file-item-{i}"))
+
+        yield ListView(*items, id="file-list")
+        yield Footer()
+
+    def _render_line(self, index: int) -> str:
+        path, duration_s, size_bytes = self._files[index]
+        mark = "x" if self._selected[index] else " "
+        duration = _fmt_duration(duration_s)
+        size = _fmt_size(size_bytes)
+        sar_tag = "  SAR" if self._sar_override[index] else ""
+        return f"\\[{mark}]  {path.name}  |  {duration}  {size}{sar_tag}"
+
+    def _refresh_item(self, index: int) -> None:
+        label_widget = self.query_one(f"#file-label-{index}", Static)
+        label_widget.update(self._render_line(index))
+
+    def action_move_up(self) -> None:
+        lv = self.query_one("#file-list", ListView)
+        lv.action_cursor_up()
+        self._cursor = max(0, self._cursor - 1)
+
+    def action_move_down(self) -> None:
+        lv = self.query_one("#file-list", ListView)
+        lv.action_cursor_down()
+        self._cursor = min(len(self._files) - 1, self._cursor + 1)
+
+    def action_toggle_item(self) -> None:
+        if not self._files:
+            return
+        self._selected[self._cursor] = not self._selected[self._cursor]
+        self._refresh_item(self._cursor)
+
+    def action_toggle_sar(self) -> None:
+        if not self._files:
+            return
+        path = self._files[self._cursor][0]
+        if path not in self._dvd_files:
+            return
+        self._sar_override[self._cursor] = not self._sar_override[self._cursor]
+        self._refresh_item(self._cursor)
+
+    def action_preview(self) -> None:
+        if not self._files or self._preview_cb is None:
+            return
+        path = self._files[self._cursor][0]
+        aspect = "16:9" if self._sar_override[self._cursor] else None
+        self._preview_cb(path, aspect)
+
+    def action_done(self) -> None:
+        selected = [f[0] for f, sel in zip(self._files, self._selected) if sel]
+        sar_set = {
+            f[0] for f, sel, sar in zip(self._files, self._selected, self._sar_override)
+            if sel and sar
+        }
+        self.dismiss(FileSelection(selected=selected, sar_override=sar_set))
+
+    def on_list_view_highlighted(self, event: ListView.Highlighted) -> None:
+        if event.item is not None:
+            item_id = event.item.id or ""
+            if item_id.startswith("file-item-"):
+                try:
+                    self._cursor = int(item_id.removeprefix("file-item-"))
+                except ValueError:
+                    pass
 
 
 # ---------------------------------------------------------------------------
