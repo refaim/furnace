@@ -58,12 +58,8 @@ def _fmt_time(seconds: float) -> str:
 
 
 def _fmt_size(n: int) -> str:
-    val = float(n)
-    for unit in ("B", "KB", "MB", "GB"):
-        if val < 1024:
-            return f"{val:.0f} {unit}"
-        val /= 1024
-    return f"{val:.1f} TB"
+    mb = n / (1024 * 1024)
+    return f"{mb:,.0f} MB"
 
 
 def _fmt_bitrate(bps: int | None) -> str:

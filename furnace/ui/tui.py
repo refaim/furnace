@@ -16,12 +16,9 @@ from furnace.core.models import CropRect, Movie, Track, TrackType
 # ---------------------------------------------------------------------------
 
 def _fmt_size(n: int) -> str:
-    """Human-readable file size."""
-    for unit in ("B", "KB", "MB", "GB"):
-        if n < 1024:
-            return f"{n:.0f} {unit}"
-        n /= 1024  # type: ignore[assignment]
-    return f"{n:.1f} TB"
+    """File size in MB."""
+    mb = n / (1024 * 1024)
+    return f"{mb:,.0f} MB"
 
 
 def _fmt_duration(s: float) -> str:

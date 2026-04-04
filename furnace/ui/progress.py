@@ -12,12 +12,8 @@ from furnace.core.models import JobStatus, Plan
 def _fmt_size(n: int | None) -> str:
     if n is None or n == 0:
         return "?"
-    val = float(n)
-    for unit in ("B", "KB", "MB", "GB"):
-        if val < 1024:
-            return f"{val:.0f} {unit}"
-        val /= 1024
-    return f"{val:.1f} TB"
+    mb = n / (1024 * 1024)
+    return f"{mb:,.0f} MB"
 
 
 class ReportPrinter:
