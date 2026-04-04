@@ -1,0 +1,18 @@
+# furnace.toml — tool paths for Furnace
+# Copy this file to furnace.toml and adjust paths to your system.
+#
+# Search order:
+#   1. --config flag
+#   2. furnace.toml in current directory
+#   3. %APPDATA%\furnace\furnace.toml
+
+[tools]
+ffmpeg      = "C:\\Tools\\ffmpeg\\ffmpeg.exe"
+ffprobe     = "C:\\Tools\\ffmpeg\\ffprobe.exe"
+mkvmerge    = "C:\\Tools\\MKVToolNix\\mkvmerge.exe"
+mkvpropedit = "C:\\Tools\\MKVToolNix\\mkvpropedit.exe"
+mkclean     = "C:\\Tools\\mkclean\\mkclean.exe"
+eac3to      = "C:\\Tools\\eac3to\\eac3to.exe"
+qaac64      = "C:\\Tools\\qaac\\qaac64.exe"
+mpv         = "C:\\Tools\\mpv\\mpv.exe"
+makemkvcon  = "C:\\Program Files (x86)\\MakeMKV\\makemkvcon64.exe"
