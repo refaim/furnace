@@ -67,6 +67,49 @@ def _build_vf_chain(vp: VideoParams, *, use_cuda: bool = False) -> list[str]:
     return parts
 
 
+def _build_encoder_settings(vp: VideoParams, *, use_cuda: bool, ffmpeg_version: str = "") -> str:
+    """Build ENCODER_SETTINGS string for MKV global tag.
+
+    Format: slash-separated, NVENC params always present, filters only when applied.
+    Example: hevc_nvenc / ffmpeg=7.1 / main10 / cq=25 / preset=p5 / ... / crop=132:132:0:0
+    """
+    parts: list[str] = ["hevc_nvenc"]
+    if ffmpeg_version:
+        parts.append(f"ffmpeg={ffmpeg_version}")
+    parts += [
+        "main10",
+        f"cq={vp.cq}",
+        "preset=p5",
+        "tune=uhq",
+        "rc=vbr",
+        "spatial-aq=1",
+        "temporal-aq=1",
+        "rc-lookahead=32",
+        "multipass=qres",
+    ]
+
+    if vp.deinterlace:
+        parts.append(f"deinterlace={'bwdif_cuda' if use_cuda else 'bwdif'}")
+
+    if vp.crop is not None:
+        top = vp.crop.y
+        bottom = vp.source_height - vp.crop.y - vp.crop.h
+        left = vp.crop.x
+        right = vp.source_width - vp.crop.x - vp.crop.w
+        parts.append(f"crop={top}:{bottom}:{left}:{right}")
+
+    # Check if CU alignment trimmed pixels
+    cur_w = vp.crop.w if vp.crop is not None else vp.source_width
+    cur_h = vp.crop.h if vp.crop is not None else vp.source_height
+    if vp.sar_num != vp.sar_den:
+        cur_w = round(cur_w * vp.sar_num / vp.sar_den)
+    aligned = align_dimensions(cur_w, cur_h)
+    if aligned.w != cur_w or aligned.h != cur_h:
+        parts.append(f"align={aligned.w}x{aligned.h}")
+
+    return " / ".join(parts)
+
+
 class FFmpegAdapter:
     """Implements Prober + Encoder + AudioExtractor."""
 
@@ -81,6 +124,22 @@ class FFmpegAdapter:
 
     def set_log_dir(self, log_dir: Path | None) -> None:
         self._log_dir = log_dir
+
+    def _get_ffmpeg_version(self) -> str:
+        """Get ffmpeg version string (e.g. '7.1'). Cached after first call."""
+        cached: str | None = getattr(self, "_ffmpeg_version_cached", None)
+        if cached is not None:
+            return cached
+        try:
+            result = subprocess.run(
+                [str(self._ffmpeg), "-version"],
+                capture_output=True, text=True, timeout=5,
+            )
+            m = re.match(r"ffmpeg version (\S+)", result.stdout)
+            self._ffmpeg_version_cached: str = m.group(1) if m else ""
+        except Exception:
+            self._ffmpeg_version_cached = ""
+        return self._ffmpeg_version_cached
 
     # ------------------------------------------------------------------
     # Prober
@@ -98,7 +157,7 @@ class FFmpegAdapter:
             str(path),
         ]
         logger.debug("probe cmd: %s", cmd)
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
         if result.returncode != 0:
             logger.error("ffprobe failed (rc=%d): %s", result.returncode, result.stderr)
             raise RuntimeError(f"ffprobe failed with return code {result.returncode}: {result.stderr}")
@@ -123,7 +182,7 @@ class FFmpegAdapter:
                 "-",
             ]
             logger.debug("detect_crop cmd: %s", cmd)
-            result = subprocess.run(cmd, capture_output=True, text=True)
+            result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
             # cropdetect writes to stderr
             for line in result.stderr.splitlines():
                 m = re.search(r"crop=(\d+:\d+:\d+:\d+)", line)
@@ -154,6 +213,45 @@ class FFmpegAdapter:
                 return str(tags[key])
         return None
 
+    def run_idet(self, path: Path, duration_s: float) -> float:
+        """Run idet filter at multiple points across the timeline.
+
+        Samples 1000 frames at 10%, 30%, 50%, 70%, 90% of duration.
+        Returns the ratio of interlaced frames (0.0 to 1.0).
+        """
+        total_interlaced = 0
+        total_prog = 0
+
+        for pct in (0.10, 0.30, 0.50, 0.70, 0.90):
+            seek = duration_s * pct
+            cmd = [
+                str(self._ffmpeg),
+                "-hide_banner",
+                "-ss", f"{seek:.2f}",
+                "-i", str(path),
+                "-vf", "idet",
+                "-frames:v", "1000",
+                "-f", "null",
+                "-",
+            ]
+            logger.debug("run_idet cmd: %s", cmd)
+            result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+
+            for line in result.stderr.splitlines():
+                m = re.search(
+                    r"Multi frame detection:\s*TFF:\s*(\d+)\s*BFF:\s*(\d+)\s*Progressive:\s*(\d+)",
+                    line,
+                )
+                if m:
+                    total_interlaced += int(m.group(1)) + int(m.group(2))
+                    total_prog += int(m.group(3))
+
+        total = total_interlaced + total_prog
+        if total == 0:
+            return 0.0
+
+        return total_interlaced / total
+
     # ------------------------------------------------------------------
     # Encoder
     # ------------------------------------------------------------------
@@ -165,12 +263,17 @@ class FFmpegAdapter:
         video_params: VideoParams,
         source_size: int,
         on_progress: Callable[[float, str], None] | None = None,
-    ) -> int:
+    ) -> tuple[int, str]:
         """Encode with hevc_nvenc. Parses -progress pipe:1 for fps/speed/progress.
         Performs mid-encoding bloat check: if progress > 5% and output >= source_size,
         terminates the process and returns non-zero."""
-        cmd = self._build_encode_cmd(input_path, output_path, video_params)
+        use_cuda = self._should_use_cuda(video_params)
+        cmd = self._build_encode_cmd(input_path, output_path, video_params, use_cuda=use_cuda)
         logger.debug("encode cmd: %s", " ".join(str(c) for c in cmd))
+
+        encoder_settings = _build_encoder_settings(
+            video_params, use_cuda=use_cuda, ffmpeg_version=self._get_ffmpeg_version(),
+        )
 
         # Open per-tool log file
         encode_log = None
@@ -278,31 +381,28 @@ class FFmpegAdapter:
             logger.error(
                 "Encoding aborted: mid-encoding bloat detected (output >= source_size=%d)", source_size
             )
-            return 1
+            return 1, encoder_settings
 
         if process.returncode != 0:
             logger.error("ffmpeg encode failed (rc=%d): %s", process.returncode, "\n".join(stderr_lines[-10:]))
 
-        return process.returncode
+        return process.returncode, encoder_settings
 
     # Codecs supported by NVIDIA NVDEC hardware decoder
     _NVDEC_CODECS: set[str] = {
         "h264", "hevc", "mpeg2video", "mpeg4", "vp8", "vp9", "vc1", "av1",
     }
 
-    def _build_encode_cmd(self, input_path: Path, output_path: Path, vp: VideoParams) -> list[str]:
-        """Build the full ffmpeg NVENC encode command.
-
-        Hybrid CUDA/CPU path:
-        - CUDA: when source_codec is nvdec-supported AND no crop (no crop_cuda in ffmpeg)
-        - CPU:  otherwise (fallback)
-        """
-        needs_sar_fix = vp.sar_num != vp.sar_den
-        use_cuda = (
+    def _should_use_cuda(self, vp: VideoParams) -> bool:
+        """CUDA decode when source_codec is nvdec-supported AND no crop AND no SAR fix."""
+        return (
             vp.source_codec in self._NVDEC_CODECS
             and vp.crop is None
-            and not needs_sar_fix
+            and vp.sar_num == vp.sar_den
         )
+
+    def _build_encode_cmd(self, input_path: Path, output_path: Path, vp: VideoParams, *, use_cuda: bool) -> list[str]:
+        """Build the full ffmpeg NVENC encode command."""
 
         cmd: list[str] = [str(self._ffmpeg), "-hide_banner", "-loglevel", "warning"]
 
@@ -381,15 +481,15 @@ class FFmpegAdapter:
     # VMAF
     # ------------------------------------------------------------------
 
-    def compute_vmaf(
+    def compute_quality(
         self,
         reference: Path,
         distorted: Path,
         duration_s: float,
         on_progress: Callable[[float, str], None] | None = None,
         video_params: VideoParams | None = None,
-    ) -> float | None:
-        """Calculate VMAF score using libvmaf filter. Returns mean VMAF or None.
+    ) -> tuple[float | None, float | None]:
+        """Calculate VMAF and SSIM in one pass. Returns (vmaf, ssim) or (None, None).
 
         If video_params is provided, reference is cropped/scaled to match distorted dimensions.
         """
@@ -407,14 +507,23 @@ class FFmpegAdapter:
         if video_params is not None:
             ref_filters = _build_vf_chain(video_params, use_cuda=False)
 
+        # Split into two streams: one for VMAF, one for SSIM
         if ref_filters:
             chain = ",".join(ref_filters)
             lavfi = (
                 f"[0:v]{chain}[ref];"
-                f"[ref][1:v]libvmaf=log_fmt=json:n_threads={n_threads}:log_path={log_path_lavfi}"
+                f"[ref][1:v]split[ref1][ref2];"
+                f"[1:v]split[dis1][dis2];"
+                f"[ref1][dis1]libvmaf=log_fmt=json:n_threads={n_threads}:log_path={log_path_lavfi};"
+                f"[ref2][dis2]ssim"
             )
         else:
-            lavfi = f"libvmaf=log_fmt=json:n_threads={n_threads}:log_path={log_path_lavfi}"
+            lavfi = (
+                f"[0:v][1:v]split[ref1][ref2];"
+                f"[1:v]split[dis1][dis2];"
+                f"[ref1][dis1]libvmaf=log_fmt=json:n_threads={n_threads}:log_path={log_path_lavfi};"
+                f"[ref2][dis2]ssim"
+            )
 
         cmd = [
             str(self._ffmpeg), "-hide_banner", "-v", "error",
@@ -425,34 +534,40 @@ class FFmpegAdapter:
             "-progress", "pipe:1",
             "-",
         ]
-        logger.debug("compute_vmaf cmd: %s", " ".join(cmd))
+        logger.debug("compute_quality cmd: %s", " ".join(cmd))
 
         # Write to per-tool log
-        vmaf_log = None
+        quality_log = None
         if self._log_dir:
-            vmaf_log = (self._log_dir / "ffmpeg_vmaf.log").open("w", encoding="utf-8")
-            vmaf_log.write(f"$ {' '.join(cmd)}\n\n")
-            vmaf_log.flush()
+            quality_log = (self._log_dir / "ffmpeg_quality.log").open("w", encoding="utf-8")
+            quality_log.write(f"$ {' '.join(cmd)}\n\n")
+            quality_log.flush()
 
         try:
             process = subprocess.Popen(
                 cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1,
             )
 
-            # Read stderr in background
+            # Read stderr in background — also capture SSIM output
             stderr_lines: list[str] = []
+            ssim_all: float | None = None
 
             def _read_stderr() -> None:
+                nonlocal ssim_all
                 assert process.stderr is not None
                 for err_line in process.stderr:
                     err_line = err_line.rstrip()
                     if err_line:
                         stderr_lines.append(err_line)
+                        # SSIM outputs: "SSIM ... All:0.987654 (18.123456)"
+                        m = re.search(r"All:(\d+\.\d+)", err_line)
+                        if m:
+                            ssim_all = float(m.group(1))
                         if self._on_output is not None:
                             self._on_output(err_line)
-                        if vmaf_log is not None:
-                            vmaf_log.write(err_line + "\n")
-                            vmaf_log.flush()
+                        if quality_log is not None:
+                            quality_log.write(err_line + "\n")
+                            quality_log.flush()
 
             stderr_thread = threading.Thread(target=_read_stderr, daemon=True)
             stderr_thread.start()
@@ -467,28 +582,31 @@ class FFmpegAdapter:
                         if duration_s > 0:
                             pct = min(100.0, (us / 1_000_000) / duration_s * 100)
                             if on_progress is not None:
-                                on_progress(pct, f"VMAF {pct:.1f}%")
+                                on_progress(pct, f"Quality {pct:.1f}%")
                     except ValueError:
                         pass
 
             process.wait()
             stderr_thread.join(timeout=5)
 
-            if vmaf_log is not None:
-                vmaf_log.write(f"\n--- exit code: {process.returncode} ---\n")
-                vmaf_log.close()
+            if quality_log is not None:
+                quality_log.write(f"\n--- exit code: {process.returncode} ---\n")
+                quality_log.close()
 
             if process.returncode != 0:
-                logger.error("VMAF failed (rc=%d): %s", process.returncode, "\n".join(stderr_lines[-5:]))
-                return None
+                logger.error("Quality metrics failed (rc=%d): %s", process.returncode, "\n".join(stderr_lines[-5:]))
+                return None, None
 
+            vmaf_score: float | None = None
             with Path(tmp.name).open(encoding="utf-8") as f:
                 vmaf_data = _json.load(f)
-            return float(vmaf_data["pooled_metrics"]["vmaf"]["mean"])
+            vmaf_score = float(vmaf_data["pooled_metrics"]["vmaf"]["mean"])
+
+            return vmaf_score, ssim_all
 
         except Exception:
-            logger.exception("VMAF computation failed")
-            return None
+            logger.exception("Quality metrics computation failed")
+            return None, None
         finally:
             try:
                 Path(tmp.name).unlink(missing_ok=True)

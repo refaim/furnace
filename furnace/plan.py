@@ -139,6 +139,7 @@ def _load_job(raw: dict[str, Any]) -> Job:
         status=JobStatus(raw.get("status", "pending")),
         error=raw.get("error"),
         vmaf_score=raw.get("vmaf_score"),
+        ssim_score=raw.get("ssim_score"),
         source_size=raw.get("source_size", 0),
         output_size=raw.get("output_size"),
     )
@@ -171,6 +172,7 @@ def update_job_status(
     status: JobStatus,
     error: str | None = None,
     vmaf_score: float | None = None,
+    ssim_score: float | None = None,
     output_size: int | None = None,
 ) -> None:
     """Read JSON, find job by id, update status fields, write back atomically."""
@@ -184,6 +186,8 @@ def update_job_status(
             job["error"] = error
             if vmaf_score is not None:
                 job["vmaf_score"] = vmaf_score
+            if ssim_score is not None:
+                job["ssim_score"] = ssim_score
             if output_size is not None:
                 job["output_size"] = output_size
             found = True

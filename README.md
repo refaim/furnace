@@ -60,7 +60,7 @@ furnace plan D:\Movies -o E:\Encoded --audio-lang rus,eng --sub-lang rus,eng
 furnace run E:\Encoded\furnace-plan.json
 ```
 
-Enable VMAF quality scoring:
+Enable VMAF + SSIM quality scoring (single pass):
 ```bash
 furnace plan D:\Movies -o E:\Encoded --audio-lang eng --sub-lang eng --vmaf
 ```

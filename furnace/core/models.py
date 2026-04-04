@@ -64,11 +64,6 @@ class JobStatus(enum.Enum):
     ERROR = "error"
 
 
-class FieldOrder(enum.Enum):
-    PROGRESSIVE = "progressive"
-    TFF = "tt"   # top field first
-    BFF = "bb"   # bottom field first
-
 
 class ColorSpace(enum.Enum):
     BT601 = "bt601"
@@ -160,7 +155,7 @@ class VideoInfo:
     fps_num: int
     fps_den: int
     duration_s: float
-    field_order: FieldOrder
+    interlaced: bool
     color_space: ColorSpace | None
     color_range: str | None            # "tv" | "pc" | None
     color_transfer: str | None
@@ -258,6 +253,7 @@ class Job:
     status: JobStatus = JobStatus.PENDING
     error: str | None = None
     vmaf_score: float | None = None
+    ssim_score: float | None = None
     source_size: int = 0               # размер исходного файла
     output_size: int | None = None     # размер выходного файла (после кодирования)
 

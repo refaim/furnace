@@ -3,7 +3,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from furnace.adapters.ffmpeg import FFmpegAdapter
+from furnace.adapters.ffmpeg import FFmpegAdapter, _build_encoder_settings
+from furnace.adapters.mkvpropedit import _build_tags_xml
 from furnace.core.models import ColorSpace, CropRect, HdrMetadata, VideoParams
 
 
@@ -33,7 +34,8 @@ def _make_vp(
 
 def _build(vp: VideoParams) -> list[str]:
     adapter = FFmpegAdapter(Path("ffmpeg.exe"), Path("ffprobe.exe"))
-    return adapter._build_encode_cmd(Path("input.mkv"), Path("output.mkv"), vp)
+    use_cuda = adapter._should_use_cuda(vp)
+    return adapter._build_encode_cmd(Path("input.mkv"), Path("output.mkv"), vp, use_cuda=use_cuda)
 
 
 class TestCudaPathSelection:
@@ -158,3 +160,85 @@ class TestCommonFlags:
         assert "-progress" in cmd
         idx = cmd.index("-progress")
         assert cmd[idx + 1] == "pipe:1"
+
+
+class TestBuildEncoderSettings:
+    """ENCODER_SETTINGS string generation from VideoParams."""
+
+    def test_no_filters(self) -> None:
+        vp = _make_vp(cq=25)
+        result = _build_encoder_settings(vp, use_cuda=True)
+        assert result == (
+            "hevc_nvenc / main10 / cq=25 / preset=p5 / tune=uhq / rc=vbr"
+            " / spatial-aq=1 / temporal-aq=1 / rc-lookahead=32 / multipass=qres"
+        )
+
+    def test_ffmpeg_version(self) -> None:
+        vp = _make_vp(cq=25)
+        result = _build_encoder_settings(vp, use_cuda=True, ffmpeg_version="7.1")
+        assert result.startswith("hevc_nvenc / ffmpeg=7.1 / main10")
+
+    def test_ffmpeg_version_empty(self) -> None:
+        vp = _make_vp(cq=25)
+        result = _build_encoder_settings(vp, use_cuda=True, ffmpeg_version="")
+        assert "ffmpeg=" not in result
+
+    def test_deinterlace_cuda(self) -> None:
+        vp = _make_vp(deinterlace=True)
+        result = _build_encoder_settings(vp, use_cuda=True)
+        assert result.endswith("multipass=qres / deinterlace=bwdif_cuda")
+
+    def test_deinterlace_cpu(self) -> None:
+        vp = _make_vp(deinterlace=True)
+        result = _build_encoder_settings(vp, use_cuda=False)
+        assert "deinterlace=bwdif" in result
+        assert "bwdif_cuda" not in result
+
+    def test_crop(self) -> None:
+        """crop=T:B:L:R — pixels removed from each edge."""
+        crop = CropRect(w=1920, h=816, x=0, y=132)
+        vp = _make_vp(crop=crop)
+        result = _build_encoder_settings(vp, use_cuda=False)
+        assert "crop=132:132:0:0" in result
+
+    def test_alignment(self) -> None:
+        """align=WxH when dimensions aren't multiples of 8."""
+        crop = CropRect(w=1916, h=1076, x=2, y=2)
+        vp = _make_vp(crop=crop)
+        result = _build_encoder_settings(vp, use_cuda=False)
+        assert "crop=2:2:2:2" in result
+        assert "align=1912x1072" in result
+
+    def test_no_alignment_when_already_aligned(self) -> None:
+        crop = CropRect(w=1920, h=816, x=0, y=132)
+        vp = _make_vp(crop=crop)
+        result = _build_encoder_settings(vp, use_cuda=False)
+        assert "align=" not in result
+
+    def test_all_filters(self) -> None:
+        crop = CropRect(w=1916, h=1076, x=2, y=2)
+        vp = _make_vp(deinterlace=True, crop=crop)
+        result = _build_encoder_settings(vp, use_cuda=False)
+        parts = result.split(" / ")
+        assert "deinterlace=bwdif" in parts
+        assert "crop=2:2:2:2" in parts
+        assert "align=1912x1072" in parts
+
+    def test_cq_value_varies(self) -> None:
+        vp = _make_vp(cq=31)
+        result = _build_encoder_settings(vp, use_cuda=True)
+        assert "cq=31" in result
+
+
+class TestBuildTagsXml:
+    def test_encoder_only(self) -> None:
+        xml = _build_tags_xml("Furnace v1.4.0")
+        assert "<Name>ENCODER</Name>" in xml
+        assert "<String>Furnace v1.4.0</String>" in xml
+        assert "ENCODER_SETTINGS" not in xml
+
+    def test_with_encoder_settings(self) -> None:
+        xml = _build_tags_xml("Furnace v1.4.0", "hevc_nvenc / main10 / cq=25")
+        assert "<Name>ENCODER</Name>" in xml
+        assert "<Name>ENCODER_SETTINGS</Name>" in xml
+        assert "<String>hevc_nvenc / main10 / cq=25</String>" in xml

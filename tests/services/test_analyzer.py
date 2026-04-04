@@ -23,6 +23,7 @@ def make_prober(probe_data: dict | None = None, encoder_tag: str | None = None) 
     prober = MagicMock()
     prober.get_encoder_tag.return_value = encoder_tag
     prober.probe.return_value = probe_data or {}
+    prober.run_idet.return_value = 0.0
     return prober
 
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from .models import AudioCodecId, FieldOrder, HdrMetadata, SubtitleCodecId, Track
+from .models import AudioCodecId, HdrMetadata, SubtitleCodecId, Track
 
 FORCED_FILENAME_KEYWORDS: list[str] = ["forced", "форсир", "только надписи", "forsed", "tolko nadpisi"]
 FORCED_FILENAME_EXCLUDE: list[str] = ["normal"]
@@ -84,13 +84,36 @@ def detect_forced_subtitles(subtitle_tracks: list[Track]) -> None:
     _apply_statistical(text_tracks, "num_frames")
 
 
-def detect_interlace(field_order_raw: str | None) -> FieldOrder:
-    """'tt' -> TFF, 'bb' -> BFF, всё остальное -> PROGRESSIVE."""
-    if field_order_raw == "tt":
-        return FieldOrder.TFF
-    if field_order_raw == "bb":
-        return FieldOrder.BFF
-    return FieldOrder.PROGRESSIVE
+_INTERLACED_FIELD_ORDERS = {"tt", "bb"}
+_TV_FPS_THRESHOLD = 48.0
+_IDET_INTERLACE_THRESHOLD = 0.05
+
+
+def needs_idet(field_order: str | None, fps: float) -> bool:
+    """Determine if idet analysis is needed to confirm interlace.
+
+    Returns False (no idet) when:
+    - field_order is not tt/bb → clearly progressive
+    - field_order is tt/bb but fps >= 48 → clearly TV interlace
+    Returns True when field_order is tt/bb and fps < 48 → ambiguous (DVD soft telecine?)
+    """
+    if field_order not in _INTERLACED_FIELD_ORDERS:
+        return False
+    return fps < _TV_FPS_THRESHOLD
+
+
+def should_deinterlace(field_order: str | None, fps: float, idet_ratio: float) -> bool:
+    """Decide whether to deinterlace based on ffprobe metadata and idet result.
+
+    - field_order not tt/bb → progressive
+    - field_order tt/bb + fps >= 48 → TV interlace, always deinterlace
+    - field_order tt/bb + fps < 48 → idet decides (>5% interlaced → deinterlace)
+    """
+    if field_order not in _INTERLACED_FIELD_ORDERS:
+        return False
+    if fps >= _TV_FPS_THRESHOLD:
+        return True
+    return idet_ratio > _IDET_INTERLACE_THRESHOLD
 
 
 def detect_hdr(stream_data: dict[str, Any], side_data: list[dict[str, Any]] | None) -> HdrMetadata:

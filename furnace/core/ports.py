@@ -23,6 +23,10 @@ class Prober(Protocol):
         """Read MKV tag ENCODER. None if absent."""
         ...
 
+    def run_idet(self, path: Path, duration_s: float) -> float:
+        """Run idet analysis. Returns interlaced frame ratio (0.0 to 1.0)."""
+        ...
+
 
 @runtime_checkable
 class Encoder(Protocol):
@@ -39,23 +43,23 @@ class Encoder(Protocol):
         video_params: VideoParams,
         source_size: int,
         on_progress: Callable[[float, str], None] | None = None,
-    ) -> int:
-        """Encode video. Returns return code (0 = ok).
+    ) -> tuple[int, str]:
+        """Encode video. Returns (return_code, encoder_settings_string).
 
         source_size is passed for mid-encoding bloat check (see 12.11).
         on_progress callback receives (progress_pct, status_line).
         """
         ...
 
-    def compute_vmaf(
+    def compute_quality(
         self,
         reference: Path,
         distorted: Path,
         duration_s: float,
         on_progress: Callable[[float, str], None] | None = None,
         video_params: VideoParams | None = None,
-    ) -> float | None:
-        """Calculate VMAF score. Returns mean VMAF or None on failure.
+    ) -> tuple[float | None, float | None]:
+        """Calculate VMAF and SSIM in one pass. Returns (vmaf, ssim) or (None, None).
 
         If video_params is provided, reference is cropped/scaled to match distorted dimensions.
         """
@@ -145,8 +149,8 @@ class Muxer(Protocol):
 class Tagger(Protocol):
     """Set MKV tags via mkvpropedit."""
 
-    def set_encoder_tag(self, mkv_path: Path, tag_value: str) -> int:
-        """Set global ENCODER tag. Returns return code."""
+    def set_encoder_tag(self, mkv_path: Path, tag_value: str, encoder_settings: str | None = None) -> int:
+        """Set global ENCODER tag (and ENCODER_SETTINGS if provided). Returns return code."""
         ...
 
 

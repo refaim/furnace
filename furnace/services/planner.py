@@ -11,7 +11,6 @@ from collections.abc import Callable
 from ..core.models import (
     AudioInstruction,
     CropRect,
-    FieldOrder,
     Job,
     JobStatus,
     Movie,
@@ -268,7 +267,7 @@ class PlannerService:
             video.color_space.value if video.color_space is not None else None,
         )
 
-        deinterlace = video.field_order in (FieldOrder.TFF, FieldOrder.BFF)
+        deinterlace = video.interlaced
 
         # HDR: only passthrough for HDR10 (not DV/HDR10+ which are already skipped)
         hdr = video.hdr if (video.hdr.mastering_display or video.hdr.content_light) else None

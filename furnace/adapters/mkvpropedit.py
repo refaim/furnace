@@ -8,16 +8,28 @@ from ._subprocess import OutputCallback, run_tool
 
 logger = logging.getLogger(__name__)
 
-_TAGS_XML_TEMPLATE = """\
-<Tags>
-  <Tag>
-    <Simple>
-      <Name>ENCODER</Name>
-      <String>{tag_value}</String>
-    </Simple>
-  </Tag>
-</Tags>
-"""
+def _build_tags_xml(tag_value: str, encoder_settings: str | None = None) -> str:
+    """Build MKV global tags XML with ENCODER and optional ENCODER_SETTINGS."""
+    lines = [
+        "<Tags>",
+        "  <Tag>",
+        "    <Simple>",
+        "      <Name>ENCODER</Name>",
+        f"      <String>{tag_value}</String>",
+        "    </Simple>",
+    ]
+    if encoder_settings:
+        lines += [
+            "    <Simple>",
+            "      <Name>ENCODER_SETTINGS</Name>",
+            f"      <String>{encoder_settings}</String>",
+            "    </Simple>",
+        ]
+    lines += [
+        "  </Tag>",
+        "</Tags>",
+    ]
+    return "\n".join(lines) + "\n"
 
 
 class MkvpropeditAdapter:
@@ -31,14 +43,14 @@ class MkvpropeditAdapter:
     def set_log_dir(self, log_dir: Path | None) -> None:
         self._log_dir = log_dir
 
-    def set_encoder_tag(self, mkv_path: Path, tag_value: str) -> int:
-        """Set global ENCODER tag.
+    def set_encoder_tag(self, mkv_path: Path, tag_value: str, encoder_settings: str | None = None) -> int:
+        """Set global ENCODER tag (and ENCODER_SETTINGS if provided).
 
         Creates a temporary tags.xml, runs:
             mkvpropedit mkv_path --tags global:tags.xml
         then deletes the temp file.
         """
-        xml_content = _TAGS_XML_TEMPLATE.format(tag_value=tag_value)
+        xml_content = _build_tags_xml(tag_value, encoder_settings)
 
         # Write temp file in the same directory as the MKV for locality
         tmp_dir = mkv_path.parent

@@ -8,7 +8,8 @@ from ..core.detect import (
     check_unsupported_codecs,
     detect_forced_subtitles,
     detect_hdr,
-    detect_interlace,
+    needs_idet,
+    should_deinterlace,
     should_skip_file,
 )
 from ..core.models import (
@@ -111,6 +112,31 @@ class Analyzer:
             logger.warning("Skipping %s: %s", main_file.name, codec_warning)
             return None
 
+        # Detect interlace: ffprobe field_order + idet when ambiguous
+        # Use r_frame_rate (field rate) for interlace detection, not avg_frame_rate
+        field_order_raw = video_stream.get("field_order")
+        r_fps_str = video_stream.get("r_frame_rate", "0/1")
+        if "/" in r_fps_str:
+            r_parts = r_fps_str.split("/")
+            r_num = int(r_parts[0])
+            r_den = int(r_parts[1]) if len(r_parts) > 1 and int(r_parts[1]) != 0 else 1
+        else:
+            r_num = int(float(r_fps_str))
+            r_den = 1
+        fps = r_num / r_den if r_den else 0.0
+        idet_ratio = 0.0
+        if needs_idet(field_order_raw, fps):
+            try:
+                idet_ratio = self._prober.run_idet(main_file, video_info.duration_s)
+                logger.debug("%s: idet ratio %.3f", main_file.name, idet_ratio)
+            except Exception as exc:
+                logger.warning("idet failed for %s: %s", main_file.name, exc)
+        video_info.interlaced = should_deinterlace(field_order_raw, fps, idet_ratio)
+        if video_info.interlaced:
+            logger.info("%s: interlaced content detected", main_file.name)
+        else:
+            logger.debug("%s: progressive content", main_file.name)
+
         # Detect forced subtitles (in-place mutation)
         detect_forced_subtitles(subtitle_tracks)
 
@@ -158,9 +184,8 @@ class Analyzer:
             except (ValueError, TypeError):
                 pass
 
-        # Field order / interlace
-        field_order_raw = stream.get("field_order")
-        field_order = detect_interlace(field_order_raw)
+        # Interlace — set to False here, real detection via idet in analyze()
+        interlaced = False
 
         # Color info
         color_primaries_raw = stream.get("color_primaries")
@@ -215,7 +240,7 @@ class Analyzer:
             fps_num=fps_num,
             fps_den=fps_den,
             duration_s=duration_s,
-            field_order=field_order,
+            interlaced=interlaced,
             color_space=color_space,
             color_range=color_range_raw,
             color_transfer=color_transfer_raw,

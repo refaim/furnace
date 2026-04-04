@@ -64,26 +64,42 @@ class ReportPrinter:
                 name = Path(job.source_files[0]).name if job.source_files else Path(job.output_file).name
                 src = _fmt_size(job.source_size)
                 out = _fmt_size(job.output_size)
-                vmaf_str = ""
+                quality_str = ""
                 if job.vmaf_score is not None:
                     v = job.vmaf_score
                     if v >= 95:
-                        label = "excellent - visually identical"
+                        label = "excellent"
                     elif v >= 85:
-                        label = "good - near transparent"
+                        label = "good"
                     elif v >= 70:
-                        label = "fair - minor differences visible"
+                        label = "fair"
                     else:
-                        label = "poor - noticeable artifacts"
-                    vmaf_str = f"  VMAF {v:.1f} ({label})"
-                console.print(f"  {name}  {src} -> {out}{vmaf_str}")
+                        label = "poor"
+                    quality_str = f"  VMAF {v:.1f} ({label})"
+                if job.ssim_score is not None:
+                    s = job.ssim_score
+                    if s >= 0.99:
+                        slabel = "excellent"
+                    elif s >= 0.95:
+                        slabel = "good"
+                    elif s >= 0.90:
+                        slabel = "fair"
+                    else:
+                        slabel = "poor"
+                    quality_str += f"  SSIM {s:.4f} ({slabel})"
+                console.print(f"  {name}  {src} -> {out}{quality_str}")
             console.print()
 
         if plan.vmaf_enabled:
             vmaf_scores = [j.vmaf_score for j in done_jobs if j.vmaf_score is not None]
+            ssim_scores = [j.ssim_score for j in done_jobs if j.ssim_score is not None]
             if vmaf_scores:
                 avg_vmaf = sum(vmaf_scores) / len(vmaf_scores)
-                console.print(f"[bold]Average VMAF:[/bold] {avg_vmaf:.2f}  (n={len(vmaf_scores)})")
+                avg_line = f"[bold]Average VMAF:[/bold] {avg_vmaf:.2f}  (n={len(vmaf_scores)})"
+                if ssim_scores:
+                    avg_ssim = sum(ssim_scores) / len(ssim_scores)
+                    avg_line += f"  |  [bold]SSIM:[/bold] {avg_ssim:.4f}"
+                console.print(avg_line)
                 console.print()
 
         if error_jobs:

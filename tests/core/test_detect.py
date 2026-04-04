@@ -8,12 +8,10 @@ from furnace.core.detect import (
     check_unsupported_codecs,
     detect_forced_subtitles,
     detect_hdr,
-    detect_interlace,
     should_skip_file,
 )
 from furnace.core.models import (
     AudioCodecId,
-    FieldOrder,
     SubtitleCodecId,
     Track,
     TrackType,
@@ -417,23 +415,3 @@ class TestUnknownCodecCheck:
 
 # ---------------------------------------------------------------------------
 # test_detect_interlace
-# ---------------------------------------------------------------------------
-
-class TestDetectInterlace:
-    def test_tt_is_tff(self):
-        assert detect_interlace("tt") == FieldOrder.TFF
-
-    def test_bb_is_bff(self):
-        assert detect_interlace("bb") == FieldOrder.BFF
-
-    def test_progressive_string(self):
-        assert detect_interlace("progressive") == FieldOrder.PROGRESSIVE
-
-    def test_none_is_progressive(self):
-        assert detect_interlace(None) == FieldOrder.PROGRESSIVE
-
-    def test_unknown_string_is_progressive(self):
-        assert detect_interlace("unknown") == FieldOrder.PROGRESSIVE
-
-    def test_empty_string_is_progressive(self):
-        assert detect_interlace("") == FieldOrder.PROGRESSIVE

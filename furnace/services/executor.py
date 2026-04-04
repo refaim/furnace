@@ -148,6 +148,7 @@ class Executor:
                     error=None,
                     output_size=output_size,
                     vmaf_score=job.vmaf_score,
+                    ssim_score=job.ssim_score,
                 )
                 logger.debug("Job %s completed successfully", job.id)
                 if self._progress is not None:
@@ -269,7 +270,7 @@ class Executor:
                     video_size = 0
                 self._progress.update_output_size(self._cumulative_audio_size + video_size)
 
-        rc = self._encoder.encode(
+        rc, encoder_settings = self._encoder.encode(
             input_path=main_source,
             output_path=video_output,
             video_params=job.video_params,
@@ -342,7 +343,7 @@ class Executor:
             self._progress.update_status("Setting metadata...")
             self._progress.add_tool_line("[furnace] Setting ENCODER tag")
         tag_value = f"Furnace v{FURNACE_VERSION}"
-        rc = self._tagger.set_encoder_tag(muxed_path, tag_value)
+        rc = self._tagger.set_encoder_tag(muxed_path, tag_value, encoder_settings)
         if rc != 0:
             logger.warning("mkvpropedit returned %d for %s", rc, muxed_path)
 
@@ -392,7 +393,7 @@ class Executor:
             except Exception:
                 duration_s = 0.0
 
-            vmaf_score = self._encoder.compute_vmaf(
+            vmaf_score, ssim_score = self._encoder.compute_quality(
                 reference=source_path,
                 distorted=output_path,
                 duration_s=duration_s,
@@ -401,13 +402,17 @@ class Executor:
             )
             if vmaf_score is not None:
                 job.vmaf_score = vmaf_score
-                logger.info("VMAF score: %.1f", vmaf_score)
+                job.ssim_score = ssim_score
+                scores = f"VMAF {vmaf_score:.1f}"
+                if ssim_score is not None:
+                    scores += f" | SSIM {ssim_score:.4f}"
+                logger.info("Quality scores: %s", scores)
                 if self._progress is not None:
-                    self._progress.add_tool_line(f"[furnace] VMAF score: {vmaf_score:.1f}")
+                    self._progress.add_tool_line(f"[furnace] {scores}")
             else:
-                logger.warning("VMAF computation failed")
+                logger.warning("Quality metrics computation failed")
                 if self._progress is not None:
-                    self._progress.add_tool_line("[furnace] VMAF computation failed")
+                    self._progress.add_tool_line("[furnace] Quality metrics computation failed")
 
     def _process_audio_track(self, instr: AudioInstruction, temp_dir: Path) -> Path:
         """Returns path to processed audio file.
