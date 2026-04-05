@@ -74,7 +74,7 @@ class TrackSelectorScreen(Screen[list[Track]]):
         Binding("up", "move_up", "Up", show=False),
         Binding("down", "move_down", "Down", show=False),
         Binding("space", "toggle_track", "Toggle"),
-        Binding("enter", "preview_track", "Preview"),
+        Binding("p", "preview_track", "Preview"),
         Binding("d", "done", "Done"),
     ]
 
@@ -112,7 +112,7 @@ class TrackSelectorScreen(Screen[list[Track]]):
             f"{filename}  |  {resolution}  {codec}  {duration}  {size}",
             id="track-header",
         )
-        yield Static(f"Select {kind} tracks  (Space=toggle  Enter=preview  D=done)", id="track-hint")
+        yield Static(f"Select {kind} tracks  (Space=toggle  P=preview  D=done)", id="track-hint")
 
         items: list[ListItem] = []
         for i, track in enumerate(self._tracks):
@@ -480,6 +480,87 @@ class CropConfirmScreen(Screen[CropRect | None]):
     def on_input_submitted(self, event: Input.Submitted) -> None:
         if event.input.id == "crop-input" and self._edit_mode:
             self._confirm_edit()
+
+
+# ---------------------------------------------------------------------------
+# LanguageSelectorScreen
+# ---------------------------------------------------------------------------
+
+class LanguageSelectorScreen(Screen[str]):
+    """Screen for choosing a language for an 'und' track.
+
+    Shows track info and a list of languages. User picks one with D.
+    Returns the selected ISO 639-3 language code via dismiss().
+    """
+
+    BINDINGS = [
+        Binding("up", "move_up", "Up", show=False),
+        Binding("down", "move_down", "Down", show=False),
+        Binding("p", "preview_track", "Preview"),
+        Binding("d", "select_lang", "Select"),
+    ]
+
+    def __init__(
+        self,
+        track: Track,
+        lang_list: list[str],
+        preview_cb: Callable[[Track], None] | None = None,
+    ) -> None:
+        super().__init__()
+        self._track = track
+        self._lang_list = lang_list
+        self._preview_cb = preview_cb
+        self._cursor: int = 0
+
+    def compose(self) -> ComposeResult:
+        yield Header()
+
+        # Track description
+        t = self._track
+        if t.track_type == TrackType.AUDIO:
+            codec = t.codec_name.upper()
+            layout = ""
+            if t.channel_layout:
+                layout = t.channel_layout.split("(")[0]
+            desc = f"Audio: {codec} {layout}".strip()
+        else:
+            codec = t.codec_name.upper()
+            desc = f"Subtitle: {codec}"
+
+        yield Static(f"{desc}  |  Choose language  (P=preview  D=select)", id="lang-hint")
+
+        items: list[ListItem] = []
+        for i, lang in enumerate(self._lang_list):
+            items.append(ListItem(Static(lang, id=f"lang-label-{i}"), id=f"lang-item-{i}"))
+
+        yield ListView(*items, id="lang-list")
+        yield Footer()
+
+    def action_move_up(self) -> None:
+        lv = self.query_one("#lang-list", ListView)
+        lv.action_cursor_up()
+        self._cursor = max(0, self._cursor - 1)
+
+    def action_move_down(self) -> None:
+        lv = self.query_one("#lang-list", ListView)
+        lv.action_cursor_down()
+        self._cursor = min(len(self._lang_list) - 1, self._cursor + 1)
+
+    def action_preview_track(self) -> None:
+        if self._preview_cb is not None:
+            self._preview_cb(self._track)
+
+    def action_select_lang(self) -> None:
+        self.dismiss(self._lang_list[self._cursor])
+
+    def on_list_view_highlighted(self, event: ListView.Highlighted) -> None:
+        if event.item is not None:
+            item_id = event.item.id or ""
+            if item_id.startswith("lang-item-"):
+                try:
+                    self._cursor = int(item_id.removeprefix("lang-item-"))
+                except ValueError:
+                    pass
 
 
 # ---------------------------------------------------------------------------

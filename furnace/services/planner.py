@@ -36,6 +36,9 @@ logger = logging.getLogger(__name__)
 # Callback type: (movie, candidate_tracks, track_type) -> selected_tracks
 TrackSelectorFn = Callable[[Movie, list[Track], TrackType], list[Track]]
 
+# Callback type: (movie, track, lang_list) -> chosen_language
+UndLanguageResolverFn = Callable[[Movie, Track, list[str]], str]
+
 
 class PlannerService:
     def __init__(
@@ -43,10 +46,12 @@ class PlannerService:
         prober: Prober,
         previewer: Previewer | None,  # None in --dry-run
         track_selector: TrackSelectorFn | None = None,  # None = include all (headless)
+        und_resolver: UndLanguageResolverFn | None = None,
     ) -> None:
         self._prober = prober
         self._previewer = previewer
         self._track_selector = track_selector
+        self._und_resolver = und_resolver
 
     def create_plan(
         self,
@@ -162,12 +167,22 @@ class PlannerService:
                 )
                 selected_subs = sub_candidates
 
+        # Resolve und languages for selected audio
+        if self._und_resolver is not None:
+            selected_audio = self._resolve_und_languages(movie, selected_audio, audio_lang_filter, self._und_resolver)
+            selected_audio = self._sort_and_set_default(selected_audio, audio_lang_filter)
+
         # Build audio instructions
         audio_instructions: list[AudioInstruction] = []
         for i, track in enumerate(selected_audio):
             is_default = i == 0
             audio_instr = self._build_audio_instruction(track, is_default)
             audio_instructions.append(audio_instr)
+
+        # Resolve und languages for selected subs
+        if self._und_resolver is not None:
+            selected_subs = self._resolve_und_languages(movie, selected_subs, sub_lang_filter, self._und_resolver)
+            selected_subs = self._sort_and_set_default(selected_subs, sub_lang_filter)
 
         # Build subtitle instructions
         sub_instructions: list[SubtitleInstruction] = []
@@ -216,9 +231,7 @@ class PlannerService:
     ) -> list[Track]:
         """Filter audio tracks: keep matching languages + 'und', sort by lang_filter order."""
         filtered = [t for t in tracks if t.language in lang_filter or t.language == "und"]
-        lang_order = {lang: i for i, lang in enumerate(lang_filter)}
-        filtered.sort(key=lambda t: lang_order.get(t.language, len(lang_filter)))
-        return filtered
+        return self._sort_and_set_default(filtered, lang_filter)
 
     def _filter_sub_tracks_by_lang(
         self, tracks: list[Track], lang_filter: list[str],
@@ -228,9 +241,45 @@ class PlannerService:
             t for t in tracks
             if not t.is_forced and (t.language in lang_filter or t.language == "und")
         ]
+        return self._sort_and_set_default(filtered, lang_filter)
+
+    def _sort_and_set_default(
+        self,
+        tracks: list[Track],
+        lang_filter: list[str],
+    ) -> list[Track]:
+        """Sort tracks by lang_filter order and set is_default on the first."""
+        if not tracks:
+            return tracks
         lang_order = {lang: i for i, lang in enumerate(lang_filter)}
-        filtered.sort(key=lambda t: lang_order.get(t.language, len(lang_filter)))
-        return filtered
+        tracks.sort(key=lambda t: lang_order.get(t.language, len(lang_filter)))
+        for i, t in enumerate(tracks):
+            t.is_default = i == 0
+        return tracks
+
+    def _resolve_und_languages(
+        self,
+        movie: Movie,
+        tracks: list[Track],
+        lang_filter: list[str],
+        resolve_cb: Callable[[Movie, Track, list[str]], str],
+    ) -> list[Track]:
+        """Assign real languages to 'und' tracks from lang_filter.
+
+        - No und tracks: return unchanged.
+        - Single lang in filter: auto-assign to all und tracks.
+        - Multiple langs: call resolve_cb for each und track.
+        """
+        und_tracks = [t for t in tracks if t.language == "und"]
+        if not und_tracks:
+            return tracks
+        if len(lang_filter) == 1:
+            for t in und_tracks:
+                t.language = lang_filter[0]
+        else:
+            for t in und_tracks:
+                t.language = resolve_cb(movie, t, lang_filter)
+        return tracks
 
     def _auto_select_from_candidates(
         self, candidates: list[Track],

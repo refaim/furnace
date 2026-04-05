@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 import typer
@@ -88,7 +89,7 @@ def plan(
     from .services.disc_demuxer import DiscDemuxer
     from .services.planner import PlannerService
     from .services.scanner import Scanner
-    from .ui.tui import FileSelection, FileSelectorScreen, PlaylistSelectorScreen, TrackSelectorScreen
+    from .ui.tui import FileSelection, FileSelectorScreen, LanguageSelectorScreen, PlaylistSelectorScreen, TrackSelectorScreen
 
     # 1. Load config
     cfg = load_config(config)
@@ -164,6 +165,7 @@ def plan(
                 nonlocal selected_playlists_for_disc
 
                 class _PlaylistApp(App[list[DiscTitle]]):
+                    TITLE = "Furnace"
                     def compose(self) -> ComposeResult:
                         yield Header()
 
@@ -218,6 +220,7 @@ def plan(
                 file_selection: FileSelection | None = None
 
                 class _FileApp(App[FileSelection]):
+                    TITLE = "Furnace"
                     def compose(self) -> ComposeResult:
                         yield Header()
 
@@ -273,6 +276,15 @@ def plan(
             movies_with_paths.append((movie, sr.output_path))
 
     # 8. PlannerService.create_plan() with TUI track selector
+    def _make_preview_track_cb(movie: Movie) -> Callable[[Track], None]:
+        """Create a preview callback with closure over movie and mpv_adapter."""
+        def _preview_track(track: Track) -> None:
+            if track.track_type == TrackType.AUDIO:
+                mpv_adapter.preview_audio(movie.main_file, track.source_file, track.index)
+            else:
+                mpv_adapter.preview_subtitle(movie.main_file, track.source_file, track.index)
+        return _preview_track
+
     def _select_tracks_tui(movie: Movie, candidates: list[Track], track_type: TrackType) -> list[Track]:
         """Run Textual TrackSelectorScreen synchronously for user to pick tracks."""
         from textual.app import App, ComposeResult
@@ -281,6 +293,7 @@ def plan(
         selected: list[Track] = []
 
         class _SelectorApp(App[list[Track]]):
+            TITLE = "Furnace"
             def compose(self) -> ComposeResult:
                 yield Header()
 
@@ -295,7 +308,7 @@ def plan(
                         movie=movie,
                         tracks=candidates,
                         track_type=track_type,
-                        preview_cb=None,
+                        preview_cb=_make_preview_track_cb(movie),
                     ),
                     _on_dismiss,
                 )
@@ -303,10 +316,41 @@ def plan(
         _SelectorApp().run()
         return selected
 
+    def _resolve_und_language_tui(movie: Movie, track: Track, lang_list: list[str]) -> str:
+        """Run Textual LanguageSelectorScreen synchronously for user to pick a language."""
+        from textual.app import App, ComposeResult
+        from textual.widgets import Header
+
+        chosen: str = lang_list[0]  # fallback
+
+        class _LangApp(App[str]):
+            TITLE = "Furnace"
+            def compose(self) -> ComposeResult:
+                yield Header()
+
+            def on_mount(self) -> None:
+                def _on_dismiss(result: str | None) -> None:
+                    nonlocal chosen
+                    chosen = result or lang_list[0]
+                    self.exit(chosen)
+
+                self.push_screen(
+                    LanguageSelectorScreen(
+                        track=track,
+                        lang_list=lang_list,
+                        preview_cb=_make_preview_track_cb(movie),
+                    ),
+                    _on_dismiss,
+                )
+
+        _LangApp().run()
+        return chosen
+
     planner = PlannerService(
         prober=ffmpeg_adapter,
         previewer=mpv_adapter,
         track_selector=_select_tracks_tui if not dry_run else None,
+        und_resolver=_resolve_und_language_tui if not dry_run else None,
     )
     plan_obj = planner.create_plan(
         movies=movies_with_paths,
