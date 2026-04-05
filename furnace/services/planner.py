@@ -11,6 +11,7 @@ from collections.abc import Callable
 from ..core.models import (
     AudioInstruction,
     CropRect,
+    DvMode,
     Job,
     JobStatus,
     Movie,
@@ -318,7 +319,19 @@ class PlannerService:
 
         deinterlace = video.interlaced
 
-        # HDR: only passthrough for HDR10 (not DV/HDR10+ which are already skipped)
+        # HDR10+ guard (should be caught by analyzer, but double-check)
+        if video.hdr.is_hdr10_plus:
+            raise ValueError(f"HDR10+ not supported: {video.source_file.name}")
+
+        # DV mode
+        dv_mode: DvMode | None = None
+        if video.hdr.is_dolby_vision:
+            if video.hdr.dv_profile == 7:
+                dv_mode = DvMode.TO_8_1
+            else:
+                dv_mode = DvMode.COPY
+
+        # HDR metadata passthrough
         hdr = video.hdr if (video.hdr.mastering_display or video.hdr.content_light) else None
 
         # Color info passthrough
@@ -343,6 +356,7 @@ class PlannerService:
             source_bitrate=video.bitrate,
             sar_num=video.sar_num,
             sar_den=video.sar_den,
+            dv_mode=dv_mode,
         )
 
     def _build_audio_instruction(self, track: Track, is_default: bool) -> AudioInstruction:

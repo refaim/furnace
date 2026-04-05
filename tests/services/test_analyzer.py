@@ -184,19 +184,35 @@ class TestAnalyzerParsesTracks:
         assert rus_track.is_default is False
 
 
-class TestAnalyzerSkipsDV:
-    def test_analyzer_skips_dv(self, tmp_path: Path) -> None:
-        """DV file (dvhe codec) -> analyze returns None."""
+class TestAnalyzerDVProceeds:
+    def test_analyzer_dv_returns_movie(self, tmp_path: Path) -> None:
+        """DV file (dvhe codec) -> analyze returns Movie (no longer skipped)."""
         scan_result = make_scan_result(tmp_path)
         prober = make_prober(probe_data=_dv_probe_data())
 
         with patch("furnace.services.analyzer.should_skip_file", return_value=(False, "")):
             with patch("furnace.services.analyzer.detect_hdr") as mock_detect_hdr:
                 mock_detect_hdr.return_value = HdrMetadata(is_dolby_vision=True)
-                analyzer = Analyzer(prober=prober)
-                movie = analyzer.analyze(scan_result)
+                with patch("furnace.services.analyzer.check_unsupported_codecs", return_value=None):
+                    analyzer = Analyzer(prober=prober)
+                    movie = analyzer.analyze(scan_result)
 
-        assert movie is None
+        assert movie is not None
+        assert movie.video.codec_name == "dvhe"
+
+
+class TestAnalyzerHDR10PlusError:
+    def test_analyzer_hdr10plus_raises(self, tmp_path: Path) -> None:
+        """HDR10+ content -> analyze raises ValueError."""
+        scan_result = make_scan_result(tmp_path)
+        prober = make_prober(probe_data=_dv_probe_data())
+
+        with patch("furnace.services.analyzer.should_skip_file", return_value=(False, "")):
+            with patch("furnace.services.analyzer.detect_hdr") as mock_detect_hdr:
+                mock_detect_hdr.return_value = HdrMetadata(is_hdr10_plus=True)
+                analyzer = Analyzer(prober=prober)
+                with pytest.raises(ValueError, match="HDR10\\+ not supported"):
+                    analyzer.analyze(scan_result)
 
 
 class TestAnalyzerDelay:

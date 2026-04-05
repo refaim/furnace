@@ -21,6 +21,7 @@ from ..core.ports import (
     AudioDecoder,
     AudioExtractor,
     Cleaner,
+    DoviProcessor,
     Encoder,
     Muxer,
     Prober,
@@ -72,6 +73,7 @@ class Executor:
         tagger: Tagger,
         cleaner: Cleaner,
         prober: Prober,
+        dovi_processor: DoviProcessor | None = None,
         progress: Any | None = None,  # RunApp or similar (optional, avoids circular import)
         log_dir: Path | None = None,
     ) -> None:
@@ -83,10 +85,13 @@ class Executor:
         self._tagger = tagger
         self._cleaner = cleaner
         self._prober = prober
+        self._dovi_processor = dovi_processor
         self._progress = progress
         self._log_dir = log_dir
         self._shutdown_event = threading.Event()
-        self._adapters = [encoder, audio_extractor, audio_decoder, aac_encoder, muxer, tagger, cleaner]
+        self._adapters: list[Any] = [encoder, audio_extractor, audio_decoder, aac_encoder, muxer, tagger, cleaner]
+        if dovi_processor is not None:
+            self._adapters.append(dovi_processor)
 
     def _set_adapters_log_dir(self, job_name: str) -> None:
         """Create per-job log subdirectory and update all adapters."""
@@ -247,7 +252,29 @@ class Executor:
             }
             subtitle_files.append((sub_path, sub_meta))
 
-        # Step 3: Encode video (slow — main bottleneck)
+        # Step 3: DV RPU extraction (if needed)
+        rpu_path: Path | None = None
+        if job.video_params.dv_mode is not None:
+            if self._shutdown_event.is_set():
+                return
+            if self._dovi_processor is None:
+                msg = "DV content requires dovi_tool but it is not configured"
+                raise RuntimeError(msg)
+            rpu_path = temp_dir / "RPU.bin"
+            status_msg = f"Extracting DV RPU (mode={job.video_params.dv_mode.name})"
+            logger.info(status_msg)
+            if self._progress is not None:
+                self._progress.update_status(status_msg)
+                self._progress.add_tool_line(f"[furnace] {status_msg}")
+            rc = self._dovi_processor.extract_rpu(
+                input_path=main_source,
+                output_rpu=rpu_path,
+                mode=job.video_params.dv_mode,
+            )
+            if rc != 0:
+                raise RuntimeError(f"DV RPU extraction failed with return code {rc}")
+
+        # Step 4: Encode video (slow — main bottleneck)
         if self._shutdown_event.is_set():
             return
 
@@ -259,8 +286,17 @@ class Executor:
 
         def _encode_progress(pct: float, status_line: str) -> None:
             speed = ""
+            # ffmpeg format: "speed=2.5x"
             if "speed=" in status_line:
                 speed = status_line.rsplit("speed=", maxsplit=1)[-1].strip()
+            # NVEncC format: "137 frames: 85.08 fps, ..."
+            elif "fps," in status_line:
+                import re as _re
+                m = _re.search(r"([\d.]+)\s*fps,", status_line)
+                if m and job.video_params.fps_num and job.video_params.fps_den:
+                    src_fps = job.video_params.fps_num / job.video_params.fps_den
+                    if src_fps > 0:
+                        speed = f"{float(m.group(1)) / src_fps:.1f}x"
             if self._progress is not None:
                 self._progress.update_encode(pct, speed)
                 # Update output size: audio + current video
@@ -270,17 +306,26 @@ class Executor:
                     video_size = 0
                 self._progress.update_output_size(self._cumulative_audio_size + video_size)
 
-        rc, encoder_settings = self._encoder.encode(
+        rc_result = self._encoder.encode(
             input_path=main_source,
             output_path=video_output,
             video_params=job.video_params,
             source_size=job.source_size,
             on_progress=_encode_progress,
+            vmaf_enabled=self._vmaf_enabled,
+            rpu_path=rpu_path,
         )
-        if rc != 0:
-            raise RuntimeError(f"Video encoding failed with return code {rc}")
+        if rc_result.return_code != 0:
+            raise RuntimeError(f"Video encoding failed with return code {rc_result.return_code}")
 
-        # Step 4: Mux
+        # Store metrics from encode
+        if rc_result.vmaf_score is not None:
+            job.vmaf_score = rc_result.vmaf_score
+        if rc_result.ssim_score is not None:
+            job.ssim_score = rc_result.ssim_score
+        encoder_settings = rc_result.encoder_settings
+
+        # Step 5: Mux
         if self._shutdown_event.is_set():
             return
 
@@ -300,7 +345,9 @@ class Executor:
 
         chapters_source: Path | None = None
         if job.copy_chapters and job.chapters_source:
-            chapters_source = Path(job.chapters_source)
+            chapters_source = self._extract_chapters_file(
+                Path(job.chapters_source), temp_dir,
+            )
 
         # Build video metadata for container-level color/HDR flags
         video_meta: dict[str, Any] = {}
@@ -334,7 +381,7 @@ class Executor:
         if self._progress is not None and muxed_path.exists():
             self._progress.update_output_size(muxed_path.stat().st_size)
 
-        # Step 5: Set ENCODER tag
+        # Step 6: Set ENCODER tag
         if self._shutdown_event.is_set():
             return
 
@@ -347,7 +394,7 @@ class Executor:
         if rc != 0:
             logger.warning("mkvpropedit returned %d for %s", rc, muxed_path)
 
-        # Step 6: mkclean
+        # Step 7: mkclean
         if self._shutdown_event.is_set():
             return
 
@@ -363,56 +410,9 @@ class Executor:
         if self._progress is not None and cleaned_path.exists():
             self._progress.update_output_size(cleaned_path.stat().st_size)
 
-        # Step 7: Post-encoding bloat check
-        if self._check_bloat(job.source_size, cleaned_path):
-            raise RuntimeError(
-                f"Post-encoding bloat check failed: output exceeds source size "
-                f"(source={job.source_size}, output={cleaned_path.stat().st_size if cleaned_path.exists() else 'missing'})"
-            )
-
         # Move cleaned output to final destination
         shutil.move(str(cleaned_path), str(output_path))
         logger.debug("Job output written to %s", output_path)
-
-        # Step 8: Optional VMAF
-        if self._vmaf_enabled and not self._shutdown_event.is_set():
-            logger.info("Computing VMAF")
-            if self._progress is not None:
-                self._progress.update_status("VMAF")
-                self._progress.add_tool_line("[furnace] Computing VMAF score...")
-
-            def _vmaf_progress(pct: float, status_line: str) -> None:
-                if self._progress is not None:
-                    self._progress.update_encode(pct, "")
-
-            source_path = Path(job.source_files[0])
-            # Get duration from probe
-            try:
-                probe_data = self._prober.probe(source_path)
-                duration_s = float(probe_data.get("format", {}).get("duration", 0))
-            except Exception:
-                duration_s = 0.0
-
-            vmaf_score, ssim_score = self._encoder.compute_quality(
-                reference=source_path,
-                distorted=output_path,
-                duration_s=duration_s,
-                on_progress=_vmaf_progress,
-                video_params=job.video_params,
-            )
-            if vmaf_score is not None:
-                job.vmaf_score = vmaf_score
-                job.ssim_score = ssim_score
-                scores = f"VMAF {vmaf_score:.1f}"
-                if ssim_score is not None:
-                    scores += f" | SSIM {ssim_score:.4f}"
-                logger.info("Quality scores: %s", scores)
-                if self._progress is not None:
-                    self._progress.add_tool_line(f"[furnace] {scores}")
-            else:
-                logger.warning("Quality metrics computation failed")
-                if self._progress is not None:
-                    self._progress.add_tool_line("[furnace] Quality metrics computation failed")
 
     def _process_audio_track(self, instr: AudioInstruction, temp_dir: Path) -> Path:
         """Returns path to processed audio file.
@@ -580,25 +580,23 @@ class Executor:
 
         raise ValueError(f"Unknown SubtitleAction: {instr.action}")
 
-    def _check_bloat(self, source_size: int, output_path: Path) -> bool:
-        """True if output > source -> delete output."""
-        if source_size <= 0:
-            return False
+    def _extract_chapters_file(self, source: Path, job_dir: Path) -> Path | None:
+        """Extract chapters from source MKV via ffprobe, fix mojibake, write OGM file."""
+        from ..core.chapters import chapters_have_mojibake, write_ogm_chapters
+
         try:
-            output_size = output_path.stat().st_size
-        except FileNotFoundError:
-            return False
-        if output_size > source_size:
-            logger.warning(
-                "Bloat check failed: output %d bytes > source %d bytes; deleting %s",
-                output_size, source_size, output_path,
-            )
-            try:
-                output_path.unlink()
-            except OSError as exc:
-                logger.error("Failed to delete bloated output %s: %s", output_path, exc)
-            return True
-        return False
+            probe = self._prober.probe(source)
+        except RuntimeError:
+            logger.warning("Failed to probe %s for chapters", source)
+            return None
+        chapters: list[dict[str, Any]] = probe.get("chapters", [])
+        if not chapters:
+            return None
+        if chapters_have_mojibake(chapters):
+            logger.info("Mojibake detected in chapter titles, fixing encoding")
+        ogm_path = job_dir / "chapters.txt"
+        write_ogm_chapters(chapters, ogm_path)
+        return ogm_path
 
     def graceful_shutdown(self) -> None:
         """Called on ESC. Kill ffmpeg process tree via psutil."""

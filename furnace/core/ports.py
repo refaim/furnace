@@ -4,7 +4,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
-from .models import CropRect, DiscTitle, VideoParams
+from .models import CropRect, DiscTitle, DvMode, EncodeResult, VideoParams
 
 
 @runtime_checkable
@@ -30,11 +30,7 @@ class Prober(Protocol):
 
 @runtime_checkable
 class Encoder(Protocol):
-    """Video encoding via ffmpeg/NVENC.
-
-    Note: compute_vmaf() will be added in Phase 6, not Phase 2.
-    In Phase 2 the Encoder Protocol contains only encode().
-    """
+    """Video encoding via NVEncC."""
 
     def encode(
         self,
@@ -43,25 +39,28 @@ class Encoder(Protocol):
         video_params: VideoParams,
         source_size: int,
         on_progress: Callable[[float, str], None] | None = None,
-    ) -> tuple[int, str]:
-        """Encode video. Returns (return_code, encoder_settings_string).
-
-        source_size is passed for mid-encoding bloat check (see 12.11).
-        on_progress callback receives (progress_pct, status_line).
-        """
+        vmaf_enabled: bool = False,
+        rpu_path: Path | None = None,
+    ) -> EncodeResult:
+        """Encode video. Returns EncodeResult with return code, settings, and optional metrics."""
         ...
 
-    def compute_quality(
-        self,
-        reference: Path,
-        distorted: Path,
-        duration_s: float,
-        on_progress: Callable[[float, str], None] | None = None,
-        video_params: VideoParams | None = None,
-    ) -> tuple[float | None, float | None]:
-        """Calculate VMAF and SSIM in one pass. Returns (vmaf, ssim) or (None, None).
 
-        If video_params is provided, reference is cropped/scaled to match distorted dimensions.
+@runtime_checkable
+class DoviProcessor(Protocol):
+    """Extract/convert Dolby Vision RPU metadata via dovi_tool."""
+
+    def extract_rpu(
+        self,
+        input_path: Path,
+        output_rpu: Path,
+        mode: DvMode,
+    ) -> int:
+        """Extract RPU from HEVC stream.
+
+        mode=COPY: extract as-is (no -m flag).
+        mode=TO_8_1: convert P7 FEL -> P8.1 (-m 2).
+        Returns exit code.
         """
         ...
 

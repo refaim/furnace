@@ -505,15 +505,25 @@ class LanguageSelectorScreen(Screen[str]):
         track: Track,
         lang_list: list[str],
         preview_cb: Callable[[Track], None] | None = None,
+        movie: Movie | None = None,
     ) -> None:
         super().__init__()
         self._track = track
         self._lang_list = lang_list
         self._preview_cb = preview_cb
+        self._movie = movie
         self._cursor: int = 0
 
     def compose(self) -> ComposeResult:
         yield Header()
+
+        # File header (same style as TrackSelectorScreen)
+        if self._movie is not None:
+            v = self._movie.video
+            filename = self._movie.main_file.name
+            resolution = f"{v.width}x{v.height}"
+            codec = v.codec_name.upper()
+            yield Static(f"{filename}  |  {resolution}  {codec}", id="lang-header")
 
         # Track description
         t = self._track

@@ -163,8 +163,11 @@ class DiscDemuxer:
                 cmd += ["--language", f"0:{lang_match.group(1)}"]
             cmd.append(str(f))
 
-        # Add chapters
+        # Add chapters (fix mojibake if needed)
         if chapters_file is not None:
+            from ..core.chapters import fix_chapters_file
+            if fix_chapters_file(chapters_file):
+                logger.info("Fixed mojibake in chapters file %s", chapters_file.name)
             cmd += ["--chapters", str(chapters_file)]
 
         logger.info("Muxing demuxed tracks into %s", output_mkv.name)

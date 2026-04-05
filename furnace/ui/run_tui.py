@@ -18,11 +18,14 @@ Layout:
 """
 from __future__ import annotations
 
+import os
 import re
 import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
+
+import psutil
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal
@@ -189,11 +192,14 @@ def _build_target_text(job: Job) -> str:
     """Build target info block from Job data."""
     lines: list[str] = []
 
+    from furnace.core.quality import correct_sar
+
     vp = job.video_params
-    if vp.crop:
-        res = f"{vp.crop.w}x{vp.crop.h}"
-    else:
-        res = f"{vp.source_width}x{vp.source_height}"
+    cur_w = vp.crop.w if vp.crop else vp.source_width
+    cur_h = vp.crop.h if vp.crop else vp.source_height
+    if vp.sar_num != vp.sar_den:
+        cur_w, cur_h = correct_sar(cur_w, cur_h, vp.sar_num, vp.sar_den)
+    res = f"{cur_w}x{cur_h}"
     lines.append(f"Video: HEVC {res} CQ{vp.cq}")
 
     for i, audio_instr in enumerate(job.audio):
@@ -314,6 +320,7 @@ class RunApp(App[None]):
 
     BINDINGS = [
         Binding("escape", "quit_app", "Quit", show=True),
+        Binding("ctrl+q", "quit_app", "Quit", show=False),
     ]
 
     def __init__(
@@ -378,21 +385,14 @@ class RunApp(App[None]):
     def action_quit_app(self) -> None:
         """ESC pressed: graceful shutdown."""
         self._shutdown_event.set()
-        # Kill child process tree
-        try:
-            import os as _os
-            import psutil
-            parent = psutil.Process(_os.getpid())
-            for child in parent.children(recursive=True):
-                try:
-                    child.kill()
-                except psutil.NoSuchProcess:
-                    pass
-        except ImportError:
-            pass
-        except Exception:  # noqa: S110
-            pass
-        self.exit()
+        # Kill child process tree and force exit
+        parent = psutil.Process(os.getpid())
+        for child in parent.children(recursive=True):
+            try:
+                child.kill()
+            except psutil.NoSuchProcess:
+                pass
+        os._exit(0)
 
     # ------------------------------------------------------------------
     # Public API (called from worker thread)
@@ -473,6 +473,9 @@ class RunApp(App[None]):
         progress_w.update("")
 
     def _do_update_encode(self, pct: float, speed: str) -> None:
+        if not self._encoding:
+            # First encode progress update — reset timer to exclude audio/subtitle time
+            self._start_time = time.monotonic()
         self._encoding = True
         self._pct = pct
         self._speed = speed

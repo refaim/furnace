@@ -12,6 +12,8 @@ from .core.models import (
     AudioInstruction,
     ColorSpace,
     CropRect,
+    DvBlCompatibility,
+    DvMode,
     HdrMetadata,
     Job,
     JobStatus,
@@ -68,15 +70,28 @@ def _load_crop(raw: dict[str, Any] | None) -> CropRect | None:
 def _load_hdr(raw: dict[str, Any] | None) -> HdrMetadata | None:
     if raw is None:
         return None
+    dv_bl_compat: DvBlCompatibility | None = None
+    raw_compat = raw.get("dv_bl_compatibility")
+    if raw_compat is not None:
+        try:
+            dv_bl_compat = DvBlCompatibility(int(raw_compat))
+        except (ValueError, TypeError):
+            pass
+    raw_profile = raw.get("dv_profile")
+    dv_profile: int | None = int(raw_profile) if raw_profile is not None else None
     return HdrMetadata(
         mastering_display=raw.get("mastering_display"),
         content_light=raw.get("content_light"),
         is_dolby_vision=raw.get("is_dolby_vision", False),
         is_hdr10_plus=raw.get("is_hdr10_plus", False),
+        dv_profile=dv_profile,
+        dv_bl_compatibility=dv_bl_compat,
     )
 
 
 def _load_video_params(raw: dict[str, Any]) -> VideoParams:
+    dv_mode_raw = raw.get("dv_mode")
+    dv_mode: DvMode | None = DvMode(dv_mode_raw) if dv_mode_raw is not None else None
     return VideoParams(
         cq=raw["cq"],
         crop=_load_crop(raw.get("crop")),
@@ -95,6 +110,7 @@ def _load_video_params(raw: dict[str, Any]) -> VideoParams:
         source_bitrate=raw.get("source_bitrate", 0),
         sar_num=raw.get("sar_num", 1),
         sar_den=raw.get("sar_den", 1),
+        dv_mode=dv_mode,
     )
 
 

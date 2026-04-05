@@ -53,6 +53,18 @@ def align_dimensions(w: int, h: int, x: int = 0, y: int = 0) -> CropRect:
 
 
 
+def correct_sar(width: int, height: int, sar_num: int, sar_den: int) -> tuple[int, int]:
+    """Correct non-square pixel aspect ratio by scaling up the smaller dimension.
+
+    Returns (display_width, display_height) with square pixels.
+    """
+    if sar_num == sar_den:
+        return width, height
+    if sar_num > sar_den:
+        return round(width * sar_num / sar_den), height
+    return width, round(height * sar_den / sar_num)
+
+
 def determine_color_space(
     width: int, height: int, source_color_space: str | None
 ) -> ColorSpace:

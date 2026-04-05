@@ -71,6 +71,20 @@ class ColorSpace(enum.Enum):
     BT2020 = "bt2020"
 
 
+class DvBlCompatibility(enum.IntEnum):
+    """Dolby Vision base layer compatibility."""
+    NONE = 0    # no fallback (Profile 5)
+    HDR10 = 1   # HDR10 fallback
+    SDR = 2     # SDR fallback
+    HLG = 4     # HLG fallback
+
+
+class DvMode(enum.IntEnum):
+    """DV RPU extraction mode. Values match dovi_tool -m flag."""
+    COPY = 0      # extract RPU as-is (no -m flag)
+    TO_8_1 = 2    # convert P7 FEL -> P8.1 (-m 2)
+
+
 class DiscType(enum.Enum):
     DVD = "dvd"
     BLURAY = "bluray"
@@ -83,6 +97,8 @@ class HdrMetadata:
     content_light: str | None = None       # "MaxCLL=X,MaxFALL=Y"
     is_dolby_vision: bool = False
     is_hdr10_plus: bool = False
+    dv_profile: int | None = None
+    dv_bl_compatibility: DvBlCompatibility | None = None
 
 
 @dataclass(frozen=True)
@@ -92,6 +108,15 @@ class CropRect:
     h: int
     x: int
     y: int
+
+
+@dataclass(frozen=True)
+class EncodeResult:
+    """Result of video encoding."""
+    return_code: int
+    encoder_settings: str
+    vmaf_score: float | None = None
+    ssim_score: float | None = None
 
 
 @dataclass(frozen=True)
@@ -221,7 +246,7 @@ class VideoParams:
     """Параметры кодирования видео."""
     cq: int
     crop: CropRect | None              # None = без crop
-    deinterlace: bool                  # нужен ли bwdif_cuda
+    deinterlace: bool                  # нужен ли деинтерлейс
     color_space: ColorSpace
     color_range: str                   # "tv" всегда
     color_transfer: str | None         # raw ffmpeg value для passthrough
@@ -236,6 +261,7 @@ class VideoParams:
     source_bitrate: int = 0            # video stream bitrate in bps (from ffprobe)
     sar_num: int = 1                   # sample aspect ratio numerator
     sar_den: int = 1                   # sample aspect ratio denominator
+    dv_mode: DvMode | None = None         # None=no DV, COPY=as-is, TO_8_1=P7->P8.1
 
 
 @dataclass

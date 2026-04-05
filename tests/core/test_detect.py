@@ -12,6 +12,7 @@ from furnace.core.detect import (
 )
 from furnace.core.models import (
     AudioCodecId,
+    DvBlCompatibility,
     SubtitleCodecId,
     Track,
     TrackType,
@@ -411,6 +412,62 @@ class TestUnknownCodecCheck:
         assert result is not None
         assert "audio stream #1" in result
         assert "subtitle stream #2" in result
+
+
+# ---------------------------------------------------------------------------
+# test_dv_profile_detection
+# ---------------------------------------------------------------------------
+
+class TestDvProfileDetection:
+    def test_dv_profile_from_side_data(self) -> None:
+        side_data = [{
+            "side_data_type": "Dolby Vision configuration record",
+            "dv_profile": 8,
+            "dv_bl_signal_compatibility_id": 1,
+        }]
+        result = detect_hdr({}, side_data)
+        assert result.is_dolby_vision
+        assert result.dv_profile == 8
+        assert result.dv_bl_compatibility == DvBlCompatibility.HDR10
+
+    def test_dv_profile7_fel(self) -> None:
+        side_data = [{
+            "side_data_type": "Dolby Vision configuration record",
+            "dv_profile": 7,
+            "dv_bl_signal_compatibility_id": 1,
+        }]
+        result = detect_hdr({}, side_data)
+        assert result.dv_profile == 7
+        assert result.dv_bl_compatibility == DvBlCompatibility.HDR10
+
+    def test_dv_profile5_no_compat(self) -> None:
+        side_data = [{
+            "side_data_type": "Dolby Vision configuration record",
+            "dv_profile": 5,
+            "dv_bl_signal_compatibility_id": 0,
+        }]
+        result = detect_hdr({}, side_data)
+        assert result.dv_profile == 5
+        assert result.dv_bl_compatibility == DvBlCompatibility.NONE
+
+    def test_dv_codec_name_no_side_data_no_profile(self) -> None:
+        result = detect_hdr({"codec_name": "dvhe"}, [])
+        assert result.is_dolby_vision
+        assert result.dv_profile is None
+        assert result.dv_bl_compatibility is None
+
+    def test_no_dv_fields_none(self) -> None:
+        side_data = [{
+            "side_data_type": "Mastering display metadata",
+            "green_x": "0.265", "green_y": "0.690",
+            "blue_x": "0.150", "blue_y": "0.060",
+            "red_x": "0.680", "red_y": "0.320",
+            "white_point_x": "0.3127", "white_point_y": "0.3290",
+            "max_luminance": "1000", "min_luminance": "0.005",
+        }]
+        result = detect_hdr({}, side_data)
+        assert result.dv_profile is None
+        assert result.dv_bl_compatibility is None
 
 
 # ---------------------------------------------------------------------------

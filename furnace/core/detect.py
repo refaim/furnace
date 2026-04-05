@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from .models import AudioCodecId, HdrMetadata, SubtitleCodecId, Track
+from .models import AudioCodecId, DvBlCompatibility, HdrMetadata, SubtitleCodecId, Track
 
 FORCED_FILENAME_KEYWORDS: list[str] = ["forced", "форсир", "только надписи", "forsed", "tolko nadpisi"]
 FORCED_FILENAME_EXCLUDE: list[str] = ["normal"]
@@ -124,6 +124,8 @@ def detect_hdr(stream_data: dict[str, Any], side_data: list[dict[str, Any]] | No
     content_light: str | None = None
     is_dolby_vision: bool = False
     is_hdr10_plus: bool = False
+    dv_profile: int | None = None
+    dv_bl_compatibility: DvBlCompatibility | None = None
 
     sd = side_data or []
 
@@ -147,6 +149,15 @@ def detect_hdr(stream_data: dict[str, Any], side_data: list[dict[str, Any]] | No
 
         elif "Dolby Vision configuration" in side_type:
             is_dolby_vision = True
+            raw_profile = entry.get("dv_profile")
+            if raw_profile is not None:
+                dv_profile = int(raw_profile)
+            raw_compat = entry.get("dv_bl_signal_compatibility_id")
+            if raw_compat is not None:
+                try:
+                    dv_bl_compatibility = DvBlCompatibility(int(raw_compat))
+                except ValueError:
+                    pass
 
         elif "HDR10+" in side_type or "SMPTE ST 2094" in side_type:
             is_hdr10_plus = True
@@ -161,6 +172,8 @@ def detect_hdr(stream_data: dict[str, Any], side_data: list[dict[str, Any]] | No
         content_light=content_light,
         is_dolby_vision=is_dolby_vision,
         is_hdr10_plus=is_hdr10_plus,
+        dv_profile=dv_profile,
+        dv_bl_compatibility=dv_bl_compatibility,
     )
 
 

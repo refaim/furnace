@@ -18,13 +18,16 @@ class ToolPaths:
     qaac64: Path
     mpv: Path
     makemkvcon: Path
+    nvencc: Path
+    dovi_tool: Path | None
 
 
 def load_config(config_path: Path | None = None) -> ToolPaths:
     """Load TOML config. Search order:
     1. Explicit path (if provided)
     2. furnace.toml in CWD
-    3. %APPDATA%\\furnace\\furnace.toml
+    3. furnace.toml next to the package (project root)
+    4. %APPDATA%\\furnace\\furnace.toml
     Validates that all tool paths exist.
     """
     searched: list[Path] = []
@@ -48,6 +51,11 @@ def load_config(config_path: Path | None = None) -> ToolPaths:
         # Try CWD
         data = try_load(Path.cwd() / "furnace.toml")
 
+        # Try project root (directory containing the furnace package)
+        if data is None:
+            project_root = Path(__file__).resolve().parent.parent
+            data = try_load(project_root / "furnace.toml")
+
         # Try %APPDATA%\furnace\furnace.toml
         if data is None:
             appdata = os.environ.get("APPDATA")
@@ -62,10 +70,10 @@ def load_config(config_path: Path | None = None) -> ToolPaths:
 
     tools_section: dict[str, Any] = data.get("tools", {})
 
-    tool_names = ("ffmpeg", "ffprobe", "mkvmerge", "mkvpropedit", "mkclean", "eac3to", "qaac64", "mpv", "makemkvcon")
+    mandatory_tools = ("ffmpeg", "ffprobe", "mkvmerge", "mkvpropedit", "mkclean", "eac3to", "qaac64", "mpv", "makemkvcon", "nvencc")
     resolved: dict[str, Path] = {}
 
-    for name in tool_names:
+    for name in mandatory_tools:
         if name not in tools_section:
             raise KeyError(f"Missing required key [tools].{name} in config")
         tool_path = Path(tools_section[name])
@@ -74,6 +82,15 @@ def load_config(config_path: Path | None = None) -> ToolPaths:
                 f"Tool '{name}' not found at path: {tool_path}"
             )
         resolved[name] = tool_path
+
+    # Optional tools
+    dovi_tool_path: Path | None = None
+    if "dovi_tool" in tools_section:
+        dovi_tool_path = Path(tools_section["dovi_tool"])
+        if not dovi_tool_path.exists():
+            raise FileNotFoundError(
+                f"Tool 'dovi_tool' not found at path: {dovi_tool_path}"
+            )
 
     return ToolPaths(
         ffmpeg=resolved["ffmpeg"],
@@ -85,4 +102,6 @@ def load_config(config_path: Path | None = None) -> ToolPaths:
         qaac64=resolved["qaac64"],
         mpv=resolved["mpv"],
         makemkvcon=resolved["makemkvcon"],
+        nvencc=resolved["nvencc"],
+        dovi_tool=dovi_tool_path,
     )

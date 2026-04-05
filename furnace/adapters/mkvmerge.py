@@ -180,14 +180,9 @@ class MkvmergeAdapter:
                 "--attach-file", str(att_path),
             ]
 
-        # Chapters: add source MKV as input with all tracks suppressed,
-        # mkvmerge reads chapters directly from the MKV container
+        # Chapters (always OGM .txt file, prepared by executor)
         if chapters_source is not None:
-            cmd += [
-                "--no-video", "--no-audio", "--no-subtitles",
-                "--no-attachments", "--no-track-tags",
-                str(chapters_source),
-            ]
+            cmd += ["--chapters", str(chapters_source)]
 
         # Track order: video first (0:0), then audio, then subtitles
         audio_count = len(audio_files)

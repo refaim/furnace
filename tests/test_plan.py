@@ -11,6 +11,8 @@ from furnace.core.models import (
     AudioInstruction,
     ColorSpace,
     CropRect,
+    DvBlCompatibility,
+    DvMode,
     HdrMetadata,
     Job,
     JobStatus,
@@ -466,3 +468,57 @@ class TestPlanDemuxDir:
         save_plan(plan, plan_path)
         loaded = load_plan(plan_path)
         assert loaded.demux_dir is None
+
+
+# ---------------------------------------------------------------------------
+# test_plan_dv_mode_roundtrip
+# ---------------------------------------------------------------------------
+
+class TestPlanDvModeRoundtrip:
+    def test_roundtrip_dv_mode_to_8_1(self, tmp_path) -> None:
+        import dataclasses as dc
+        vp = make_video_params()
+        vp = dc.replace(vp, dv_mode=DvMode.TO_8_1)
+        job = Job(
+            id="dv-job", source_files=["/src/dv.mkv"], output_file="/out/dv.mkv",
+            video_params=vp, audio=[], subtitles=[], attachments=[],
+            copy_chapters=False, chapters_source=None, status=JobStatus.PENDING, source_size=0,
+        )
+        plan = make_plan(jobs=[job])
+        plan_path = tmp_path / "plan.json"
+        save_plan(plan, plan_path)
+        loaded = load_plan(plan_path)
+        assert loaded.jobs[0].video_params.dv_mode == DvMode.TO_8_1
+
+    def test_roundtrip_dv_mode_none(self, tmp_path) -> None:
+        plan = make_plan()
+        plan_path = tmp_path / "plan.json"
+        save_plan(plan, plan_path)
+        loaded = load_plan(plan_path)
+        assert loaded.jobs[0].video_params.dv_mode is None
+
+    def test_roundtrip_hdr_with_dv_fields(self, tmp_path) -> None:
+        import dataclasses as dc
+        hdr = HdrMetadata(
+            mastering_display="G(0.265,0.69)B(0.15,0.06)R(0.68,0.32)WP(0.3127,0.329)L(1000,0.005)",
+            content_light="MaxCLL=1000,MaxFALL=400",
+            is_dolby_vision=True,
+            dv_profile=8,
+            dv_bl_compatibility=DvBlCompatibility.HDR10,
+        )
+        vp = make_video_params(color_space=ColorSpace.BT2020, hdr=hdr)
+        vp = dc.replace(vp, dv_mode=DvMode.COPY)
+        job = Job(
+            id="dv-hdr-job", source_files=["/src/dv.mkv"], output_file="/out/dv.mkv",
+            video_params=vp, audio=[], subtitles=[], attachments=[],
+            copy_chapters=False, chapters_source=None, status=JobStatus.PENDING, source_size=0,
+        )
+        plan = make_plan(jobs=[job])
+        plan_path = tmp_path / "plan.json"
+        save_plan(plan, plan_path)
+        loaded = load_plan(plan_path)
+        loaded_hdr = loaded.jobs[0].video_params.hdr
+        assert loaded_hdr is not None
+        assert loaded_hdr.is_dolby_vision is True
+        assert loaded_hdr.dv_profile == 8
+        assert loaded_hdr.dv_bl_compatibility == DvBlCompatibility.HDR10

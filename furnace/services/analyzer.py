@@ -37,7 +37,8 @@ class Analyzer:
 
     def analyze(self, scan_result: ScanResult) -> Movie | None:
         """Probe main file + satellites. Parse video/audio/subtitle/attachments.
-        Return None if: DV/HDR10+, unknown codecs, should_skip.
+        Return None if: unknown codecs, should_skip.
+        Raise ValueError for HDR10+ content.
         """
         main_file = scan_result.main_file
         output_path = scan_result.output_path
@@ -73,13 +74,10 @@ class Analyzer:
             logger.error("Failed to parse video info for %s: %s", main_file, exc)
             return None
 
-        # Check DV / HDR10+ — skip immediately
-        if video_info.hdr.is_dolby_vision:
-            logger.info("Skipping %s: Dolby Vision content", main_file.name)
-            return None
+        # HDR10+ not supported — raise error
         if video_info.hdr.is_hdr10_plus:
-            logger.info("Skipping %s: HDR10+ content", main_file.name)
-            return None
+            raise ValueError(f"HDR10+ not supported: {main_file.name}")
+        # DV content proceeds to planning (no skip)
 
         # Parse tracks from main file
         audio_streams = [s for s in streams if s.get("codec_type") == "audio"]

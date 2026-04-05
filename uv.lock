@@ -91,7 +91,7 @@ wheels = [
 
 [[package]]
 name = "furnace"
-version = "1.6.0"
+version = "1.8.0"
 source = { editable = "." }
 dependencies = [
     { name = "charset-normalizer" },
@@ -106,6 +106,7 @@ dev = [
     { name = "mypy" },
     { name = "pytest" },
     { name = "ruff" },
+    { name = "types-psutil" },
 ]
 
 [package.metadata]
@@ -122,6 +123,7 @@ dev = [
     { name = "mypy", specifier = ">=1.20.0" },
     { name = "pytest", specifier = ">=9.0.2" },
     { name = "ruff", specifier = ">=0.15.8" },
+    { name = "types-psutil", specifier = ">=7.2.2.20260402" },
 ]
 
 [[package]]
@@ -441,6 +443,15 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/f5/24/cb09efec5cc954f7f9b930bf8279447d24618bb6758d4f6adf2574c41780/typer-0.24.1.tar.gz", hash = "sha256:e39b4732d65fbdcde189ae76cf7cd48aeae72919dea1fdfc16593be016256b45", size = 118613, upload-time = "2026-02-21T16:54:40.609Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/4a/91/48db081e7a63bb37284f9fbcefda7c44c277b18b0e13fbc36ea2335b71e6/typer-0.24.1-py3-none-any.whl", hash = "sha256:112c1f0ce578bfb4cab9ffdabc68f031416ebcc216536611ba21f04e9aa84c9e", size = 56085, upload-time = "2026-02-21T16:54:41.616Z" },
+]
+
+[[package]]
+name = "types-psutil"
+version = "7.2.2.20260402"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/31/a2/a608db0caf0d71bd231305dc3ab3f5d65624d77761003696a3ca8c6fad40/types_psutil-7.2.2.20260402.tar.gz", hash = "sha256:9f36eebf15ad8487f8004ed67c8e008b84b63ba00cfb709a3f60275058217329", size = 26522, upload-time = "2026-04-02T04:18:47.916Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/81/8a/f4b3ca3154e8a77df91eb7a28c208af721d48f8a4aca667f582523a0beff/types_psutil-7.2.2.20260402-py3-none-any.whl", hash = "sha256:653d1fd908e68cc0666754b16a0cee28efbded0c401caa5314d2aeea67f227cd", size = 32860, upload-time = "2026-04-02T04:18:46.671Z" },
 ]
 
 [[package]]

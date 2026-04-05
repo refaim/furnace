@@ -7,6 +7,7 @@ from furnace.core.quality import (
     CQ_ANCHORS,
     align_dimensions,
     calculate_gop,
+    correct_sar,
     determine_color_space,
     interpolate_cq,
 )
@@ -163,6 +164,38 @@ class TestCalculateGop:
 # ---------------------------------------------------------------------------
 # test_determine_color_space
 # ---------------------------------------------------------------------------
+
+class TestCorrectSar:
+    def test_square_pixels_unchanged(self) -> None:
+        """SAR 1:1 -> no change."""
+        assert correct_sar(720, 480, 1, 1) == (720, 480)
+
+    def test_sar_wider_scales_width(self) -> None:
+        """SAR > 1 (wide pixels) -> stretch width."""
+        # SAR 32:27 = ~1.185, 720 * 32/27 = 853.33 -> 853
+        w, h = correct_sar(720, 480, 32, 27)
+        assert w == 853
+        assert h == 480
+
+    def test_sar_taller_scales_height(self) -> None:
+        """SAR < 1 (tall pixels) -> stretch height."""
+        # SAR 5:6, 480 * 6/5 = 576
+        w, h = correct_sar(720, 480, 5, 6)
+        assert w == 720
+        assert h == 576
+
+    def test_dvd_pal_sar(self) -> None:
+        """PAL DVD 720x576 SAR 64:45 -> 1024x576."""
+        w, h = correct_sar(720, 576, 64, 45)
+        assert w == 1024
+        assert h == 576
+
+    def test_dvd_ntsc_sar_8_9(self) -> None:
+        """NTSC DVD 720x480 SAR 8:9 -> stretch height."""
+        w, h = correct_sar(720, 480, 8, 9)
+        assert w == 720
+        assert h == 540
+
 
 class TestDetermineColorSpace:
     def test_hd_1080p_returns_bt709(self):

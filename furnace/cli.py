@@ -339,6 +339,7 @@ def plan(
                         track=track,
                         lang_list=lang_list,
                         preview_cb=_make_preview_track_cb(movie),
+                        movie=movie,
                     ),
                     _on_dismiss,
                 )
@@ -422,6 +423,9 @@ def run(
     # 5. Define executor factory — RunApp calls this in a worker thread,
     #    passing itself as the progress object.
     def _run_executor(progress: RunApp) -> None:
+        from .adapters.dovi_tool import DoviToolAdapter
+        from .adapters.nvencc import NVEncCAdapter
+
         tool_output = progress.add_tool_line
 
         ffmpeg_adapter = FFmpegAdapter(cfg.ffmpeg, cfg.ffprobe, on_output=tool_output)
@@ -430,9 +434,14 @@ def run(
         mkvmerge_adapter = MkvmergeAdapter(cfg.mkvmerge, on_output=tool_output)
         mkvpropedit_adapter = MkvpropeditAdapter(cfg.mkvpropedit, on_output=tool_output)
         mkclean_adapter = MkcleanAdapter(cfg.mkclean, on_output=tool_output)
+        nvencc_adapter = NVEncCAdapter(cfg.nvencc, on_output=tool_output)
+
+        dovi_adapter: DoviToolAdapter | None = None
+        if cfg.dovi_tool is not None:
+            dovi_adapter = DoviToolAdapter(cfg.dovi_tool, on_output=tool_output)
 
         executor = Executor(
-            encoder=ffmpeg_adapter,
+            encoder=nvencc_adapter,
             audio_extractor=ffmpeg_adapter,
             audio_decoder=eac3to_adapter,
             aac_encoder=qaac_adapter,
@@ -440,6 +449,7 @@ def run(
             tagger=mkvpropedit_adapter,
             cleaner=mkclean_adapter,
             prober=ffmpeg_adapter,
+            dovi_processor=dovi_adapter,
             progress=progress,
             log_dir=log_dir,
         )
@@ -456,6 +466,12 @@ def run(
         vmaf_enabled=plan_obj.vmaf_enabled,
     )
     run_app.run()
+
+    # If user requested shutdown (ESC/Ctrl+Q), exit immediately
+    # to avoid waiting for worker thread cleanup
+    if shutdown_event.is_set():
+        import os
+        os._exit(0)
 
     # 7. Reload plan from disk (executor updates JSON after each job)
     plan_obj = load_plan(plan_file)
