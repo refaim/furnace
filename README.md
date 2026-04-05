@@ -1,6 +1,6 @@
 # Furnace
 
-Batch video transcoder for home archival. Scans your movie collection, lets you pick tracks in a TUI, saves a JSON plan, then encodes everything with NVENC.
+Batch video transcoder for home archival. Scans your movie collection, lets you pick tracks in a TUI, saves a JSON plan, then encodes everything with NVEncC (NVIDIA hardware encoder).
 
 ## Why Furnace
 
@@ -9,8 +9,10 @@ Batch video transcoder for home archival. Scans your movie collection, lets you 
 - **Auto quality** — CQ value interpolated by pixel area, no manual tuning across SD/720p/1080p/4K
 - **Disc demux** — Blu-ray (BDMV) and DVD (VIDEO_TS) fed straight into the pipeline with playlist/title selection
 - **Anamorphic SAR fix** — detects and corrects wrong sample aspect ratio on DVD sources
-- **Auto deinterlace** — detects interlaced content from the video stream and applies bwdif automatically
-- **Smart crop** — black bars detected at 5 points across the timeline, auto-applied
+- **Dolby Vision** — Profile 7 FEL (converted to P8.1) and Profile 8 MEL with RPU passthrough via dovi_tool
+- **HDR10 passthrough** — mastering display, content light level, BT.2020/PQ preserved through encode
+- **Auto deinterlace** — detects interlaced content from the video stream and applies nnedi (neural network) automatically
+- **Smart crop** — black bars detected automatically across the timeline
 - **mpv preview** — audition audio tracks, check subtitles, or preview video right from the TUI before committing
 - **Satellite files** — external audio and subtitle files next to the video are picked up as extra tracks automatically
 
@@ -36,6 +38,8 @@ furnace run furnace-plan.json
 - [mkclean](https://www.matroska.org/downloads/mkclean.html)
 - [mpv](https://mpv.io) (track preview)
 - [MakeMKV](https://www.makemkv.com) (DVD demux)
+- [NVEncC](https://github.com/rigaya/NVEnc) (video encoder)
+- [dovi_tool](https://github.com/quietvoid/dovi_tool) (Dolby Vision RPU, optional)
 
 ## Install
 

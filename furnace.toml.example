@@ -16,3 +16,5 @@ eac3to      = "C:\\Tools\\eac3to\\eac3to.exe"
 qaac64      = "C:\\Tools\\qaac\\qaac64.exe"
 mpv         = "C:\\Tools\\mpv\\mpv.exe"
 makemkvcon  = "C:\\Program Files (x86)\\MakeMKV\\makemkvcon64.exe"
+nvencc      = "C:\\Tools\\NVEncC\\NVEncC64.exe"
+dovi_tool   = "C:\\Tools\\dovi_tool.exe"  # optional, needed for Dolby Vision content
