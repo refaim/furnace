@@ -28,6 +28,7 @@ from ..core.quality import (
     determine_color_space,
     interpolate_cq,
 )
+from ..core.detect import is_dvd_resolution
 from ..core.rules import get_audio_action, get_subtitle_action
 
 from furnace import VERSION as FURNACE_VERSION
@@ -107,8 +108,11 @@ class PlannerService:
         crop: CropRect | None = None
         if not dry_run:
             try:
+                is_dvd = is_dvd_resolution(movie.video.width, movie.video.height)
                 raw_crop = self._prober.detect_crop(
-                    movie.main_file, movie.video.duration_s
+                    movie.main_file, movie.video.duration_s,
+                    interlaced=movie.video.interlaced,
+                    is_dvd=is_dvd,
                 )
                 if raw_crop is not None:
                     crop = raw_crop

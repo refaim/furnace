@@ -6,12 +6,15 @@ import pytest
 
 from furnace.core.detect import (
     check_unsupported_codecs,
+    cluster_crop_values,
     detect_forced_subtitles,
     detect_hdr,
+    is_dvd_resolution,
     should_skip_file,
 )
 from furnace.core.models import (
     AudioCodecId,
+    CropRect,
     DvBlCompatibility,
     SubtitleCodecId,
     Track,
@@ -468,6 +471,106 @@ class TestDvProfileDetection:
         result = detect_hdr({}, side_data)
         assert result.dv_profile is None
         assert result.dv_bl_compatibility is None
+
+
+
+# ---------------------------------------------------------------------------
+# test_is_dvd_resolution
+# ---------------------------------------------------------------------------
+
+class TestIsDvdResolution:
+    def test_ntsc_dvd(self) -> None:
+        assert is_dvd_resolution(720, 480) is True
+
+    def test_pal_dvd(self) -> None:
+        assert is_dvd_resolution(720, 576) is True
+
+    def test_hd_1080(self) -> None:
+        assert is_dvd_resolution(1920, 1080) is False
+
+    def test_hd_720(self) -> None:
+        assert is_dvd_resolution(1280, 720) is False
+
+    def test_uhd_4k(self) -> None:
+        assert is_dvd_resolution(3840, 2160) is False
+
+
+# ---------------------------------------------------------------------------
+# test_cluster_crop_values
+# ---------------------------------------------------------------------------
+
+class TestClusterCropValues:
+    def test_all_identical(self) -> None:
+        """All values the same -> cluster = all, median = that value."""
+        crops = [CropRect(688, 432, 14, 72)] * 10
+        median, size = cluster_crop_values(crops)
+        assert median == CropRect(688, 432, 14, 72)
+        assert size == 10
+
+    def test_within_tolerance(self) -> None:
+        """Values within +-16 -> single cluster, median correct."""
+        crops = [
+            CropRect(688, 432, 14, 72),
+            CropRect(690, 434, 14, 70),
+            CropRect(686, 430, 16, 74),
+            CropRect(688, 432, 14, 72),
+            CropRect(692, 436, 12, 68),
+        ]
+        median, size = cluster_crop_values(crops, tolerance=16)
+        assert size == 5
+        # Median of each coordinate (sorted[len//2]):
+        # w: sorted [686,688,688,690,692] -> index 2 -> 688
+        # h: sorted [430,432,432,434,436] -> index 2 -> 432
+        # x: sorted [12,14,14,14,16] -> index 2 -> 14
+        # y: sorted [68,70,72,72,74] -> index 2 -> 72
+        assert median == CropRect(688, 432, 14, 72)
+
+    def test_two_distinct_groups(self) -> None:
+        """Two groups far apart -> largest cluster wins."""
+        group_a = [CropRect(688, 432, 14, 72)] * 6
+        group_b = [CropRect(720, 480, 0, 0)] * 4
+        crops = group_a + group_b
+        median, size = cluster_crop_values(crops, tolerance=16)
+        assert size == 6
+        assert median == CropRect(688, 432, 14, 72)
+
+    def test_single_value(self) -> None:
+        """Single crop -> cluster size 1."""
+        crops = [CropRect(704, 576, 0, 0)]
+        median, size = cluster_crop_values(crops)
+        assert size == 1
+        assert median == CropRect(704, 576, 0, 0)
+
+    def test_tolerance_boundary_included(self) -> None:
+        """Values exactly at tolerance distance are included."""
+        crops = [
+            CropRect(688, 432, 14, 72),
+            CropRect(704, 432, 14, 72),  # w differs by exactly 16
+        ]
+        median, size = cluster_crop_values(crops, tolerance=16)
+        assert size == 2
+
+    def test_tolerance_boundary_excluded(self) -> None:
+        """Values at tolerance+1 are excluded."""
+        crops = [
+            CropRect(688, 432, 14, 72),
+            CropRect(705, 432, 14, 72),  # w differs by 17
+        ]
+        median, size = cluster_crop_values(crops, tolerance=16)
+        assert size == 1
+
+    def test_median_even_count(self) -> None:
+        """Even number of values -> upper-middle (sorted[len//2])."""
+        crops = [
+            CropRect(686, 432, 14, 72),
+            CropRect(688, 432, 14, 72),
+            CropRect(690, 432, 14, 72),
+            CropRect(692, 432, 14, 72),
+        ]
+        median, size = cluster_crop_values(crops, tolerance=16)
+        assert size == 4
+        # sorted w: [686,688,690,692], index 4//2=2 -> 690
+        assert median.w == 690
 
 
 # ---------------------------------------------------------------------------

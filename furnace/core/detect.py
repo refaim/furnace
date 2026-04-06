@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from .models import AudioCodecId, DvBlCompatibility, HdrMetadata, SubtitleCodecId, Track
+from .models import AudioCodecId, CropRect, DvBlCompatibility, HdrMetadata, SubtitleCodecId, Track
 
 FORCED_FILENAME_KEYWORDS: list[str] = ["forced", "форсир", "только надписи", "forsed", "tolko nadpisi"]
 FORCED_FILENAME_EXCLUDE: list[str] = ["normal"]
@@ -82,6 +82,44 @@ def detect_forced_subtitles(subtitle_tracks: list[Track]) -> None:
     # Text group uses num_captions; also check num_frames if available
     _apply_statistical(text_tracks, "num_captions")
     _apply_statistical(text_tracks, "num_frames")
+
+
+_DVD_RESOLUTIONS = {(720, 480), (720, 576)}
+
+
+def is_dvd_resolution(width: int, height: int) -> bool:
+    """720x480 (NTSC) or 720x576 (PAL)."""
+    return (width, height) in _DVD_RESOLUTIONS
+
+
+def cluster_crop_values(
+    crops: list[CropRect],
+    tolerance: int = 16,
+) -> tuple[CropRect, int]:
+    """Find largest cluster of similar crop values.
+
+    Two CropRect values are 'close' if all 4 coordinates differ by at most
+    *tolerance* pixels.  Returns (per-coordinate median of cluster, cluster size).
+    """
+    best_members: list[CropRect] = []
+
+    for anchor in crops:
+        members = [
+            c for c in crops
+            if (abs(c.w - anchor.w) <= tolerance
+                and abs(c.h - anchor.h) <= tolerance
+                and abs(c.x - anchor.x) <= tolerance
+                and abs(c.y - anchor.y) <= tolerance)
+        ]
+        if len(members) > len(best_members):
+            best_members = members
+
+    ws = sorted(c.w for c in best_members)
+    hs = sorted(c.h for c in best_members)
+    xs = sorted(c.x for c in best_members)
+    ys = sorted(c.y for c in best_members)
+    mid = len(best_members) // 2
+    return CropRect(w=ws[mid], h=hs[mid], x=xs[mid], y=ys[mid]), len(best_members)
 
 
 _INTERLACED_FIELD_ORDERS = {"tt", "bb"}

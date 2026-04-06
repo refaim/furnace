@@ -15,7 +15,10 @@ class Prober(Protocol):
         """Return raw ffprobe JSON (streams + format + chapters)."""
         ...
 
-    def detect_crop(self, path: Path, duration_s: float) -> CropRect | None:
+    def detect_crop(
+        self, path: Path, duration_s: float,
+        interlaced: bool = False, is_dvd: bool = False,
+    ) -> CropRect | None:
         """Run cropdetect, return detected values (before alignment)."""
         ...
 

@@ -4,7 +4,6 @@ import json
 import logging
 import re
 import subprocess
-from collections import Counter
 from pathlib import Path
 from typing import Any
 
@@ -71,17 +70,31 @@ class FFmpegAdapter:
     _CROP_SAMPLE_POINTS: tuple[float, ...] = (
         0.05, 0.10, 0.20, 0.30, 0.40, 0.50, 0.60, 0.70, 0.80, 0.90,
     )
+    _CROP_SAMPLE_POINTS_DVD: tuple[float, ...] = (
+        0.05, 0.10, 0.15, 0.20, 0.25, 0.30, 0.35,
+        0.45, 0.50, 0.55, 0.60, 0.65, 0.75, 0.85, 0.90,
+    )
 
-    def detect_crop(self, path: Path, duration_s: float) -> CropRect | None:
-        """Run cropdetect at 10 points across the timeline, 2 seconds each.
+    def detect_crop(
+        self,
+        path: Path,
+        duration_s: float,
+        interlaced: bool = False,
+        is_dvd: bool = False,
+    ) -> CropRect | None:
+        """Run cropdetect at multiple points across the timeline.
 
-        Returns the mode crop value only if it appears in >50% of samples.
-        This filters out false positives from dark scenes.
-        Returns None if no crop detected or crop == full frame.
+        Returns the median crop of the dominant cluster only if the cluster
+        contains >50 % of samples.  Returns None otherwise.
         """
-        crop_values: list[str] = []
+        from ..core.detect import cluster_crop_values
 
-        for pct in self._CROP_SAMPLE_POINTS:
+        points = self._CROP_SAMPLE_POINTS_DVD if is_dvd else self._CROP_SAMPLE_POINTS
+        vf = "yadif,cropdetect=24:16:0" if interlaced else "cropdetect=24:16:0"
+
+        crop_values: list[CropRect] = []
+
+        for pct in points:
             seek = duration_s * pct
             cmd = [
                 str(self._ffmpeg),
@@ -89,36 +102,38 @@ class FFmpegAdapter:
                 "-ss", f"{seek:.2f}",
                 "-i", str(path),
                 "-t", "2",
-                "-vf", "cropdetect=24:16:0",
+                "-vf", vf,
                 "-f", "null",
                 "-",
             ]
             logger.debug("detect_crop cmd: %s", cmd)
             result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
-            # cropdetect writes to stderr — take last value per sample point
             last_crop: str | None = None
             for line in result.stderr.splitlines():
                 m = re.search(r"crop=(\d+:\d+:\d+:\d+)", line)
                 if m:
                     last_crop = m.group(1)
             if last_crop is not None:
-                crop_values.append(last_crop)
+                parts = last_crop.split(":")
+                if len(parts) == 4:
+                    crop_values.append(CropRect(
+                        w=int(parts[0]), h=int(parts[1]),
+                        x=int(parts[2]), y=int(parts[3]),
+                    ))
 
         if not crop_values:
             return None
 
-        # Mode: most frequent crop value, but only accept if >50% of samples agree
-        counter = Counter(crop_values)
-        mode_crop, mode_count = counter.most_common(1)[0]
-        if mode_count <= len(crop_values) // 2:
-            logger.info("Crop not reliable: mode %s appeared %d/%d times", mode_crop, mode_count, len(crop_values))
+        median_crop, cluster_size = cluster_crop_values(crop_values)
+        if cluster_size <= len(crop_values) // 2:
+            logger.info(
+                "Crop not reliable: cluster %d:%d:%d:%d has %d/%d samples",
+                median_crop.w, median_crop.h, median_crop.x, median_crop.y,
+                cluster_size, len(crop_values),
+            )
             return None
 
-        parts = mode_crop.split(":")
-        if len(parts) != 4:
-            return None
-        w, h, x, y = int(parts[0]), int(parts[1]), int(parts[2]), int(parts[3])
-        return CropRect(w=w, h=h, x=x, y=y)
+        return median_crop
 
     def get_encoder_tag(self, path: Path) -> str | None:
         """Read format.tags.ENCODER from probe output."""
