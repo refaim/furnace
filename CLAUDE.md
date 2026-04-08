@@ -18,43 +18,55 @@ Format: `MAJOR.MINOR.PATCH`
 ## Quality Gates
 
 Before committing:
-```
-uv run ruff check furnace/
-uv run mypy furnace/ --strict
-uv run pytest tests/ -q
-```
+
+    uv run ruff check furnace/
+    uv run mypy furnace/ --strict
+    uv run pytest tests/ -q
 
 All three must pass clean.
 
-## Architecture
+## Architecture Rules
 
 Hexagonal (Ports & Adapters). Dependency direction:
 
-```
-UI --> Services --> Core <-- Adapters
-```
+    UI --> Services --> Core <-- Adapters
 
-- **Core** (`furnace/core/`) — pure Python, no I/O. Models, rules, quality, detect, ports (Protocol interfaces).
-- **Services** (`furnace/services/`) — orchestration. Scanner, analyzer, planner, executor.
-- **Adapters** (`furnace/adapters/`) — external tool wrappers. Implement Protocol interfaces from core.
-- **UI** (`furnace/ui/`) — Textual TUI + Rich progress. ASCII-only, no Unicode borders (Windows compatibility).
+- **Core** (`furnace/core/`) — pure Python, no I/O. Models, enums, rules, detect, quality, ports (Protocol interfaces).
+- **Services** (`furnace/services/`) — orchestration. Scanner, analyzer, planner, executor, disc_demuxer.
+- **Adapters** (`furnace/adapters/`) — external tool wrappers. Implement Protocol interfaces from `core/ports.py`.
+- **UI** (`furnace/ui/`) — Textual TUI (plan + run phases) + Rich progress.
 
-Core MUST NOT import from services, adapters, or ui.
+**Hard rules:**
+- Core MUST NOT import from services, adapters, or ui
+- Adapters implement Protocol interfaces defined in `core/ports.py` (dependency inversion)
+- Services receive adapters via constructor arguments (dependency injection)
+- No I/O in core — pure functions and dataclasses only
 
-## External Tools
-
-Paths configured via `furnace.toml` (not committed, in .gitignore). Never hardcode paths or rely on PATH.
-
-## Testing
+## Testing Rules
 
 - `tests/core/` — unit tests, pure functions, no mocks
 - `tests/services/` — service tests with mocked Protocol adapters
-- `tests/test_plan.py` — JSON plan serialization round-trip
-- `tests/test_mkvmerge_color.py` — mkvmerge color/HDR flag generation
+- `tests/` (root level) — integration tests: plan serialization, mkvmerge flags, nvencc commands
+- New ports/models require concrete test factories (e.g. `_make_vp()` helpers)
+- **TDD mandatory** — write tests before implementation
 
 ## Key Conventions
 
 - eac3to: always pass `-removeDialnorm` explicitly (user's eac3to.ini has `-keepDialnorm`)
 - mkvmerge: duplicate color/HDR metadata at container level (for Plex/Jellyfin/TV compatibility)
-- TUI: no Textual Button widgets, use keyboard shortcuts only (Windows cmd.exe compatibility)
+- TUI: no Textual Button widgets, keyboard shortcuts only, ASCII-only borders (Windows cmd.exe compatibility)
 - Plan JSON: atomic write (write-to-temp-then-rename) for crash safety
+- NVEncC: always 10-bit main10, QVBR rate control, preset P5, UHQ tune
+- Color metadata: always resolved via `resolve_color_metadata()` — VideoParams fields are never None
+- Unknown codecs or unrecognized color matrix values: raise ValueError, don't silently degrade
+
+## External Tools
+
+Paths configured via `furnace.toml` (not committed, in .gitignore). Never hardcode paths or rely on PATH.
+
+## Workflow Rules
+
+- **TDD**: write tests before implementation code, always
+- **No intermediate commits** during plan execution — commit only when the full task is done
+- **Version bump on every commit** that changes user-facing behavior (per SemVer above)
+- **Spec maintenance**: on any code change, consider whether `docs/spec.md` needs updating
