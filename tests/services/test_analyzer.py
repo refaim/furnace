@@ -54,7 +54,7 @@ def _h264_probe_data() -> dict:
                 "pix_fmt": "yuv420p",
                 "color_space": "bt709",
                 "color_primaries": "bt709",
-                "color_trc": "bt709",
+                "color_transfer": "bt709",
                 "color_range": "tv",
             },
             {
@@ -120,7 +120,7 @@ def _dv_probe_data() -> dict:
                 "pix_fmt": "yuv420p10le",
                 "color_space": "bt2020nc",
                 "color_primaries": "bt2020",
-                "color_trc": "smpte2084",
+                "color_transfer": "smpte2084",
                 "color_range": "tv",
                 "side_data_list": [
                     {"side_data_type": "DOVI configuration record"},

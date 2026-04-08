@@ -65,12 +65,6 @@ class JobStatus(enum.Enum):
 
 
 
-class ColorSpace(enum.Enum):
-    BT601 = "bt601"
-    BT709 = "bt709"
-    BT2020 = "bt2020"
-
-
 class DvBlCompatibility(enum.IntEnum):
     """Dolby Vision base layer compatibility."""
     NONE = 0    # no fallback (Profile 5)
@@ -181,7 +175,7 @@ class VideoInfo:
     fps_den: int
     duration_s: float
     interlaced: bool
-    color_space: ColorSpace | None
+    color_matrix_raw: str | None
     color_range: str | None            # "tv" | "pc" | None
     color_transfer: str | None
     color_primaries: str | None
@@ -247,10 +241,10 @@ class VideoParams:
     cq: int
     crop: CropRect | None              # None = без crop
     deinterlace: bool                  # нужен ли деинтерлейс
-    color_space: ColorSpace
+    color_matrix: str
     color_range: str                   # "tv" всегда
-    color_transfer: str | None         # raw ffmpeg value для passthrough
-    color_primaries: str | None
+    color_transfer: str
+    color_primaries: str
     hdr: HdrMetadata | None            # HDR metadata для passthrough
     gop: int                           # GOP size (fps * 5)
     fps_num: int

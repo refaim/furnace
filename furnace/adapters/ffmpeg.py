@@ -187,6 +187,33 @@ class FFmpegAdapter:
 
         return total_interlaced / total
 
+    def probe_hdr_side_data(self, path: Path) -> list[dict[str, Any]]:
+        """Read side_data_list from the first video frame.
+
+        Uses: ffprobe -v quiet -print_format json -select_streams v:0
+              -show_frames -read_intervals "%+#1" path
+        """
+        cmd = [
+            str(self._ffprobe),
+            "-v", "quiet",
+            "-print_format", "json",
+            "-select_streams", "v:0",
+            "-show_frames",
+            "-read_intervals", "%+#1",
+            str(path),
+        ]
+        logger.debug("probe_hdr_side_data cmd: %s", cmd)
+        result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+        if result.returncode != 0:
+            logger.warning("probe_hdr_side_data failed (rc=%d), returning []", result.returncode)
+            return []
+        data: dict[str, Any] = json.loads(result.stdout)
+        frames = data.get("frames", [])
+        if not frames:
+            return []
+        side_data: list[dict[str, Any]] = frames[0].get("side_data_list", [])
+        return side_data
+
     # ------------------------------------------------------------------
     # AudioExtractor
     # ------------------------------------------------------------------

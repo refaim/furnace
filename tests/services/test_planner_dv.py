@@ -2,7 +2,7 @@ from __future__ import annotations
 from pathlib import Path
 import pytest
 from furnace.core.models import (
-    ColorSpace, DvBlCompatibility, DvMode, HdrMetadata, VideoInfo,
+    DvBlCompatibility, DvMode, HdrMetadata, VideoInfo,
 )
 from furnace.services.planner import PlannerService
 
@@ -13,7 +13,7 @@ def _make_video(hdr: HdrMetadata | None = None) -> VideoInfo:
     return VideoInfo(
         index=0, codec_name="hevc", width=3840, height=2160,
         pixel_area=3840 * 2160, fps_num=24000, fps_den=1001,
-        duration_s=7200.0, interlaced=False, color_space=ColorSpace.BT2020,
+        duration_s=7200.0, interlaced=False, color_matrix_raw="bt2020nc",
         color_range="tv", color_transfer="smpte2084", color_primaries="bt2020",
         pix_fmt="yuv420p10le", hdr=hdr, source_file=Path("/src/movie.mkv"),
         bitrate=80_000_000,

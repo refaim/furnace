@@ -1,9 +1,133 @@
 from __future__ import annotations
 
+import enum
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from .models import AudioCodecId, CropRect, DvBlCompatibility, HdrMetadata, SubtitleCodecId, Track
+
+class VideoSystem(enum.Enum):
+    """Video system determined from frame height."""
+    PAL = "pal"
+    NTSC = "ntsc"
+    HD = "hd"
+
+
+_PAL_HEIGHTS = frozenset({576, 288})
+_NTSC_HEIGHTS = frozenset({480, 486, 240})
+
+
+def detect_video_system(height: int) -> VideoSystem:
+    """Determine video system from frame height.
+
+    PAL:  576, 288
+    NTSC: 480, 486, 240
+    HD:   >= 720
+    Other SD: ValueError
+    """
+    if height in _PAL_HEIGHTS:
+        return VideoSystem.PAL
+    if height in _NTSC_HEIGHTS:
+        return VideoSystem.NTSC
+    if height >= 720:
+        return VideoSystem.HD
+    raise ValueError(
+        f"Unknown SD height {height}: cannot determine PAL/NTSC. "
+        f"Add this height to _PAL_HEIGHTS or _NTSC_HEIGHTS in detect.py"
+    )
+
+
+@dataclass(frozen=True)
+class ResolvedColor:
+    """Resolved color metadata for NVEncC flags."""
+    matrix: str      # --colormatrix
+    transfer: str    # --transfer
+    primaries: str   # --colorprim
+
+
+_BT2020_MATRICES = frozenset({"bt2020nc", "bt2020c"})
+_BT601_MATRICES = frozenset({"bt470bg", "smpte170m"})
+
+_TRANSFER_FROM_PRIMARIES: dict[str, str] = {
+    "bt470bg": "bt470bg",
+    "smpte170m": "smpte170m",
+    "bt470m": "bt470m",
+    "bt709": "bt709",
+}
+
+
+def resolve_color_metadata(
+    matrix_raw: str | None,
+    transfer_raw: str | None,
+    primaries_raw: str | None,
+    system: VideoSystem,
+    has_hdr: bool,
+) -> ResolvedColor:
+    """Resolve color metadata, filling in missing values per ITU standards.
+
+    Raises ValueError for unrecognized matrix_raw values.
+    """
+    # Step 1: determine family
+    if matrix_raw in _BT2020_MATRICES:
+        family = "bt2020"
+    elif matrix_raw == "bt709":
+        family = "bt709"
+    elif matrix_raw in _BT601_MATRICES:
+        family = "bt601"
+    elif matrix_raw is None:
+        if has_hdr:
+            family = "bt2020"
+        elif system == VideoSystem.HD:
+            family = "bt709"
+        else:
+            family = "bt601"
+    else:
+        raise ValueError(f"Unrecognized matrix_raw: {matrix_raw!r}")
+
+    is_pal = system == VideoSystem.PAL
+
+    # Step 2: resolve matrix
+    if matrix_raw is not None:
+        matrix = matrix_raw
+    elif family == "bt2020":
+        matrix = "bt2020nc"
+    elif family == "bt709":
+        matrix = "bt709"
+    elif is_pal:
+        matrix = "bt470bg"
+    else:
+        matrix = "smpte170m"
+
+    # Step 3: resolve primaries
+    if primaries_raw is not None:
+        primaries = primaries_raw
+    elif family == "bt2020":
+        primaries = "bt2020"
+    elif family == "bt709":
+        primaries = "bt709"
+    elif is_pal:
+        primaries = "bt470bg"
+    else:
+        primaries = "smpte170m"
+
+    # Step 4: resolve transfer
+    if transfer_raw is not None:
+        transfer = transfer_raw
+    elif family == "bt2020":
+        transfer = "smpte2084" if has_hdr else "bt709"
+    elif family == "bt709":
+        transfer = "bt709"
+    elif primaries in _TRANSFER_FROM_PRIMARIES:
+        # bt601: infer from resolved primaries
+        transfer = _TRANSFER_FROM_PRIMARIES[primaries]
+    elif is_pal:
+        transfer = "bt470bg"
+    else:
+        transfer = "smpte170m"
+
+    return ResolvedColor(matrix=matrix, transfer=transfer, primaries=primaries)
+
 
 FORCED_FILENAME_KEYWORDS: list[str] = ["forced", "форсир", "только надписи", "forsed", "tolko nadpisi"]
 FORCED_FILENAME_EXCLUDE: list[str] = ["normal"]
@@ -154,6 +278,14 @@ def should_deinterlace(field_order: str | None, fps: float, idet_ratio: float) -
     return idet_ratio > _IDET_INTERLACE_THRESHOLD
 
 
+def _fraction_numerator(val: str) -> str:
+    """Extract numerator from fraction string. '8500/50000' -> '8500'. No-op for non-fractions."""
+    s = str(val)
+    if "/" in s:
+        return s.split("/", 1)[0]
+    return s
+
+
 def detect_hdr(stream_data: dict[str, Any], side_data: list[dict[str, Any]] | None) -> HdrMetadata:
     """Анализирует side_data_list из ffprobe для MDCV и CLL.
     Проверяет codec_name для Dolby Vision (dvhe/dvh1) и
@@ -171,13 +303,17 @@ def detect_hdr(stream_data: dict[str, Any], side_data: list[dict[str, Any]] | No
         side_type = entry.get("side_data_type", "")
 
         if "Mastering display metadata" in side_type:
-            # Build MDCV string from ffprobe fields
             mastering_display = (
-                f"G({entry.get('green_x', '')},{entry.get('green_y', '')})"
-                f"B({entry.get('blue_x', '')},{entry.get('blue_y', '')})"
-                f"R({entry.get('red_x', '')},{entry.get('red_y', '')})"
-                f"WP({entry.get('white_point_x', '')},{entry.get('white_point_y', '')})"
-                f"L({entry.get('max_luminance', '')},{entry.get('min_luminance', '')})"
+                f"G({_fraction_numerator(entry.get('green_x', ''))},"
+                f"{_fraction_numerator(entry.get('green_y', ''))})"
+                f"B({_fraction_numerator(entry.get('blue_x', ''))},"
+                f"{_fraction_numerator(entry.get('blue_y', ''))})"
+                f"R({_fraction_numerator(entry.get('red_x', ''))},"
+                f"{_fraction_numerator(entry.get('red_y', ''))})"
+                f"WP({_fraction_numerator(entry.get('white_point_x', ''))},"
+                f"{_fraction_numerator(entry.get('white_point_y', ''))})"
+                f"L({_fraction_numerator(entry.get('max_luminance', ''))},"
+                f"{_fraction_numerator(entry.get('min_luminance', ''))})"
             )
 
         elif "Content light level metadata" in side_type:

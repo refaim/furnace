@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 
-from .models import ColorSpace, CropRect
+from .models import CropRect
 
 # CQ anchors по спецификации Furnace (отличаются от Crucible)
 # Примечание: CQ anchors намеренно отличаются от Crucible.
@@ -65,17 +65,3 @@ def correct_sar(width: int, height: int, sar_num: int, sar_den: int) -> tuple[in
     return width, round(height * sar_den / sar_num)
 
 
-def determine_color_space(
-    width: int, height: int, source_color_space: str | None
-) -> ColorSpace:
-    """Определяет цветовое пространство по параметрам видео.
-
-    BT.2020 source -> BT.2020 (passthrough)
-    HD (height >= 720) -> BT.709
-    SD (height < 720) -> BT.601
-    """
-    if source_color_space in (ColorSpace.BT2020, ColorSpace.BT2020.value):
-        return ColorSpace.BT2020
-    if height >= 720:
-        return ColorSpace.BT709
-    return ColorSpace.BT601

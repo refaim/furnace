@@ -14,7 +14,6 @@ from ..core.detect import (
 )
 from ..core.models import (
     Attachment,
-    ColorSpace,
     Movie,
     ScanResult,
     SubtitleCodecId,
@@ -187,19 +186,10 @@ class Analyzer:
 
         # Color info
         color_primaries_raw = stream.get("color_primaries")
-        color_transfer_raw = stream.get("color_trc")
-        color_space_raw = stream.get("color_space")
+        color_transfer_raw = stream.get("color_transfer")
+        color_matrix_raw = stream.get("color_space")
         color_range_raw = stream.get("color_range")
         pix_fmt = stream.get("pix_fmt", "yuv420p")
-
-        # Map color_space string to ColorSpace enum
-        color_space: ColorSpace | None = None
-        if color_space_raw in ("bt470bg", "smpte170m", "bt601"):
-            color_space = ColorSpace.BT601
-        elif color_space_raw == "bt709":
-            color_space = ColorSpace.BT709
-        elif color_space_raw in ("bt2020nc", "bt2020c", "bt2020"):
-            color_space = ColorSpace.BT2020
 
         # Bitrate: from stream, fallback to format
         bitrate = 0
@@ -214,8 +204,10 @@ class Analyzer:
             except (ValueError, TypeError):
                 pass
 
-        # HDR metadata
+        # HDR metadata — try stream side_data first, fall back to first frame
         side_data = stream.get("side_data_list")
+        if not side_data:
+            side_data = self._prober.probe_hdr_side_data(path) or None
         hdr = detect_hdr(stream, side_data)
 
         # SAR (sample aspect ratio)
@@ -239,7 +231,7 @@ class Analyzer:
             fps_den=fps_den,
             duration_s=duration_s,
             interlaced=interlaced,
-            color_space=color_space,
+            color_matrix_raw=color_matrix_raw,
             color_range=color_range_raw,
             color_transfer=color_transfer_raw,
             color_primaries=color_primaries_raw,

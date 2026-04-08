@@ -574,4 +574,67 @@ class TestClusterCropValues:
 
 
 # ---------------------------------------------------------------------------
+# test_hdr_detection_fractions
+# ---------------------------------------------------------------------------
+
+class TestHdrDetectionFractions:
+    """detect_hdr must handle fraction values from ffprobe frame-level side_data."""
+
+    def test_mastering_display_fractions(self):
+        """Fraction values like '8500/50000' should become '8500'."""
+        side_data = [{
+            "side_data_type": "Mastering display metadata",
+            "green_x": "8500/50000", "green_y": "39850/50000",
+            "blue_x": "6550/50000", "blue_y": "2300/50000",
+            "red_x": "35400/50000", "red_y": "14600/50000",
+            "white_point_x": "15635/50000", "white_point_y": "16450/50000",
+            "max_luminance": "10000000/10000", "min_luminance": "1/10000",
+        }]
+        result = detect_hdr({}, side_data)
+        assert result.mastering_display == (
+            "G(8500,39850)B(6550,2300)R(35400,14600)"
+            "WP(15635,16450)L(10000000,1)"
+        )
+
+    def test_mastering_display_integers(self):
+        """Integer values (no slash) should pass through unchanged."""
+        side_data = [{
+            "side_data_type": "Mastering display metadata",
+            "green_x": "8500", "green_y": "39850",
+            "blue_x": "6550", "blue_y": "2300",
+            "red_x": "35400", "red_y": "14600",
+            "white_point_x": "15635", "white_point_y": "16450",
+            "max_luminance": "10000000", "min_luminance": "1",
+        }]
+        result = detect_hdr({}, side_data)
+        assert result.mastering_display == (
+            "G(8500,39850)B(6550,2300)R(35400,14600)"
+            "WP(15635,16450)L(10000000,1)"
+        )
+
+    def test_mastering_display_decimal_passthrough(self):
+        """Decimal values like '0.2650' should pass through unchanged (old-style ffprobe)."""
+        side_data = [{
+            "side_data_type": "Mastering display metadata",
+            "green_x": "0.2650", "green_y": "0.6900",
+            "blue_x": "0.1500", "blue_y": "0.0600",
+            "red_x": "0.6800", "red_y": "0.3200",
+            "white_point_x": "0.3127", "white_point_y": "0.3290",
+            "max_luminance": "1000.0000", "min_luminance": "0.0050",
+        }]
+        result = detect_hdr({}, side_data)
+        assert "G(0.2650,0.6900)" in result.mastering_display
+
+    def test_content_light_integers(self):
+        """Content light level values are always integers."""
+        side_data = [{
+            "side_data_type": "Content light level metadata",
+            "max_content": 1000,
+            "max_average": 180,
+        }]
+        result = detect_hdr({}, side_data)
+        assert result.content_light == "MaxCLL=1000,MaxFALL=180"
+
+
+# ---------------------------------------------------------------------------
 # test_detect_interlace

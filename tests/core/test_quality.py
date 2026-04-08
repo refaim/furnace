@@ -1,14 +1,11 @@
 from __future__ import annotations
 
-import pytest
-
-from furnace.core.models import ColorSpace, CropRect
+from furnace.core.models import CropRect
 from furnace.core.quality import (
     CQ_ANCHORS,
     align_dimensions,
     calculate_gop,
     correct_sar,
-    determine_color_space,
     interpolate_cq,
 )
 
@@ -162,7 +159,7 @@ class TestCalculateGop:
 
 
 # ---------------------------------------------------------------------------
-# test_determine_color_space
+# test_correct_sar
 # ---------------------------------------------------------------------------
 
 class TestCorrectSar:
@@ -197,43 +194,3 @@ class TestCorrectSar:
         assert h == 540
 
 
-class TestDetermineColorSpace:
-    def test_hd_1080p_returns_bt709(self):
-        """1920x1080 -> BT.709."""
-        result = determine_color_space(1920, 1080, None)
-        assert result == ColorSpace.BT709
-
-    def test_hd_720p_returns_bt709(self):
-        """1280x720 -> BT.709 (height == 720, boundary)."""
-        result = determine_color_space(1280, 720, None)
-        assert result == ColorSpace.BT709
-
-    def test_sd_480p_returns_bt601(self):
-        """854x480 -> BT.601 (height < 720)."""
-        result = determine_color_space(854, 480, None)
-        assert result == ColorSpace.BT601
-
-    def test_sd_576p_returns_bt601(self):
-        """1024x576 -> BT.601."""
-        result = determine_color_space(1024, 576, None)
-        assert result == ColorSpace.BT601
-
-    def test_below_720_returns_bt601(self):
-        """Height 719 (one below threshold) -> BT.601."""
-        result = determine_color_space(1280, 719, None)
-        assert result == ColorSpace.BT601
-
-    def test_bt2020_passthrough(self):
-        """Source with BT.2020 color space -> passthrough BT.2020 regardless of resolution."""
-        result = determine_color_space(3840, 2160, ColorSpace.BT2020)
-        assert result == ColorSpace.BT2020
-
-    def test_bt2020_passthrough_on_sd(self):
-        """BT.2020 source even at SD resolution -> passthrough."""
-        result = determine_color_space(854, 480, ColorSpace.BT2020)
-        assert result == ColorSpace.BT2020
-
-    def test_4k_without_bt2020_returns_bt709(self):
-        """4K without BT.2020 source -> BT.709 (height >= 720)."""
-        result = determine_color_space(3840, 2160, None)
-        assert result == ColorSpace.BT709

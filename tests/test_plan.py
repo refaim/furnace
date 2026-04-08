@@ -9,7 +9,6 @@ import pytest
 from furnace.core.models import (
     AudioAction,
     AudioInstruction,
-    ColorSpace,
     CropRect,
     DvBlCompatibility,
     DvMode,
@@ -32,10 +31,10 @@ def make_video_params(
     cq: int = 25,
     crop: CropRect | None = None,
     deinterlace: bool = False,
-    color_space: ColorSpace = ColorSpace.BT709,
+    color_matrix: str = "bt709",
     color_range: str = "tv",
-    color_transfer: str | None = None,
-    color_primaries: str | None = None,
+    color_transfer: str = "bt709",
+    color_primaries: str = "bt709",
     hdr: HdrMetadata | None = None,
     gop: int = 120,
     fps_num: int = 24,
@@ -47,7 +46,7 @@ def make_video_params(
         cq=cq,
         crop=crop,
         deinterlace=deinterlace,
-        color_space=color_space,
+        color_matrix=color_matrix,
         color_range=color_range,
         color_transfer=color_transfer,
         color_primaries=color_primaries,
@@ -198,7 +197,7 @@ class TestPlanRoundtrip:
             is_hdr10_plus=False,
         )
         vp = make_video_params(
-            color_space=ColorSpace.BT2020,
+            color_matrix="bt2020nc",
             color_transfer="smpte2084",
             color_primaries="bt2020",
             hdr=hdr,
@@ -506,7 +505,7 @@ class TestPlanDvModeRoundtrip:
             dv_profile=8,
             dv_bl_compatibility=DvBlCompatibility.HDR10,
         )
-        vp = make_video_params(color_space=ColorSpace.BT2020, hdr=hdr)
+        vp = make_video_params(color_matrix="bt2020nc", hdr=hdr)
         vp = dc.replace(vp, dv_mode=DvMode.COPY)
         job = Job(
             id="dv-hdr-job", source_files=["/src/dv.mkv"], output_file="/out/dv.mkv",

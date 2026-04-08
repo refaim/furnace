@@ -4,7 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from furnace.adapters.nvencc import NVEncCAdapter
-from furnace.core.models import ColorSpace, CropRect, DvMode, HdrMetadata, VideoParams
+from furnace.core.models import CropRect, DvMode, HdrMetadata, VideoParams
 
 
 def _make_vp(
@@ -12,9 +12,9 @@ def _make_vp(
     crop: CropRect | None = None,
     deinterlace: bool = False,
     cq: int = 31,
-    color_space: ColorSpace = ColorSpace.BT2020,
-    color_transfer: str | None = "smpte2084",
-    color_primaries: str | None = "bt2020",
+    color_matrix: str = "bt2020nc",
+    color_transfer: str = "smpte2084",
+    color_primaries: str = "bt2020",
     hdr: HdrMetadata | None = None,
     dv_mode: DvMode | None = None,
     sar_num: int = 1,
@@ -22,7 +22,7 @@ def _make_vp(
 ) -> VideoParams:
     return VideoParams(
         cq=cq, crop=crop, deinterlace=deinterlace,
-        color_space=color_space, color_range="tv",
+        color_matrix=color_matrix, color_range="tv",
         color_transfer=color_transfer, color_primaries=color_primaries,
         hdr=hdr, gop=120, fps_num=24000, fps_den=1001,
         source_width=3840, source_height=2160, source_codec=source_codec,
@@ -241,7 +241,7 @@ class TestNVEncCColor:
 
     def test_bt2020_color_flags(self) -> None:
         vp = _make_vp(
-            color_space=ColorSpace.BT2020,
+            color_matrix="bt2020nc",
             color_primaries="bt2020",
             color_transfer="smpte2084",
         )
@@ -257,7 +257,7 @@ class TestNVEncCColor:
 
     def test_bt709_color_flags(self) -> None:
         vp = _make_vp(
-            color_space=ColorSpace.BT709,
+            color_matrix="bt709",
             color_primaries="bt709",
             color_transfer="bt709",
         )
@@ -271,7 +271,7 @@ class TestNVEncCColor:
 
     def test_bt601_color_flags(self) -> None:
         vp = _make_vp(
-            color_space=ColorSpace.BT601,
+            color_matrix="smpte170m",
             color_primaries="smpte170m",
             color_transfer="smpte170m",
         )
@@ -284,15 +284,6 @@ class TestNVEncCColor:
         idx = cmd.index("--colorrange")
         assert cmd[idx + 1] == "limited"
 
-    def test_no_transfer_when_none(self) -> None:
-        vp = _make_vp(color_transfer=None)
-        cmd = _cmd(vp)
-        assert "--transfer" not in cmd
-
-    def test_no_colorprim_when_none(self) -> None:
-        vp = _make_vp(color_primaries=None)
-        cmd = _cmd(vp)
-        assert "--colorprim" not in cmd
 
 
 class TestNVEncCHdr:

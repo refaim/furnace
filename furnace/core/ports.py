@@ -30,6 +30,10 @@ class Prober(Protocol):
         """Run idet analysis. Returns interlaced frame ratio (0.0 to 1.0)."""
         ...
 
+    def probe_hdr_side_data(self, path: Path) -> list[dict[str, Any]]:
+        """Read side_data_list from the first video frame."""
+        ...
+
 
 @runtime_checkable
 class Encoder(Protocol):

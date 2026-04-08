@@ -25,10 +25,9 @@ from ..core.models import (
 from ..core.ports import Previewer, Prober
 from ..core.quality import (
     calculate_gop,
-    determine_color_space,
     interpolate_cq,
 )
-from ..core.detect import is_dvd_resolution
+from ..core.detect import detect_video_system, is_dvd_resolution, resolve_color_metadata
 from ..core.rules import get_audio_action, get_subtitle_action
 
 from furnace import VERSION as FURNACE_VERSION
@@ -316,9 +315,14 @@ class PlannerService:
         cq = interpolate_cq(pixel_area)
         gop = calculate_gop(video.fps_num, video.fps_den)
 
-        color_space = determine_color_space(
-            video.width, video.height,
-            video.color_space.value if video.color_space is not None else None,
+        system = detect_video_system(video.height)
+        has_hdr = bool(video.hdr.mastering_display or video.hdr.content_light)
+        resolved = resolve_color_metadata(
+            matrix_raw=video.color_matrix_raw,
+            transfer_raw=video.color_transfer,
+            primaries_raw=video.color_primaries,
+            system=system,
+            has_hdr=has_hdr,
         )
 
         deinterlace = video.interlaced
@@ -338,18 +342,14 @@ class PlannerService:
         # HDR metadata passthrough
         hdr = video.hdr if (video.hdr.mastering_display or video.hdr.content_light) else None
 
-        # Color info passthrough
-        color_transfer = video.color_transfer
-        color_primaries = video.color_primaries
-
         return VideoParams(
             cq=cq,
             crop=crop,
             deinterlace=deinterlace,
-            color_space=color_space,
+            color_matrix=resolved.matrix,
             color_range="tv",
-            color_transfer=color_transfer,
-            color_primaries=color_primaries,
+            color_transfer=resolved.transfer,
+            color_primaries=resolved.primaries,
             hdr=hdr,
             gop=gop,
             fps_num=video.fps_num,

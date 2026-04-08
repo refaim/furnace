@@ -14,7 +14,6 @@ from collections.abc import Callable
 from pathlib import Path
 
 from ..core.models import (
-    ColorSpace,
     CropRect,
     EncodeResult,
     VideoParams,
@@ -28,13 +27,6 @@ logger = logging.getLogger(__name__)
 _COLOR_RANGE_MAP: dict[str, str] = {
     "tv": "limited",
     "pc": "full",
-}
-
-# NVEncC colormatrix values by ColorSpace
-_COLORMATRIX_MAP: dict[ColorSpace, str] = {
-    ColorSpace.BT2020: "bt2020nc",
-    ColorSpace.BT709: "bt709",
-    ColorSpace.BT601: "smpte170m",
 }
 
 
@@ -228,15 +220,9 @@ class NVEncCAdapter:
         if nvencc_range:
             cmd += ["--colorrange", nvencc_range]
 
-        if vp.color_primaries:
-            cmd += ["--colorprim", vp.color_primaries]
-
-        if vp.color_transfer:
-            cmd += ["--transfer", vp.color_transfer]
-
-        matrix = _COLORMATRIX_MAP.get(vp.color_space)
-        if matrix:
-            cmd += ["--colormatrix", matrix]
+        cmd += ["--colorprim", vp.color_primaries]
+        cmd += ["--transfer", vp.color_transfer]
+        cmd += ["--colormatrix", vp.color_matrix]
 
         # --- HDR metadata ---
         if vp.hdr is not None:
