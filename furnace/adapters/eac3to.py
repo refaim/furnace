@@ -164,6 +164,11 @@ class Eac3toAdapter:
         """
         output_dir.mkdir(parents=True, exist_ok=True)
 
+        # Resolve to absolute: we set cwd=output_dir below, so any relative
+        # disc_path would no longer resolve from the subprocess's new cwd,
+        # making eac3to fail with "HD DVD / Blu-Ray disc structure not found".
+        disc_path = disc_path.resolve()
+
         # -demux extracts raw streams (no re-encoding of DTS-HD etc.)
         # Run with cwd=output_dir so files land there
         rc, _output = self._run(
