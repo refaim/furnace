@@ -321,7 +321,8 @@ def detect_hdr(stream_data: dict[str, Any], side_data: list[dict[str, Any]] | No
             max_fall = entry.get("max_average", "")
             content_light = f"MaxCLL={max_cll},MaxFALL={max_fall}"
 
-        elif "Dolby Vision configuration" in side_type:
+        elif side_type == "DOVI configuration record":
+            # Stream (packet) level — HEVC dvcC box. Carries dv_profile and compat id.
             is_dolby_vision = True
             raw_profile = entry.get("dv_profile")
             if raw_profile is not None:
@@ -332,6 +333,10 @@ def detect_hdr(stream_data: dict[str, Any], side_data: list[dict[str, Any]] | No
                     dv_bl_compatibility = DvBlCompatibility(int(raw_compat))
                 except ValueError:
                     pass
+
+        elif side_type in ("Dolby Vision RPU Data", "Dolby Vision Metadata"):
+            # Frame-level markers (no profile info).
+            is_dolby_vision = True
 
         elif "HDR10+" in side_type or "SMPTE ST 2094" in side_type:
             is_hdr10_plus = True

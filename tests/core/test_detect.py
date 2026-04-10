@@ -309,8 +309,20 @@ class TestHdrDetection:
         assert result.content_light == "MaxCLL=1000,MaxFALL=400"
 
     def test_dolby_vision_side_data(self):
-        """Dolby Vision configuration in side_data -> is_dolby_vision True."""
-        side_data = [{"side_data_type": "Dolby Vision configuration record"}]
+        """DOVI configuration record (real ffprobe string) -> is_dolby_vision True."""
+        side_data = [{"side_data_type": "DOVI configuration record"}]
+        result = detect_hdr({}, side_data)
+        assert result.is_dolby_vision
+
+    def test_dolby_vision_rpu_data_frame_marker(self):
+        """Frame-level 'Dolby Vision RPU Data' marker -> is_dolby_vision True."""
+        side_data = [{"side_data_type": "Dolby Vision RPU Data"}]
+        result = detect_hdr({}, side_data)
+        assert result.is_dolby_vision
+
+    def test_dolby_vision_metadata_frame_marker(self):
+        """Frame-level 'Dolby Vision Metadata' marker -> is_dolby_vision True."""
+        side_data = [{"side_data_type": "Dolby Vision Metadata"}]
         result = detect_hdr({}, side_data)
         assert result.is_dolby_vision
 
@@ -424,7 +436,7 @@ class TestUnknownCodecCheck:
 class TestDvProfileDetection:
     def test_dv_profile_from_side_data(self) -> None:
         side_data = [{
-            "side_data_type": "Dolby Vision configuration record",
+            "side_data_type": "DOVI configuration record",
             "dv_profile": 8,
             "dv_bl_signal_compatibility_id": 1,
         }]
@@ -435,7 +447,7 @@ class TestDvProfileDetection:
 
     def test_dv_profile7_fel(self) -> None:
         side_data = [{
-            "side_data_type": "Dolby Vision configuration record",
+            "side_data_type": "DOVI configuration record",
             "dv_profile": 7,
             "dv_bl_signal_compatibility_id": 1,
         }]
@@ -445,7 +457,7 @@ class TestDvProfileDetection:
 
     def test_dv_profile5_no_compat(self) -> None:
         side_data = [{
-            "side_data_type": "Dolby Vision configuration record",
+            "side_data_type": "DOVI configuration record",
             "dv_profile": 5,
             "dv_bl_signal_compatibility_id": 0,
         }]

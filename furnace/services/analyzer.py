@@ -204,10 +204,16 @@ class Analyzer:
             except (ValueError, TypeError):
                 pass
 
-        # HDR metadata — try stream side_data first, fall back to first frame
-        side_data = stream.get("side_data_list")
-        if not side_data:
-            side_data = self._prober.probe_hdr_side_data(path) or None
+        # HDR metadata — merge stream-level (DOVI configuration record) and
+        # frame-level (Mastering display / Content light / DV RPU) side data.
+        # For PQ/HLG content the two layers are complementary: MKV remuxes of
+        # UHD Blu-Ray DV P7 carry DOVI config at packet level but MDCV/CLL only
+        # at frame level. SDR content skips the frame probe as an optimization.
+        stream_side_data: list[dict[str, Any]] = stream.get("side_data_list") or []
+        frame_side_data: list[dict[str, Any]] = []
+        if color_transfer_raw in ("smpte2084", "arib-std-b67"):
+            frame_side_data = self._prober.probe_hdr_side_data(path)
+        side_data = [*stream_side_data, *frame_side_data]
         hdr = detect_hdr(stream, side_data)
 
         # SAR (sample aspect ratio)

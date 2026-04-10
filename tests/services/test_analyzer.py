@@ -19,11 +19,16 @@ from furnace.services.analyzer import Analyzer
 # Helpers / fixtures
 # ---------------------------------------------------------------------------
 
-def make_prober(probe_data: dict | None = None, encoder_tag: str | None = None) -> MagicMock:
+def make_prober(
+    probe_data: dict | None = None,
+    encoder_tag: str | None = None,
+    hdr_side_data: list[dict[str, Any]] | None = None,
+) -> MagicMock:
     prober = MagicMock()
     prober.get_encoder_tag.return_value = encoder_tag
     prober.probe.return_value = probe_data or {}
     prober.run_idet.return_value = 0.0
+    prober.probe_hdr_side_data.return_value = hdr_side_data or []
     return prober
 
 
@@ -199,6 +204,70 @@ class TestAnalyzerDVProceeds:
 
         assert movie is not None
         assert movie.video.codec_name == "dvhe"
+
+
+class TestAnalyzerHdrSideDataMerge:
+    """Stream-level DOVI config + frame-level MDCV/CLL must merge into hdr metadata.
+
+    Real-world UHD Blu-Ray DV P7 remuxes carry DOVI configuration record at
+    packet (stream) level, but MDCV and Content Light at frame level.
+    The analyzer must probe both and merge.
+    """
+
+    def test_stream_dovi_and_frame_mdcv_cll_both_detected(self, tmp_path: Path) -> None:
+        scan_result = make_scan_result(tmp_path)
+        probe_data = _dv_probe_data()  # stream has DOVI configuration record, PQ transfer
+        # Real ffprobe-like frame-level side data
+        frame_side_data = [
+            {
+                "side_data_type": "Mastering display metadata",
+                "red_x": "35400/50000", "red_y": "14600/50000",
+                "green_x": "8500/50000", "green_y": "39850/50000",
+                "blue_x": "6550/50000", "blue_y": "2300/50000",
+                "white_point_x": "15635/50000", "white_point_y": "16450/50000",
+                "min_luminance": "50/10000", "max_luminance": "40000000/10000",
+            },
+            {
+                "side_data_type": "Content light level metadata",
+                "max_content": 4342,
+                "max_average": 2342,
+            },
+            {"side_data_type": "Dolby Vision RPU Data"},
+        ]
+        # Inject dv_profile on the stream-level DOVI config so the analyzer
+        # can compute dv_mode correctly.
+        probe_data["streams"][0]["side_data_list"] = [{
+            "side_data_type": "DOVI configuration record",
+            "dv_profile": 7,
+            "dv_bl_signal_compatibility_id": 0,
+        }]
+        prober = make_prober(probe_data=probe_data, hdr_side_data=frame_side_data)
+
+        with patch("furnace.services.analyzer.should_skip_file", return_value=(False, "")):
+            with patch("furnace.services.analyzer.check_unsupported_codecs", return_value=None):
+                analyzer = Analyzer(prober=prober)
+                movie = analyzer.analyze(scan_result)
+
+        assert movie is not None
+        hdr = movie.video.hdr
+        assert hdr.is_dolby_vision is True
+        assert hdr.dv_profile == 7
+        assert hdr.mastering_display is not None
+        assert "L(40000000,50)" in hdr.mastering_display
+        assert hdr.content_light == "MaxCLL=4342,MaxFALL=2342"
+        # Frame-level probe must have been called for PQ content
+        prober.probe_hdr_side_data.assert_called_once()
+
+    def test_sdr_skips_frame_side_data_probe(self, tmp_path: Path) -> None:
+        """SDR content (bt709 transfer) -> frame-level probe not called."""
+        scan_result = make_scan_result(tmp_path)
+        prober = make_prober(probe_data=_h264_probe_data())
+
+        with patch("furnace.services.analyzer.should_skip_file", return_value=(False, "")):
+            analyzer = Analyzer(prober=prober)
+            analyzer.analyze(scan_result)
+
+        prober.probe_hdr_side_data.assert_not_called()
 
 
 class TestAnalyzerHDR10PlusError:
