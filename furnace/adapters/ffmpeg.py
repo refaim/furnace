@@ -226,9 +226,14 @@ class FFmpegAdapter:
         codec: str,
     ) -> int:
         """ffmpeg -i input -map 0:{index} -c copy output"""
+        # loglevel=fatal: -c copy is byte-copy, and ffmpeg's TrueHD "non
+        # monotonically increasing dts" spam is logged at ERROR level despite
+        # being cosmetic — it doesn't stop processing. Millions of such lines
+        # on long lossless tracks throttle the subprocess pipe reader. Real
+        # failures still surface via non-zero exit code (checked in run_tool).
         cmd = [
             str(self._ffmpeg),
-            "-hide_banner", "-loglevel", "warning",
+            "-hide_banner", "-loglevel", "fatal",
             "-i", str(input_path),
             "-map", f"0:{stream_index}",
             "-c", "copy",
