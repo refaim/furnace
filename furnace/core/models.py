@@ -276,6 +276,7 @@ class Job:
     ssim_score: float | None = None
     source_size: int = 0               # размер исходного файла
     output_size: int | None = None     # размер выходного файла (после кодирования)
+    duration_s: float = 0.0            # source video duration in seconds; 0.0 means unknown
 
 
 @dataclass

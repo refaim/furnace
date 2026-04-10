@@ -19,7 +19,6 @@ Layout:
 from __future__ import annotations
 
 import os
-import re
 import threading
 import time
 from collections.abc import Callable
@@ -38,16 +37,11 @@ from furnace.core.models import (
     SubtitleAction,
     SubtitleInstruction,
 )
+from furnace.core.progress import TrackerSnapshot
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-# Progress line patterns from various tools
-_EAC3TO_RE = re.compile(r"^process:\s*(\d+)%$")              # eac3to: "process: 42%"
-_MKVMERGE_RE = re.compile(r"^Progress:\s*(\d+)%$")            # mkvmerge: "Progress: 42%"
-_MKCLEAN_RE = re.compile(r"^Progress\s+(\d)/3:\s*(\d+)%$")    # mkclean: "Progress 1/3:   42%"
-_QAAC_RE = re.compile(r"^\[(\d+(?:\.\d+)?)%\]")               # qaac: "[42.5%] 0:30/1:43"
 
 BAR_WIDTH = 40
 
@@ -301,7 +295,7 @@ class RunApp(App[None]):
 
     Public API (called from worker thread via call_from_thread):
         start_job(job, job_index)
-        update_encode(pct, speed)
+        update_progress(snapshot)
         update_status(message)
         add_tool_line(line)
         finish_job(job)
@@ -341,9 +335,7 @@ class RunApp(App[None]):
         self._job_idx = 0
         self._steps: list[str] = []
         self._current_step_idx: int = -1
-        self._pct = 0.0
-        self._speed = ""
-        self._encoding = False
+        self._snapshot: TrackerSnapshot | None = None
         self._start_time = 0.0
         self._target_base_text = ""
         self._output_size = 0
@@ -409,9 +401,9 @@ class RunApp(App[None]):
         """New job started — update all widgets."""
         self._safe_call(self._do_start_job, job, job_index)
 
-    def update_encode(self, pct: float, speed: str) -> None:
-        """Update encoding progress bar."""
-        self._safe_call(self._do_update_encode, pct, speed)
+    def update_progress(self, snapshot: TrackerSnapshot) -> None:
+        """Update progress bar from a tracker snapshot."""
+        self._safe_call(self._do_update_progress, snapshot)
 
     def update_status(self, message: str) -> None:
         """Update current step in the steps list."""
@@ -440,9 +432,7 @@ class RunApp(App[None]):
     def _do_start_job(self, job: Job, job_index: int) -> None:
         self._job = job
         self._job_idx = job_index
-        self._pct = 0.0
-        self._speed = ""
-        self._encoding = False
+        self._snapshot = None
         self._start_time = time.monotonic()
 
         # Header
@@ -472,27 +462,13 @@ class RunApp(App[None]):
         progress_w = self.query_one("#progress", ProgressWidget)
         progress_w.update("")
 
-    def _do_update_encode(self, pct: float, speed: str) -> None:
-        if not self._encoding:
-            # First encode progress update — reset timer to exclude audio/subtitle time
-            self._start_time = time.monotonic()
-        self._encoding = True
-        self._pct = pct
-        self._speed = speed
-
-        # Advance to "Encode video" step
-        if "Encode video" in self._steps:
-            idx = self._steps.index("Encode video")
-            if self._current_step_idx < idx:
-                self._current_step_idx = idx
-                self._refresh_steps()
-
+    def _do_update_progress(self, snapshot: TrackerSnapshot) -> None:
+        self._snapshot = snapshot
         self._refresh_progress()
 
     def _do_update_status(self, message: str) -> None:
-        self._encoding = False
-        self._pct = 0.0
-        self._speed = ""
+        self._snapshot = None
+        self._start_time = time.monotonic()  # reset phase timer on every step
 
         # Advance to next step sequentially
         if self._current_step_idx < len(self._steps) - 1:
@@ -503,44 +479,7 @@ class RunApp(App[None]):
         progress_w = self.query_one("#progress", ProgressWidget)
         progress_w.update(message)
 
-    def _set_tool_pct(self, pct: float) -> None:
-        """Update progress percentage, resetting timer if a new tool started."""
-        if pct < self._pct:
-            # Progress went backwards — new tool started
-            self._start_time = time.monotonic()
-        self._encoding = True
-        self._pct = pct
-        self._refresh_progress()
-
     def _do_add_tool_line(self, line: str) -> None:
-        stripped = line.strip()
-
-        # eac3to: "process: 42%"
-        m = _EAC3TO_RE.match(stripped)
-        if m:
-            self._set_tool_pct(float(m.group(1)))
-            return
-
-        # mkvmerge: "Progress: 42%"
-        m = _MKVMERGE_RE.match(stripped)
-        if m:
-            self._set_tool_pct(float(m.group(1)))
-            return
-
-        # mkclean: "Progress 1/3:   42%" → stage 1=0-33%, stage 2=33-66%, stage 3=66-100%
-        m = _MKCLEAN_RE.match(stripped)
-        if m:
-            stage = int(m.group(1))  # 1, 2, or 3
-            stage_pct = float(m.group(2))
-            self._set_tool_pct((stage - 1) * 33.3 + stage_pct * 0.333)
-            return
-
-        # qaac: "[42.5%] 0:30/1:43:01.600 (30.5x), ETA 3:20"
-        m = _QAAC_RE.match(stripped)
-        if m:
-            self._set_tool_pct(float(m.group(1)))
-            return
-
         output_log = self.query_one("#output", OutputLog)
         output_log.write(line)
 
@@ -552,7 +491,7 @@ class RunApp(App[None]):
 
     def _do_finish_job(self, job: Job) -> None:
         self._job = job
-        self._encoding = False
+        self._snapshot = None
 
         # Mark all steps completed
         self._current_step_idx = len(self._steps)
@@ -581,25 +520,26 @@ class RunApp(App[None]):
         steps_w.update("\n".join(lines))
 
     def _refresh_progress(self) -> None:
-        """Re-render the progress bar."""
-        if not self._encoding:
+        """Re-render the progress bar from the current snapshot."""
+        if self._snapshot is None:
             return
 
-        filled = int(BAR_WIDTH * self._pct / 100)
+        frac = self._snapshot.fraction
+        filled = int(BAR_WIDTH * frac)
         bar = "\u2588" * filled + "\u2591" * (BAR_WIDTH - filled)
 
         elapsed = time.monotonic() - self._start_time
-
-        if self._pct > 0 and elapsed > 0:
-            total_est = elapsed / (self._pct / 100)
-            remaining = total_est - elapsed
-            time_part = f"{_fmt_time(elapsed)} / ~{_fmt_time(remaining)}"
+        eta_s = self._snapshot.eta_s
+        if eta_s is not None:
+            time_part = f"{_fmt_time(elapsed)} / ~{_fmt_time(eta_s)}"
         else:
             time_part = _fmt_time(elapsed)
 
-        speed_part = f" | {self._speed}" if self._speed else ""
+        speed_part = ""
+        if self._snapshot.speed is not None:
+            speed_part = f" | {self._snapshot.speed:.1f}x"
 
-        text = f"{bar} {self._pct:5.1f}% | {time_part}{speed_part}"
+        text = f"{bar} {frac * 100:5.1f}% | {time_part}{speed_part}"
 
         progress_w = self.query_one("#progress", ProgressWidget)
         progress_w.update(text)

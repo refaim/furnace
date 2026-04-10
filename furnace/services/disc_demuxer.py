@@ -64,9 +64,14 @@ class DiscDemuxer:
         discs: list[DiscSource],
         selected_titles: dict[DiscSource, list[DiscTitle]],
         demux_dir: Path,
-        on_progress: Callable[[str], None] | None = None,
+        on_output: Callable[[str], None] | None = None,
     ) -> list[Path]:
         """Demux selected titles to MKV files.
+
+        `on_output` is a raw line callback used for live console echoing of
+        the underlying tool output (eac3to, makemkv, mkvmerge). It is not the
+        new structured progress channel — adapter-level progress is wired
+        through the executor in the run phase.
 
         - Skips titles with existing .done marker.
         - Deletes MKV without .done marker (partial) and re-demuxes.
@@ -109,13 +114,13 @@ class DiscDemuxer:
                 title_dir.mkdir()
 
                 created_files = port.demux_title(
-                    disc.path, title.number, title_dir, on_progress,
+                    disc.path, title.number, title_dir,
                 )
 
                 # If multiple files (BD/eac3to), mux into single MKV
                 final_mkv = demux_dir / f"{disc_label}_title_{title.number}.mkv"
                 if self._needs_muxing(created_files):
-                    self._mux_to_mkv(title_dir, created_files, final_mkv, on_progress)
+                    self._mux_to_mkv(title_dir, created_files, final_mkv, on_output)
                 else:
                     # Single MKV (DVD/MakeMKV) — just move it
                     src_mkv = next(f for f in created_files if f.suffix.lower() == ".mkv")
@@ -138,7 +143,7 @@ class DiscDemuxer:
 
     def _mux_to_mkv(
         self, title_dir: Path, files: list[Path], output_mkv: Path,
-        on_progress: Callable[[str], None] | None = None,
+        on_output: Callable[[str], None] | None = None,
     ) -> None:
         """Mux separate track files into a single MKV via mkvmerge."""
         if self._mkvmerge is None:
@@ -172,7 +177,7 @@ class DiscDemuxer:
 
         logger.info("Muxing demuxed tracks into %s", output_mkv.name)
         logger.debug("mkvmerge cmd: %s", " ".join(cmd))
-        rc, output = run_tool(cmd, on_output=on_progress)
+        rc, output = run_tool(cmd, on_output=on_output)
         if rc not in (0, 1):  # mkvmerge returns 1 for warnings
             raise RuntimeError(
                 f"mkvmerge failed (rc={rc}): {output[-500:]}"

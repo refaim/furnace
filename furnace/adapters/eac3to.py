@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from furnace.core.models import DiscTitle
+from furnace.core.progress import ProgressSample
 
 from ._subprocess import OutputCallback, run_tool
 
@@ -15,6 +16,38 @@ logger = logging.getLogger(__name__)
 _PLAYLIST_RE = re.compile(r"^(\d+)\)\s+(.+),\s+(\d+:\d{2}(?::\d{2})?)$")
 _TRACK_RE = re.compile(r"^(\d+):\s+(.+)$")
 _LANG_RE = re.compile(r"\[(\w{3})\]")
+_EAC3TO_PROGRESS_RE = re.compile(r"^process:\s*(\d+)%\s*$")
+# Broader pattern used for log suppression: matches both `process:` and
+# `analyze:` phases. The parser itself only emits samples for `process:`,
+# but `analyze:` lines should also be kept out of the log.
+_EAC3TO_ANY_PROGRESS_RE = re.compile(r"^(?:process|analyze):\s*\d+%\s*$")
+
+
+def _parse_eac3to_progress_line(line: str) -> ProgressSample | None:
+    """Parse an eac3to ``-progressnumbers`` line into a sample.
+
+    Format: ``process: NN%`` (integer percent, trailing %). During multi-phase
+    operations eac3to restarts from 0 for each phase; the executor handles
+    phase transitions explicitly via ``tracker.reset()``, so this parser only
+    captures the ``process:`` lines and ignores any ``analyze:`` prefix.
+    """
+    m = _EAC3TO_PROGRESS_RE.match(line.strip())
+    if not m:
+        return None
+    try:
+        pct = int(m.group(1))
+    except ValueError:
+        return None
+    return ProgressSample(fraction=pct / 100.0)
+
+
+def _is_eac3to_progress_line(line: str) -> bool:
+    """Return True for any ``process: NN%`` or ``analyze: NN%`` line.
+
+    Used by the adapter closure to suppress both phases' lines from the log
+    even though only ``process:`` contributes to structured progress.
+    """
+    return _EAC3TO_ANY_PROGRESS_RE.match(line.strip()) is not None
 
 
 @dataclass(frozen=True)
@@ -108,13 +141,27 @@ class Eac3toAdapter:
         args: list[str],
         log_label: str,
         on_output: OutputCallback = None,
+        on_progress: Callable[[ProgressSample], None] | None = None,
         cwd: Path | None = None,
     ) -> tuple[int, str]:
         """Common eac3to invocation with logging and progress."""
         cmd = [str(self._eac3to), *args, "-progressnumbers"]
+
+        def _on_progress_line(line: str) -> bool:
+            # Suppress both `process: N%` and `analyze: N%` from the log,
+            # but only emit samples for the `process:` phase (the parser
+            # already filters). Unmatched lines pass through.
+            if not _is_eac3to_progress_line(line):
+                return False
+            sample = _parse_eac3to_progress_line(line)
+            if sample is not None and on_progress is not None:
+                on_progress(sample)
+            return True
+
         rc, output = run_tool(
             cmd,
             on_output=on_output or self._on_output,
+            on_progress_line=_on_progress_line,
             log_path=self._log_path(log_label),
             cwd=cwd,
         )
@@ -122,19 +169,33 @@ class Eac3toAdapter:
 
     # -- AudioDecoder protocol -------------------------------------------------
 
-    def denormalize(self, input_path: Path, output_path: Path, delay_ms: int) -> int:
+    def denormalize(
+        self,
+        input_path: Path,
+        output_path: Path,
+        delay_ms: int,
+        on_progress: Callable[[ProgressSample], None] | None = None,
+    ) -> int:
         rc, _output = self._run(
             [str(input_path), str(output_path), "-removeDialnorm",
              *self._delay_arg(delay_ms)],
             "denorm",
+            on_progress=on_progress,
         )
         return rc
 
-    def decode_lossless(self, input_path: Path, output_path: Path, delay_ms: int) -> int:
+    def decode_lossless(
+        self,
+        input_path: Path,
+        output_path: Path,
+        delay_ms: int,
+        on_progress: Callable[[ProgressSample], None] | None = None,
+    ) -> int:
         rc, _output = self._run(
             [str(input_path), str(output_path), "-removeDialnorm",
              *self._delay_arg(delay_ms)],
             "decode",
+            on_progress=on_progress,
         )
         return rc
 
@@ -155,13 +216,9 @@ class Eac3toAdapter:
         disc_path: Path,
         title_num: int,
         output_dir: Path,
-        on_progress: Callable[[str], None] | None = None,
+        on_progress: Callable[[ProgressSample], None] | None = None,
     ) -> list[Path]:
-        """Demux one BD playlist to separate files in output_dir.
-
-        Uses eac3to -demux to extract raw streams without re-encoding.
-        Creates video (.mkv), audio (.dtsma/.ac3/etc), subs (.sup), chapters (.txt).
-        """
+        """Demux one BD playlist to separate files in output_dir."""
         output_dir.mkdir(parents=True, exist_ok=True)
 
         # Resolve to absolute: we set cwd=output_dir below, so any relative
@@ -169,24 +226,17 @@ class Eac3toAdapter:
         # making eac3to fail with "HD DVD / Blu-Ray disc structure not found".
         disc_path = disc_path.resolve()
 
-        # -demux extracts raw streams (no re-encoding of DTS-HD etc.)
-        # Run with cwd=output_dir so files land there
         rc, _output = self._run(
             [str(disc_path), f"{title_num})", "-demux"],
             f"demux_t{title_num}",
-            on_output=on_progress,
+            on_progress=on_progress,
             cwd=output_dir,
         )
         if rc != 0:
             raise RuntimeError(
                 f"eac3to demux failed for {disc_path} title {title_num} (rc={rc})"
             )
-
-        # Step 3: collect all created files
-        return sorted(
-            p for p in output_dir.iterdir()
-            if p.is_file()
-        )
+        return sorted(p for p in output_dir.iterdir() if p.is_file())
 
     # -- Parsing ---------------------------------------------------------------
 

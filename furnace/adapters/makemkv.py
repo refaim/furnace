@@ -6,10 +6,22 @@ from collections.abc import Callable
 from pathlib import Path
 
 from furnace.core.models import DiscTitle
+from furnace.core.progress import ProgressSample
 
 from ._subprocess import OutputCallback, run_tool
 
 logger = logging.getLogger(__name__)
+
+
+def _parse_makemkv_progress_line(line: str) -> ProgressSample | None:
+    """Stub: makemkv progress parsing is not yet implemented.
+
+    Returns None for every line, so the adapter observably behaves the same
+    as before (raw lines flow through `on_output` for the log widget; no
+    structured progress). Implementing a real parser is a follow-up once
+    we see makemkv output formats up close.
+    """
+    return None
 
 # "Title #4 was added (13 cell(s), 1:12:32)"
 _TITLE_ADDED_RE = re.compile(
@@ -68,7 +80,7 @@ class MakemkvAdapter:
         disc_path: Path,
         title_num: int,
         output_dir: Path,
-        on_progress: Callable[[str], None] | None = None,
+        on_progress: Callable[[ProgressSample], None] | None = None,
     ) -> list[Path]:
         """Demux one DVD title to MKV.
 
@@ -101,9 +113,18 @@ class MakemkvAdapter:
             str(index),
             str(output_dir),
         ]
+        def _on_progress_line(line: str) -> bool:
+            sample = _parse_makemkv_progress_line(line)
+            if sample is None:
+                return False
+            if on_progress is not None:
+                on_progress(sample)
+            return True
+
         rc, _output = run_tool(
             cmd,
-            on_output=on_progress or self._on_output,
+            on_output=self._on_output,
+            on_progress_line=_on_progress_line,
             log_path=self._log_path(f"demux_t{title_num}"),
         )
         if rc != 0:

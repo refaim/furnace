@@ -107,22 +107,9 @@ def plan(
     ffmpeg_adapter = FFmpegAdapter(cfg.ffmpeg, cfg.ffprobe)
     mpv_adapter = MpvAdapter(cfg.mpv)
 
-    import re
-    import sys
-    _progress_re = re.compile(r"(?:Current progress|^\d+%$|^analyze:|^process:|^Progress:)", re.IGNORECASE)
-    _pct_re = re.compile(r"(\d+)%")
-
     def _console_output(line: str) -> None:
-        """Print tool output to console. Progress lines shown inline on one line."""
-        if _progress_re.search(line):
-            pct_match = _pct_re.search(line)
-            if pct_match:
-                sys.stderr.write(f"\r[furnace] {pct_match.group(1)}%  ")
-                sys.stderr.flush()
-        else:
-            sys.stderr.write("\r\033[K")  # clear progress line
-            sys.stderr.flush()
-            typer.echo(line)
+        """Echo a line of tool output to stderr."""
+        typer.echo(line, err=True)
 
     eac3to_adapter = Eac3toAdapter(cfg.eac3to, on_output=_console_output)
     makemkv_adapter = MakemkvAdapter(cfg.makemkvcon, on_output=_console_output)
@@ -195,7 +182,7 @@ def plan(
                 discs=detected_discs,
                 selected_titles=selected_titles,
                 demux_dir=demux_dir,
-                on_progress=_console_output,
+                on_output=_console_output,
             )
 
             # Track which demuxed files came from DVD

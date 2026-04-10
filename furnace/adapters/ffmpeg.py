@@ -4,13 +4,39 @@ import json
 import logging
 import re
 import subprocess
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 from ..core.models import CropRect
+from ..core.progress import ProgressSample
 from ._subprocess import OutputCallback, run_tool
 
 logger = logging.getLogger(__name__)
+
+
+def _parse_ffmpeg_progress_block(kv: dict[str, str]) -> ProgressSample | None:
+    """Convert one completed ffmpeg `-progress pipe:1` key=value block into a sample.
+
+    `kv` is expected to contain the keys emitted between two `progress=` lines
+    (inclusive). Returns `None` if `out_time_us` is missing, `"N/A"`, or
+    unparseable.
+    """
+    out_time_us = kv.get("out_time_us")
+    if out_time_us is None or out_time_us == "N/A":
+        return None
+    try:
+        processed_s = int(out_time_us) / 1_000_000
+    except ValueError:
+        return None
+    speed: float | None = None
+    speed_str = kv.get("speed", "").strip()
+    if speed_str and speed_str.endswith("x"):
+        try:
+            speed = float(speed_str[:-1])
+        except ValueError:
+            speed = None
+    return ProgressSample(processed_s=processed_s, speed=speed)
 
 
 class FFmpegAdapter:
@@ -224,23 +250,48 @@ class FFmpegAdapter:
         stream_index: int,
         output_path: Path,
         codec: str,
+        on_progress: Callable[[ProgressSample], None] | None = None,
     ) -> int:
-        """ffmpeg -i input -map 0:{index} -c copy output"""
+        """ffmpeg -i input -map 0:{index} -c copy -progress pipe:1 output"""
         # loglevel=fatal: -c copy is byte-copy, and ffmpeg's TrueHD "non
         # monotonically increasing dts" spam is logged at ERROR level despite
-        # being cosmetic — it doesn't stop processing. Millions of such lines
-        # on long lossless tracks throttle the subprocess pipe reader. Real
-        # failures still surface via non-zero exit code (checked in run_tool).
+        # being cosmetic. -progress pipe:1 writes key=value blocks to stdout
+        # which is parsed by the on_progress_line hook below; it's independent
+        # of the loglevel.
         cmd = [
             str(self._ffmpeg),
             "-hide_banner", "-loglevel", "fatal",
             "-i", str(input_path),
             "-map", f"0:{stream_index}",
             "-c", "copy",
+            "-progress", "pipe:1",
             "-y", str(output_path),
         ]
         log_path = self._log_dir / f"ffmpeg_extract_s{stream_index}.log" if self._log_dir else None
-        rc, _out = run_tool(cmd, on_output=self._on_output, log_path=log_path)
+
+        kv_buf: dict[str, str] = {}
+
+        def _on_progress_line(line: str) -> bool:
+            # Every line of `-progress pipe:1` output is a `key=value` pair.
+            # Consume (return True) to keep it out of the log and the TUI.
+            if "=" not in line:
+                return False
+            key, _, val = line.partition("=")
+            key = key.strip()
+            kv_buf[key] = val.strip()
+            if key == "progress":
+                sample = _parse_ffmpeg_progress_block(kv_buf)
+                kv_buf.clear()
+                if sample is not None and on_progress is not None:
+                    on_progress(sample)
+            return True
+
+        rc, _out = run_tool(
+            cmd,
+            on_output=self._on_output,
+            on_progress_line=_on_progress_line,
+            log_path=log_path,
+        )
         return rc
 
     def ffmpeg_to_wav(
@@ -248,8 +299,9 @@ class FFmpegAdapter:
         input_path: Path,
         stream_index: int,
         output_wav: Path,
+        on_progress: Callable[[ProgressSample], None] | None = None,
     ) -> int:
-        """ffmpeg -i input -map 0:{index} -f wav -rf64 auto output.wav"""
+        """ffmpeg -i input -map 0:{index} -f wav -rf64 auto -progress pipe:1 output.wav"""
         cmd = [
             str(self._ffmpeg),
             "-hide_banner", "-loglevel", "warning",
@@ -257,8 +309,30 @@ class FFmpegAdapter:
             "-map", f"0:{stream_index}",
             "-f", "wav",
             "-rf64", "auto",
+            "-progress", "pipe:1",
             "-y", str(output_wav),
         ]
         log_path = self._log_dir / f"ffmpeg_to_wav_s{stream_index}.log" if self._log_dir else None
-        rc, _out = run_tool(cmd, on_output=self._on_output, log_path=log_path)
+
+        kv_buf: dict[str, str] = {}
+
+        def _on_progress_line(line: str) -> bool:
+            if "=" not in line:
+                return False
+            key, _, val = line.partition("=")
+            key = key.strip()
+            kv_buf[key] = val.strip()
+            if key == "progress":
+                sample = _parse_ffmpeg_progress_block(kv_buf)
+                kv_buf.clear()
+                if sample is not None and on_progress is not None:
+                    on_progress(sample)
+            return True
+
+        rc, _out = run_tool(
+            cmd,
+            on_output=self._on_output,
+            on_progress_line=_on_progress_line,
+            log_path=log_path,
+        )
         return rc

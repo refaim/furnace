@@ -37,6 +37,7 @@ class TestDemuxTitlePathHandling:
             def fake_run_tool(
                 cmd: list[str | Path],
                 on_output: object = None,
+                on_progress_line: object = None,
                 log_path: object = None,
                 cwd: object = None,
             ) -> tuple[int, str]:

@@ -157,6 +157,7 @@ def _load_job(raw: dict[str, Any]) -> Job:
         ssim_score=raw.get("ssim_score"),
         source_size=raw.get("source_size", 0),
         output_size=raw.get("output_size"),
+        duration_s=raw.get("duration_s", 0.0),
     )
 
 

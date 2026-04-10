@@ -9,7 +9,6 @@ import logging
 import os
 import re
 import subprocess
-import threading
 from collections.abc import Callable
 from pathlib import Path
 
@@ -18,10 +17,42 @@ from ..core.models import (
     EncodeResult,
     VideoParams,
 )
+from ..core.progress import ProgressSample
 from ..core.quality import align_dimensions, correct_sar
-from ._subprocess import OutputCallback
+from ._subprocess import OutputCallback, run_tool
 
 logger = logging.getLogger(__name__)
+
+_NVENCC_PCT_RE = re.compile(r"\[(\d+\.?\d*)%\]")
+_NVENCC_FPS_RE = re.compile(r"(\d+\.?\d*)\s*fps,")
+
+
+def _parse_nvencc_progress_line(
+    line: str, src_fps: float | None = None,
+) -> ProgressSample | None:
+    """Convert one NVEncC progress line into a sample.
+
+    `src_fps` is the source video frame rate; when passed, the encoder's
+    current fps is divided by it to compute a speed multiplier. Without it,
+    `speed` is left as None.
+    """
+    m_pct = _NVENCC_PCT_RE.search(line)
+    if not m_pct:
+        return None
+    try:
+        fraction = float(m_pct.group(1)) / 100.0
+    except ValueError:
+        return None
+    speed: float | None = None
+    if src_fps and src_fps > 0:
+        m_fps = _NVENCC_FPS_RE.search(line)
+        if m_fps:
+            try:
+                speed = float(m_fps.group(1)) / src_fps
+            except ValueError:
+                speed = None
+    return ProgressSample(fraction=fraction, speed=speed)
+
 
 # NVEncC color range: ffmpeg "tv" -> NVEncC "limited", "pc" -> "full"
 _COLOR_RANGE_MAP: dict[str, str] = {
@@ -268,11 +299,11 @@ class NVEncCAdapter:
         output_path: Path,
         video_params: VideoParams,
         source_size: int,
-        on_progress: Callable[[float, str], None] | None = None,
+        on_progress: Callable[[ProgressSample], None] | None = None,
         vmaf_enabled: bool = False,
         rpu_path: Path | None = None,
     ) -> EncodeResult:
-        """Encode video via NVEncC. Parses stderr for progress."""
+        """Encode video via NVEncC. Parses stderr for progress via the unified parser."""
         cmd = self._build_encode_cmd(
             input_path, output_path, video_params,
             vmaf_enabled=vmaf_enabled, rpu_path=rpu_path,
@@ -282,128 +313,48 @@ class NVEncCAdapter:
 
         encoder_settings = self._build_encoder_settings(video_params)
 
-        # Open per-job log file
-        encode_log = None
-        if self._log_dir:
-            encode_log = (self._log_dir / "nvencc_encode.log").open("w", encoding="utf-8")
-            encode_log.write(f"$ {' '.join(str_cmd)}\n\n")
-            encode_log.flush()
-
-        process = subprocess.Popen(
-            str_cmd,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            bufsize=0,  # unbuffered binary pipes
+        src_fps = (
+            video_params.fps_num / video_params.fps_den
+            if video_params.fps_den else 0.0
         )
-        # Close stdin immediately so NVEncC doesn't wait for input.
-        # Any prompt (e.g. overwrite confirmation) will go to stderr
-        # where we can see it in the TUI/logs.
-        assert process.stdin is not None
-        process.stdin.close()
-
-        # NVEncC writes progress to stderr with \r (no \n).
-        # We read binary, decode manually, split on \r and \n.
-        progress_re = re.compile(r"\[(\d+\.?\d*)%\]")
+        ssim_score: float | None = None
+        vmaf_score: float | None = None
         ssim_re = re.compile(r"All:\s*(\d+\.\d+)")
         vmaf_re = re.compile(r"VMAF\s+Score\s+(\d+\.\d+)", re.IGNORECASE)
 
-        ssim_score: float | None = None
-        vmaf_score: float | None = None
-        stdout_lines: list[str] = []
-
-        def _process_line(line: str) -> None:
+        def _on_output(line: str) -> None:
             nonlocal ssim_score, vmaf_score
-            line = line.strip()
-            if not line:
-                return
-
-            if encode_log is not None:
-                encode_log.write(line + "\n")
-                encode_log.flush()
-
             if self._on_output is not None:
                 self._on_output(line)
-
-            m = progress_re.search(line)
-            if m:
-                pct = float(m.group(1))
-                if on_progress is not None:
-                    on_progress(pct, line)
-
             if "SSIM" in line:
-                sm = ssim_re.search(line)
-                if sm:
-                    ssim_score = float(sm.group(1))
-
+                m = ssim_re.search(line)
+                if m:
+                    ssim_score = float(m.group(1))
             if "VMAF" in line:
-                vm = vmaf_re.search(line)
-                if vm:
-                    vmaf_score = float(vm.group(1))
+                m = vmaf_re.search(line)
+                if m:
+                    vmaf_score = float(m.group(1))
 
-        def _read_stdout() -> None:
-            assert process.stdout is not None
-            for raw_line in process.stdout:
-                line = raw_line.decode("utf-8", errors="replace").rstrip()
-                if line:
-                    stdout_lines.append(line)
-                    if encode_log is not None:
-                        encode_log.write(f"[stdout] {line}\n")
-                        encode_log.flush()
+        def _on_progress_line(line: str) -> bool:
+            sample = _parse_nvencc_progress_line(line, src_fps=src_fps)
+            if sample is None:
+                return False
+            if on_progress is not None:
+                on_progress(sample)
+            return True
 
-        def _read_stderr() -> None:
-            """Read stderr byte-by-byte, split on \\r and \\n.
-
-            NVEncC writes progress with \\r (no \\n), so line-based
-            reading would block. Byte-by-byte in a daemon thread is safe:
-            when the process is killed the pipe closes and read() returns b''.
-            """
-            assert process.stderr is not None
-            raw_buf = bytearray()
-            while True:
-                byte = process.stderr.read(1)
-                if not byte:
-                    break
-                if byte in (b"\r", b"\n"):
-                    if raw_buf:
-                        _process_line(raw_buf.decode("utf-8", errors="replace"))
-                        raw_buf.clear()
-                else:
-                    raw_buf.extend(byte)
-            if raw_buf:
-                _process_line(raw_buf.decode("utf-8", errors="replace"))
-
-        stdout_thread = threading.Thread(target=_read_stdout, daemon=True)
-        stderr_thread = threading.Thread(target=_read_stderr, daemon=True)
-        stdout_thread.start()
-        stderr_thread.start()
-
-        process.wait()
-        stderr_thread.join(timeout=5)
-        stdout_thread.join(timeout=5)
-
-        # Also check stdout for metrics
-        for sline in stdout_lines:
-            if ssim_score is None and "SSIM" in sline:
-                sm = ssim_re.search(sline)
-                if sm:
-                    ssim_score = float(sm.group(1))
-            if vmaf_score is None and "VMAF" in sline:
-                vm = vmaf_re.search(sline)
-                if vm:
-                    vmaf_score = float(vm.group(1))
-
-        if encode_log is not None:
-            encode_log.write(f"\n--- exit code: {process.returncode} ---\n")
-            encode_log.close()
-
-        if process.returncode != 0:
-            logger.error("NVEncC encode failed (rc=%d)", process.returncode)
+        log_path = self._log_dir / "nvencc_encode.log" if self._log_dir else None
+        rc, _out = run_tool(
+            str_cmd,
+            on_output=_on_output,
+            on_progress_line=_on_progress_line,
+            log_path=log_path,
+        )
 
         return EncodeResult(
-            return_code=process.returncode,
+            return_code=rc,
             encoder_settings=encoder_settings,
-            vmaf_score=vmaf_score,
             ssim_score=ssim_score,
+            vmaf_score=vmaf_score,
         )
 

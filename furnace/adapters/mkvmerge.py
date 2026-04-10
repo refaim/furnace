@@ -1,12 +1,32 @@
 from __future__ import annotations
 
 import logging
+import re
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 from ._subprocess import OutputCallback, run_tool
+from furnace.core.progress import ProgressSample
 
 logger = logging.getLogger(__name__)
+
+
+_MKVMERGE_PROGRESS_RE = re.compile(r"^Progress:\s*(\d+)%\s*$")
+
+
+def _parse_mkvmerge_progress_line(line: str) -> ProgressSample | None:
+    """Parse an mkvmerge progress line into a sample.
+
+    Format (confirmed by existing UI regex at run_tui.py:48): ``Progress: NN%``.
+    """
+    m = _MKVMERGE_PROGRESS_RE.match(line.strip())
+    if not m:
+        return None
+    try:
+        return ProgressSample(fraction=int(m.group(1)) / 100.0)
+    except ValueError:
+        return None
 
 
 _COLOR_RANGE_MAP: dict[str, str] = {
@@ -53,6 +73,7 @@ class MkvmergeAdapter:
         output_path: Path,
         furnace_version: str,
         video_meta: dict[str, Any] | None = None,
+        on_progress: Callable[[ProgressSample], None] | None = None,
     ) -> int:
         """Build and run full mkvmerge command.
 
@@ -69,7 +90,21 @@ class MkvmergeAdapter:
             chapters_source, output_path, furnace_version, video_meta,
         )
         log_path = self._log_dir / "mkvmerge.log" if self._log_dir else None
-        rc, stderr = run_tool(cmd, on_output=self._on_output, log_path=log_path)
+
+        def _on_progress_line(line: str) -> bool:
+            sample = _parse_mkvmerge_progress_line(line)
+            if sample is None:
+                return False
+            if on_progress is not None:
+                on_progress(sample)
+            return True
+
+        rc, stderr = run_tool(
+            cmd,
+            on_output=self._on_output,
+            on_progress_line=_on_progress_line,
+            log_path=log_path,
+        )
         if rc >= 2:
             logger.error("mkvmerge mux failed (rc=%d): %s", rc, stderr[-500:])
         elif rc == 1:

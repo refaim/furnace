@@ -4,6 +4,8 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
+from furnace.core.progress import ProgressSample
+
 from .models import CropRect, DiscTitle, DvMode, EncodeResult, VideoParams
 
 
@@ -45,7 +47,7 @@ class Encoder(Protocol):
         output_path: Path,
         video_params: VideoParams,
         source_size: int,
-        on_progress: Callable[[float, str], None] | None = None,
+        on_progress: Callable[[ProgressSample], None] | None = None,
         vmaf_enabled: bool = False,
         rpu_path: Path | None = None,
     ) -> EncodeResult:
@@ -83,6 +85,7 @@ class AudioExtractor(Protocol):
         stream_index: int,
         output_path: Path,
         codec: str,
+        on_progress: Callable[[ProgressSample], None] | None = None,
     ) -> int:
         """Extract audio track from container to a separate file.
         ffmpeg -i input -map 0:{index} -c:a copy output
@@ -94,6 +97,7 @@ class AudioExtractor(Protocol):
         input_path: Path,
         stream_index: int,
         output_wav: Path,
+        on_progress: Callable[[ProgressSample], None] | None = None,
     ) -> int:
         """Decode exotic codec to WAV via ffmpeg.
         ffmpeg -i input -map 0:{index} -f wav -rf64 auto output.wav
@@ -106,11 +110,23 @@ class AudioDecoder(Protocol):
     """Denormalization and lossless audio decoding via eac3to.
     Implemented by Eac3toAdapter."""
 
-    def denormalize(self, input_path: Path, output_path: Path, delay_ms: int) -> int:
+    def denormalize(
+        self,
+        input_path: Path,
+        output_path: Path,
+        delay_ms: int,
+        on_progress: Callable[[ProgressSample], None] | None = None,
+    ) -> int:
         """eac3to denormalize (AC3/EAC3/DTS core)."""
         ...
 
-    def decode_lossless(self, input_path: Path, output_path: Path, delay_ms: int) -> int:
+    def decode_lossless(
+        self,
+        input_path: Path,
+        output_path: Path,
+        delay_ms: int,
+        on_progress: Callable[[ProgressSample], None] | None = None,
+    ) -> int:
         """eac3to decode lossless -> WAV."""
         ...
 
@@ -120,7 +136,12 @@ class AacEncoder(Protocol):
     """Encode WAV to AAC via qaac64.
     Implemented by QaacAdapter."""
 
-    def encode_aac(self, input_wav: Path, output_m4a: Path) -> int:
+    def encode_aac(
+        self,
+        input_wav: Path,
+        output_m4a: Path,
+        on_progress: Callable[[ProgressSample], None] | None = None,
+    ) -> int:
         """qaac64 encode WAV -> AAC."""
         ...
 
@@ -139,6 +160,7 @@ class Muxer(Protocol):
         output_path: Path,
         furnace_version: str,
         video_meta: dict[str, Any] | None = None,
+        on_progress: Callable[[ProgressSample], None] | None = None,
     ) -> int:
         """Assemble MKV. Returns return code.
 
@@ -164,7 +186,12 @@ class Tagger(Protocol):
 class Cleaner(Protocol):
     """Optimize MKV index."""
 
-    def clean(self, input_path: Path, output_path: Path) -> int:
+    def clean(
+        self,
+        input_path: Path,
+        output_path: Path,
+        on_progress: Callable[[ProgressSample], None] | None = None,
+    ) -> int:
         """mkclean. Returns return code."""
         ...
 
@@ -195,7 +222,7 @@ class DiscDemuxerPort(Protocol):
         disc_path: Path,
         title_num: int,
         output_dir: Path,
-        on_progress: Callable[[str], None] | None = None,
+        on_progress: Callable[[ProgressSample], None] | None = None,
     ) -> list[Path]:
         """Demux one title to MKV file(s) in output_dir. Returns paths to created files."""
         ...

@@ -521,3 +521,65 @@ class TestPlanDvModeRoundtrip:
         assert loaded_hdr.is_dolby_vision is True
         assert loaded_hdr.dv_profile == 8
         assert loaded_hdr.dv_bl_compatibility == DvBlCompatibility.HDR10
+
+
+# ---------------------------------------------------------------------------
+# test_job_duration_s
+# ---------------------------------------------------------------------------
+
+class TestJobDurationS:
+    def test_roundtrip_duration_s(self, tmp_path: Path) -> None:
+        """duration_s value is preserved through save/load roundtrip."""
+        job = make_job(job_id="dur-job")
+        job = dataclasses.replace(job, duration_s=7200.5)
+        plan = make_plan(jobs=[job])
+        plan_path = tmp_path / "plan.json"
+
+        save_plan(plan, plan_path)
+        loaded = load_plan(plan_path)
+
+        assert loaded.jobs[0].duration_s == pytest.approx(7200.5)
+
+    def test_legacy_plan_without_duration_s_defaults_to_zero(self, tmp_path: Path) -> None:
+        """Loading a plan JSON that lacks duration_s defaults the field to 0.0."""
+        job_raw = {
+            "id": "legacy-job",
+            "source_files": ["/src/movie.mkv"],
+            "output_file": "/out/movie.mkv",
+            "video_params": {
+                "cq": 25, "crop": None, "deinterlace": False,
+                "color_matrix": "bt709", "color_range": "tv",
+                "color_transfer": "bt709", "color_primaries": "bt709",
+                "hdr": None, "gop": 120, "fps_num": 24, "fps_den": 1,
+                "source_width": 1920, "source_height": 1080,
+                "source_codec": "", "source_bitrate": 0,
+                "sar_num": 1, "sar_den": 1, "dv_mode": None,
+            },
+            "audio": [],
+            "subtitles": [],
+            "attachments": [],
+            "copy_chapters": False,
+            "chapters_source": None,
+            "status": "pending",
+            "error": None,
+            "vmaf_score": None,
+            "ssim_score": None,
+            "source_size": 0,
+            "output_size": None,
+            # no duration_s key — simulates legacy plan
+        }
+        data = {
+            "version": "2",
+            "furnace_version": "0.1.0",
+            "created_at": "2026-01-01T00:00:00",
+            "source": "/src",
+            "destination": "/out",
+            "vmaf_enabled": False,
+            "jobs": [job_raw],
+        }
+        plan_path = tmp_path / "plan.json"
+        plan_path.write_text(json.dumps(data), encoding="utf-8")
+
+        loaded = load_plan(plan_path)
+
+        assert loaded.jobs[0].duration_s == 0.0

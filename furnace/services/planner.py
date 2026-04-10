@@ -227,6 +227,7 @@ class PlannerService:
             vmaf_score=None,
             source_size=movie.file_size,
             output_size=None,
+            duration_s=movie.video.duration_s,
         )
         return job
 

@@ -4,6 +4,8 @@ import logging
 import shutil
 import tempfile
 import threading
+import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +29,7 @@ from ..core.ports import (
     Prober,
     Tagger,
 )
+from ..core.progress import ProgressSample, ProgressTracker
 from ..plan import update_job_status
 from furnace import VERSION as FURNACE_VERSION
 
@@ -92,6 +95,25 @@ class Executor:
         self._adapters: list[Any] = [encoder, audio_extractor, audio_decoder, aac_encoder, muxer, tagger, cleaner]
         if dovi_processor is not None:
             self._adapters.append(dovi_processor)
+
+    def _make_progress_callback(
+        self,
+        total_s: float | None = None,
+    ) -> tuple[ProgressTracker, Callable[[ProgressSample], None]]:
+        """Create a tracker + wrapper callback for a long-running step.
+
+        Returns the tracker (so caller can `reset()` it between sub-phases) and
+        a callback that the adapter receives as `on_progress`. The callback adds
+        each sample to the tracker and pushes the snapshot to the TUI.
+        """
+        tracker = ProgressTracker(total_s=total_s)
+
+        def _on_progress(sample: ProgressSample) -> None:
+            tracker.add(sample, time.monotonic())
+            if self._progress is not None:
+                self._progress.update_progress(tracker.snapshot())
+
+        return tracker, _on_progress
 
     def _set_adapters_log_dir(self, job_name: str) -> None:
         """Create per-job log subdirectory and update all adapters."""
@@ -215,7 +237,7 @@ class Executor:
             if self._progress is not None:
                 self._progress.update_status(status_msg)
                 self._progress.add_tool_line(f"[furnace] {status_msg}")
-            audio_path = self._process_audio_track(audio_instr, temp_dir)
+            audio_path = self._process_audio_track(audio_instr, temp_dir, job)
             audio_meta = {
                 "language": audio_instr.language,
                 "default": audio_instr.is_default,
@@ -243,7 +265,7 @@ class Executor:
             if self._progress is not None:
                 self._progress.update_status(status_msg)
                 self._progress.add_tool_line(f"[furnace] {status_msg}")
-            sub_path = self._process_subtitle_track(sub_instr, temp_dir)
+            sub_path = self._process_subtitle_track(sub_instr, temp_dir, job)
             sub_meta = {
                 "language": sub_instr.language,
                 "default": sub_instr.is_default,
@@ -284,26 +306,18 @@ class Executor:
             self._progress.update_status("Encoding video")
             self._progress.add_tool_line(f"[furnace] Encoding video: {main_source.name}")
 
-        def _encode_progress(pct: float, status_line: str) -> None:
-            speed = ""
-            # ffmpeg format: "speed=2.5x"
-            if "speed=" in status_line:
-                speed = status_line.rsplit("speed=", maxsplit=1)[-1].strip()
-            # NVEncC format: "137 frames: 85.08 fps, ..."
-            elif "fps," in status_line:
-                import re as _re
-                m = _re.search(r"([\d.]+)\s*fps,", status_line)
-                if m and job.video_params.fps_num and job.video_params.fps_den:
-                    src_fps = job.video_params.fps_num / job.video_params.fps_den
-                    if src_fps > 0:
-                        speed = f"{float(m.group(1)) / src_fps:.1f}x"
+        _, base_encode_on_progress = self._make_progress_callback(
+            total_s=job.duration_s or None,
+        )
+
+        def encode_on_progress(sample: ProgressSample) -> None:
+            base_encode_on_progress(sample)
+            # Preserve the output-size update alongside encoding progress
+            try:
+                video_size = video_output.stat().st_size if video_output.exists() else 0
+            except OSError:
+                video_size = 0
             if self._progress is not None:
-                self._progress.update_encode(pct, speed)
-                # Update output size: audio + current video
-                try:
-                    video_size = video_output.stat().st_size if video_output.exists() else 0
-                except OSError:
-                    video_size = 0
                 self._progress.update_output_size(self._cumulative_audio_size + video_size)
 
         rc_result = self._encoder.encode(
@@ -311,7 +325,7 @@ class Executor:
             output_path=video_output,
             video_params=job.video_params,
             source_size=job.source_size,
-            on_progress=_encode_progress,
+            on_progress=encode_on_progress,
             vmaf_enabled=self._vmaf_enabled,
             rpu_path=rpu_path,
         )
@@ -366,6 +380,7 @@ class Executor:
                 elif part.startswith("MaxFALL="):
                     video_meta["hdr_max_fall"] = part.split("=", 1)[1]
 
+        _, mux_on_progress = self._make_progress_callback(total_s=None)
         rc = self._muxer.mux(
             video_path=video_output,
             audio_files=audio_files,
@@ -375,6 +390,7 @@ class Executor:
             output_path=muxed_path,
             furnace_version=FURNACE_VERSION,
             video_meta=video_meta or None,
+            on_progress=mux_on_progress,
         )
         if rc != 0:
             raise RuntimeError(f"Muxing failed with return code {rc}")
@@ -403,7 +419,8 @@ class Executor:
         if self._progress is not None:
             self._progress.update_status("Optimizing MKV index...")
             self._progress.add_tool_line("[furnace] Optimizing MKV index (mkclean)")
-        rc = self._cleaner.clean(muxed_path, cleaned_path)
+        _, clean_on_progress = self._make_progress_callback(total_s=None)
+        rc = self._cleaner.clean(muxed_path, cleaned_path, on_progress=clean_on_progress)
         if rc != 0:
             logger.warning("mkclean returned %d, using muxed output", rc)
             cleaned_path = muxed_path
@@ -414,7 +431,9 @@ class Executor:
         shutil.move(str(cleaned_path), str(output_path))
         logger.debug("Job output written to %s", output_path)
 
-    def _process_audio_track(self, instr: AudioInstruction, temp_dir: Path) -> Path:
+    def _process_audio_track(
+        self, instr: AudioInstruction, temp_dir: Path, job: Job
+    ) -> Path:
         """Returns path to processed audio file.
         COPY: extract_track from container
         DENORM: extract_track -> denormalize (with delay)
@@ -431,8 +450,10 @@ class Executor:
             if self._progress is not None:
                 self._progress.add_tool_line(f"[furnace] Extracting audio stream {track_idx} (copy)")
             out_path = temp_dir / f"audio_{track_idx}{ext}"
+            _, on_progress = self._make_progress_callback(total_s=job.duration_s or None)
             rc = self._audio_extractor.extract_track(
-                source_path, track_idx, out_path, instr.codec_name
+                source_path, track_idx, out_path, instr.codec_name,
+                on_progress=on_progress,
             )
             if rc != 0:
                 raise RuntimeError(
@@ -445,8 +466,10 @@ class Executor:
             if self._progress is not None:
                 self._progress.add_tool_line(f"[furnace] Extracting audio stream {track_idx}")
             extracted = temp_dir / f"audio_{track_idx}_raw{ext}"
+            _, on_progress = self._make_progress_callback(total_s=job.duration_s or None)
             rc = self._audio_extractor.extract_track(
-                source_path, track_idx, extracted, instr.codec_name
+                source_path, track_idx, extracted, instr.codec_name,
+                on_progress=on_progress,
             )
             if rc != 0:
                 raise RuntimeError(
@@ -456,7 +479,10 @@ class Executor:
             if self._progress is not None:
                 self._progress.add_tool_line(f"[furnace] Denormalizing audio stream {track_idx} with eac3to")
             denormed = temp_dir / f"audio_{track_idx}_denorm{ext}"
-            rc = self._audio_decoder.denormalize(extracted, denormed, instr.delay_ms)
+            _, on_progress = self._make_progress_callback(total_s=None)
+            rc = self._audio_decoder.denormalize(
+                extracted, denormed, instr.delay_ms, on_progress=on_progress,
+            )
             if rc != 0:
                 raise RuntimeError(
                     f"Audio denormalize failed with rc={rc} for stream {track_idx}"
@@ -468,8 +494,10 @@ class Executor:
             if self._progress is not None:
                 self._progress.add_tool_line(f"[furnace] Extracting audio stream {track_idx}")
             extracted = temp_dir / f"audio_{track_idx}_raw{ext}"
+            _, on_progress = self._make_progress_callback(total_s=job.duration_s or None)
             rc = self._audio_extractor.extract_track(
-                source_path, track_idx, extracted, instr.codec_name
+                source_path, track_idx, extracted, instr.codec_name,
+                on_progress=on_progress,
             )
             if rc != 0:
                 raise RuntimeError(
@@ -479,7 +507,10 @@ class Executor:
             if self._progress is not None:
                 self._progress.add_tool_line(f"[furnace] Decoding lossless audio stream {track_idx} with eac3to")
             wav_path = temp_dir / f"audio_{track_idx}_decoded.wav"
-            rc = self._audio_decoder.decode_lossless(extracted, wav_path, instr.delay_ms)
+            _, on_progress = self._make_progress_callback(total_s=None)
+            rc = self._audio_decoder.decode_lossless(
+                extracted, wav_path, instr.delay_ms, on_progress=on_progress,
+            )
             if rc != 0:
                 raise RuntimeError(
                     f"Audio decode_lossless failed with rc={rc} for stream {track_idx}"
@@ -488,7 +519,8 @@ class Executor:
             if self._progress is not None:
                 self._progress.add_tool_line(f"[furnace] Encoding AAC for stream {track_idx} with qaac64")
             m4a_path = temp_dir / f"audio_{track_idx}.m4a"
-            rc = self._aac_encoder.encode_aac(wav_path, m4a_path)
+            _, on_progress = self._make_progress_callback(total_s=None)
+            rc = self._aac_encoder.encode_aac(wav_path, m4a_path, on_progress=on_progress)
             if rc != 0:
                 raise RuntimeError(
                     f"AAC encode failed with rc={rc} for stream {track_idx}"
@@ -500,7 +532,10 @@ class Executor:
             if self._progress is not None:
                 self._progress.add_tool_line(f"[furnace] Decoding audio stream {track_idx} with ffmpeg to WAV")
             wav_path = temp_dir / f"audio_{track_idx}_ffmpeg.wav"
-            rc = self._audio_extractor.ffmpeg_to_wav(source_path, track_idx, wav_path)
+            _, on_progress = self._make_progress_callback(total_s=job.duration_s or None)
+            rc = self._audio_extractor.ffmpeg_to_wav(
+                source_path, track_idx, wav_path, on_progress=on_progress,
+            )
             if rc != 0:
                 raise RuntimeError(
                     f"ffmpeg_to_wav failed with rc={rc} for stream {track_idx}"
@@ -509,7 +544,8 @@ class Executor:
             if self._progress is not None:
                 self._progress.add_tool_line(f"[furnace] Encoding AAC for stream {track_idx} with qaac64")
             m4a_path = temp_dir / f"audio_{track_idx}.m4a"
-            rc = self._aac_encoder.encode_aac(wav_path, m4a_path)
+            _, on_progress = self._make_progress_callback(total_s=None)
+            rc = self._aac_encoder.encode_aac(wav_path, m4a_path, on_progress=on_progress)
             if rc != 0:
                 raise RuntimeError(
                     f"AAC encode (FFMPEG_ENCODE) failed with rc={rc} for stream {track_idx}"
@@ -518,7 +554,9 @@ class Executor:
 
         raise ValueError(f"Unknown AudioAction: {instr.action}")
 
-    def _process_subtitle_track(self, instr: SubtitleInstruction, temp_dir: Path) -> Path:
+    def _process_subtitle_track(
+        self, instr: SubtitleInstruction, temp_dir: Path, job: Job
+    ) -> Path:
         """COPY: extract from container (ffmpeg).
         COPY_RECODE: extract + charset detection + recode to UTF-8.
         """
@@ -533,8 +571,10 @@ class Executor:
                 return source_path
             # Extract from container
             out_path = temp_dir / f"sub_{track_idx}{ext}"
+            _, on_progress = self._make_progress_callback(total_s=job.duration_s or None)
             rc = self._audio_extractor.extract_track(
-                source_path, track_idx, out_path, instr.codec_name
+                source_path, track_idx, out_path, instr.codec_name,
+                on_progress=on_progress,
             )
             if rc != 0:
                 raise RuntimeError(
@@ -549,8 +589,10 @@ class Executor:
             else:
                 # Extract from container first
                 extracted = temp_dir / f"sub_{track_idx}_raw{ext}"
+                _, on_progress = self._make_progress_callback(total_s=job.duration_s or None)
                 rc = self._audio_extractor.extract_track(
-                    source_path, track_idx, extracted, instr.codec_name
+                    source_path, track_idx, extracted, instr.codec_name,
+                    on_progress=on_progress,
                 )
                 if rc != 0:
                     raise RuntimeError(
