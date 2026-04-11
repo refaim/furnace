@@ -11,6 +11,7 @@ from .core.models import (
     AudioAction,
     AudioInstruction,
     CropRect,
+    DownmixMode,
     DvBlCompatibility,
     DvMode,
     HdrMetadata,
@@ -114,6 +115,8 @@ def _load_video_params(raw: dict[str, Any]) -> VideoParams:
 
 
 def _load_audio(raw: dict[str, Any]) -> AudioInstruction:
+    downmix_raw = raw.get("downmix")
+    downmix = DownmixMode(downmix_raw) if downmix_raw is not None else None
     return AudioInstruction(
         source_file=raw["source_file"],
         stream_index=raw["stream_index"],
@@ -124,6 +127,7 @@ def _load_audio(raw: dict[str, Any]) -> AudioInstruction:
         codec_name=raw["codec_name"],
         channels=raw.get("channels"),
         bitrate=raw.get("bitrate"),
+        downmix=downmix,
     )
 
 

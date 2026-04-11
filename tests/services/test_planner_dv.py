@@ -25,28 +25,28 @@ class TestPlannerDvMode:
         hdr = HdrMetadata(mastering_display="G(0.265,0.690)B(0.150,0.060)R(0.680,0.320)WP(0.3127,0.3290)L(1000,0.005)", content_light="MaxCLL=1000,MaxFALL=400")
         video = _make_video(hdr=hdr)
         planner = PlannerService(prober=None, previewer=None)  # type: ignore[arg-type]
-        vp = planner._build_video_params(video, crop=None)
+        vp = planner._build_video_params(video, crop=None, source_file=video.source_file, sar_overrides=set())
         assert vp.dv_mode is None
 
     def test_dv_profile8_mode_copy(self) -> None:
         hdr = HdrMetadata(mastering_display="G(0.265,0.690)B(0.150,0.060)R(0.680,0.320)WP(0.3127,0.3290)L(1000,0.005)", content_light="MaxCLL=1000,MaxFALL=400", is_dolby_vision=True, dv_profile=8, dv_bl_compatibility=DvBlCompatibility.HDR10)
         video = _make_video(hdr=hdr)
         planner = PlannerService(prober=None, previewer=None)  # type: ignore[arg-type]
-        vp = planner._build_video_params(video, crop=None)
+        vp = planner._build_video_params(video, crop=None, source_file=video.source_file, sar_overrides=set())
         assert vp.dv_mode == DvMode.COPY
 
     def test_dv_profile7_mode_to_8_1(self) -> None:
         hdr = HdrMetadata(mastering_display="G(0.265,0.690)B(0.150,0.060)R(0.680,0.320)WP(0.3127,0.3290)L(1000,0.005)", content_light="MaxCLL=1000,MaxFALL=400", is_dolby_vision=True, dv_profile=7, dv_bl_compatibility=DvBlCompatibility.HDR10)
         video = _make_video(hdr=hdr)
         planner = PlannerService(prober=None, previewer=None)  # type: ignore[arg-type]
-        vp = planner._build_video_params(video, crop=None)
+        vp = planner._build_video_params(video, crop=None, source_file=video.source_file, sar_overrides=set())
         assert vp.dv_mode == DvMode.TO_8_1
 
     def test_dv_profile5_mode_copy(self) -> None:
         hdr = HdrMetadata(is_dolby_vision=True, dv_profile=5, dv_bl_compatibility=DvBlCompatibility.NONE)
         video = _make_video(hdr=hdr)
         planner = PlannerService(prober=None, previewer=None)  # type: ignore[arg-type]
-        vp = planner._build_video_params(video, crop=None)
+        vp = planner._build_video_params(video, crop=None, source_file=video.source_file, sar_overrides=set())
         assert vp.dv_mode == DvMode.COPY
 
     def test_hdr10_plus_raises(self) -> None:
@@ -54,4 +54,4 @@ class TestPlannerDvMode:
         video = _make_video(hdr=hdr)
         planner = PlannerService(prober=None, previewer=None)  # type: ignore[arg-type]
         with pytest.raises(ValueError, match="HDR10\\+"):
-            planner._build_video_params(video, crop=None)
+            planner._build_video_params(video, crop=None, source_file=video.source_file, sar_overrides=set())

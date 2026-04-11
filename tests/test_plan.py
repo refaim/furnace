@@ -10,6 +10,7 @@ from furnace.core.models import (
     AudioAction,
     AudioInstruction,
     CropRect,
+    DownmixMode,
     DvBlCompatibility,
     DvMode,
     HdrMetadata,
@@ -69,6 +70,7 @@ def make_audio_instruction(
     codec_name: str = "aac",
     channels: int | None = 2,
     bitrate: int | None = 192000,
+    downmix: DownmixMode | None = None,
 ) -> AudioInstruction:
     return AudioInstruction(
         source_file=source_file,
@@ -80,6 +82,7 @@ def make_audio_instruction(
         codec_name=codec_name,
         channels=channels,
         bitrate=bitrate,
+        downmix=downmix,
     )
 
 
@@ -293,6 +296,106 @@ class TestPlanRoundtrip:
         assert loaded_sub.action == SubtitleAction.COPY_RECODE
         assert loaded_sub.source_encoding == "cp1251"
         assert loaded_sub.is_forced is True
+
+    def test_roundtrip_with_downmix(self, tmp_path):
+        """AudioInstruction.downmix survives save -> load."""
+        audio = [
+            make_audio_instruction(
+                stream_index=1, codec_name="truehd", channels=8,
+                action=AudioAction.DECODE_ENCODE, downmix=DownmixMode.STEREO,
+            ),
+            make_audio_instruction(
+                stream_index=2, codec_name="ac3", channels=6,
+                action=AudioAction.DECODE_ENCODE, downmix=DownmixMode.DOWN6,
+            ),
+            make_audio_instruction(
+                stream_index=3, codec_name="aac", channels=2,
+                action=AudioAction.COPY, downmix=None,
+            ),
+        ]
+        job = make_job(audio=audio)
+        plan = make_plan(jobs=[job])
+        plan_path = tmp_path / "plan.json"
+
+        save_plan(plan, plan_path)
+        loaded = load_plan(plan_path)
+
+        loaded_audio = loaded.jobs[0].audio
+        assert loaded_audio[0].downmix == DownmixMode.STEREO
+        assert loaded_audio[1].downmix == DownmixMode.DOWN6
+        assert loaded_audio[2].downmix is None
+
+    def test_legacy_plan_without_downmix_key_loads(self, tmp_path):
+        """A JSON plan produced before the downmix field existed must still load."""
+        raw = {
+            "version": "2",
+            "furnace_version": "1.0.0",
+            "created_at": "2025-01-01T00:00:00",
+            "source": "/src",
+            "destination": "/out",
+            "vmaf_enabled": False,
+            "demux_dir": None,
+            "jobs": [
+                {
+                    "id": "legacy-job",
+                    "source_files": ["/src/movie.mkv"],
+                    "output_file": "/out/movie.mkv",
+                    "video_params": {
+                        "cq": 25, "crop": None, "deinterlace": False,
+                        "color_matrix": "bt709", "color_range": "tv",
+                        "color_transfer": "bt709", "color_primaries": "bt709",
+                        "hdr": None, "gop": 120, "fps_num": 24, "fps_den": 1,
+                        "source_width": 1920, "source_height": 1080,
+                        "source_codec": "", "source_bitrate": 0,
+                        "sar_num": 1, "sar_den": 1, "dv_mode": None,
+                    },
+                    "audio": [
+                        {
+                            "source_file": "/src/movie.mkv",
+                            "stream_index": 1,
+                            "language": "eng",
+                            "action": "copy",
+                            "delay_ms": 0,
+                            "is_default": True,
+                            "codec_name": "aac",
+                            "channels": 2,
+                            "bitrate": 192000,
+                            # no 'downmix' key
+                        },
+                    ],
+                    "subtitles": [],
+                    "attachments": [],
+                    "copy_chapters": False,
+                    "chapters_source": None,
+                    "status": "pending",
+                    "error": None,
+                    "vmaf_score": None,
+                    "ssim_score": None,
+                    "source_size": 0,
+                    "output_size": None,
+                },
+            ],
+        }
+        plan_path = tmp_path / "plan.json"
+        plan_path.write_text(json.dumps(raw), encoding="utf-8")
+
+        loaded = load_plan(plan_path)
+
+        assert loaded.jobs[0].audio[0].downmix is None
+
+    def test_invalid_downmix_string_raises(self, tmp_path):
+        """An unknown downmix string in JSON must raise ValueError on load."""
+        plan = make_plan()
+        plan_path = tmp_path / "plan.json"
+        save_plan(plan, plan_path)
+
+        # Inject an invalid downmix value into the saved JSON
+        raw = json.loads(plan_path.read_text(encoding="utf-8"))
+        raw["jobs"][0]["audio"][0]["downmix"] = "foo"
+        plan_path.write_text(json.dumps(raw), encoding="utf-8")
+
+        with pytest.raises(ValueError):
+            load_plan(plan_path)
 
 
 # ---------------------------------------------------------------------------

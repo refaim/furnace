@@ -6,7 +6,7 @@ from typing import Any, Protocol, runtime_checkable
 
 from furnace.core.progress import ProgressSample
 
-from .models import CropRect, DiscTitle, DvMode, EncodeResult, VideoParams
+from .models import CropRect, DiscTitle, DownmixMode, DvMode, EncodeResult, VideoParams
 
 
 @runtime_checkable
@@ -126,8 +126,11 @@ class AudioDecoder(Protocol):
         output_path: Path,
         delay_ms: int,
         on_progress: Callable[[ProgressSample], None] | None = None,
+        *,
+        downmix: DownmixMode | None = None,
     ) -> int:
-        """eac3to decode lossless -> WAV."""
+        """eac3to decode lossless -> WAV. With downmix set, also emits the
+        corresponding eac3to flags."""
         ...
 
 

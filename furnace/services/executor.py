@@ -65,6 +65,22 @@ _SUBTITLE_CODEC_EXT: dict[str, str] = {
 }
 
 
+_EAC3TO_SUPPORTED_SRC: frozenset[str] = frozenset({
+    "ac3", "eac3",
+    "dts",
+    "truehd",
+    "flac",
+    "pcm_s16le", "pcm_s24le", "pcm_s16be",
+    "aac",
+    "mp2", "mp3",
+})
+
+
+def _codec_supported_by_eac3to(codec_name: str) -> bool:
+    """Return True if eac3to can read this source codec directly."""
+    return codec_name.lower() in _EAC3TO_SUPPORTED_SRC
+
+
 class Executor:
     def __init__(
         self,
@@ -490,37 +506,74 @@ class Executor:
             return denormed
 
         if instr.action == AudioAction.DECODE_ENCODE:
-            logger.info("Extracting audio stream %d", track_idx)
-            if self._progress is not None:
-                self._progress.add_tool_line(f"[furnace] Extracting audio stream {track_idx}")
-            extracted = temp_dir / f"audio_{track_idx}_raw{ext}"
-            _, on_progress = self._make_progress_callback(total_s=job.duration_s or None)
-            rc = self._audio_extractor.extract_track(
-                source_path, track_idx, extracted, instr.codec_name,
-                on_progress=on_progress,
-            )
-            if rc != 0:
-                raise RuntimeError(
-                    f"Audio extract (DECODE_ENCODE) failed with rc={rc} for stream {track_idx}"
+            if _codec_supported_by_eac3to(instr.codec_name):
+                logger.info("Extracting audio stream %d", track_idx)
+                if self._progress is not None:
+                    self._progress.add_tool_line(
+                        f"[furnace] Extracting audio stream {track_idx}"
+                    )
+                extracted = temp_dir / f"audio_{track_idx}_raw{ext}"
+                _, on_progress = self._make_progress_callback(
+                    total_s=job.duration_s or None,
                 )
+                rc = self._audio_extractor.extract_track(
+                    source_path, track_idx, extracted, instr.codec_name,
+                    on_progress=on_progress,
+                )
+                if rc != 0:
+                    raise RuntimeError(
+                        f"Audio extract (DECODE_ENCODE) failed with rc={rc} "
+                        f"for stream {track_idx}"
+                    )
+            else:
+                logger.info(
+                    "Pre-decoding audio stream %d with ffmpeg to WAV", track_idx,
+                )
+                if self._progress is not None:
+                    self._progress.add_tool_line(
+                        f"[furnace] Pre-decoding audio stream {track_idx} with ffmpeg "
+                        f"(source codec {instr.codec_name} not readable by eac3to)"
+                    )
+                extracted = temp_dir / f"audio_{track_idx}_pre.wav"
+                _, on_progress = self._make_progress_callback(
+                    total_s=job.duration_s or None,
+                )
+                rc = self._audio_extractor.ffmpeg_to_wav(
+                    source_path, track_idx, extracted,
+                    on_progress=on_progress,
+                )
+                if rc != 0:
+                    raise RuntimeError(
+                        f"ffmpeg pre-decode failed with rc={rc} for stream {track_idx}"
+                    )
+
             logger.info("Decoding lossless with eac3to")
             if self._progress is not None:
-                self._progress.add_tool_line(f"[furnace] Decoding lossless audio stream {track_idx} with eac3to")
+                self._progress.add_tool_line(
+                    f"[furnace] Decoding lossless audio stream {track_idx} with eac3to"
+                )
             wav_path = temp_dir / f"audio_{track_idx}_decoded.wav"
             _, on_progress = self._make_progress_callback(total_s=None)
             rc = self._audio_decoder.decode_lossless(
-                extracted, wav_path, instr.delay_ms, on_progress=on_progress,
+                extracted, wav_path, instr.delay_ms,
+                on_progress=on_progress,
+                downmix=instr.downmix,
             )
             if rc != 0:
                 raise RuntimeError(
                     f"Audio decode_lossless failed with rc={rc} for stream {track_idx}"
                 )
+
             logger.info("Encoding AAC with qaac64")
             if self._progress is not None:
-                self._progress.add_tool_line(f"[furnace] Encoding AAC for stream {track_idx} with qaac64")
+                self._progress.add_tool_line(
+                    f"[furnace] Encoding AAC for stream {track_idx} with qaac64"
+                )
             m4a_path = temp_dir / f"audio_{track_idx}.m4a"
             _, on_progress = self._make_progress_callback(total_s=None)
-            rc = self._aac_encoder.encode_aac(wav_path, m4a_path, on_progress=on_progress)
+            rc = self._aac_encoder.encode_aac(
+                wav_path, m4a_path, on_progress=on_progress,
+            )
             if rc != 0:
                 raise RuntimeError(
                     f"AAC encode failed with rc={rc} for stream {track_idx}"

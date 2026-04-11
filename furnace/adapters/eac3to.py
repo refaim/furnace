@@ -6,7 +6,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from furnace.core.models import DiscTitle
+from furnace.core.models import DiscTitle, DownmixMode
 from furnace.core.progress import ProgressSample
 
 from ._subprocess import OutputCallback, run_tool
@@ -190,10 +190,18 @@ class Eac3toAdapter:
         output_path: Path,
         delay_ms: int,
         on_progress: Callable[[ProgressSample], None] | None = None,
+        *,
+        downmix: DownmixMode | None = None,
     ) -> int:
+        downmix_args: list[str] = []
+        if downmix == DownmixMode.STEREO:
+            downmix_args.append("-downStereo")
+        elif downmix == DownmixMode.DOWN6:
+            downmix_args.append("-down6")
+
         rc, _output = self._run(
             [str(input_path), str(output_path), "-removeDialnorm",
-             *self._delay_arg(delay_ms)],
+             *self._delay_arg(delay_ms), *downmix_args],
             "decode",
             on_progress=on_progress,
         )

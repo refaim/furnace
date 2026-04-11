@@ -33,6 +33,7 @@ from textual.widgets import RichLog, Static
 from furnace.core.models import (
     AudioAction,
     AudioInstruction,
+    DownmixMode,
     Job,
     SubtitleAction,
     SubtitleInstruction,
@@ -158,21 +159,38 @@ def _build_source_text(job: Job) -> str:
     return "\n".join(lines)
 
 
+_CH_LAYOUT_MAP = {1: "1.0", 2: "2.0", 6: "5.1", 8: "7.1"}
+
+
+def _target_channels(instr: AudioInstruction) -> int | None:
+    """Return the number of channels in the output after any downmix."""
+    if instr.downmix == DownmixMode.STEREO:
+        return 2
+    if instr.downmix == DownmixMode.DOWN6:
+        return 6
+    return instr.channels
+
+
+def _target_channel_layout(instr: AudioInstruction) -> str:
+    """Short layout string (e.g. '5.1', '2.0') for the OUTPUT track."""
+    ch = _target_channels(instr)
+    if ch is None:
+        return ""
+    return _CH_LAYOUT_MAP.get(ch, f"{ch}ch")
+
+
 def _audio_target_label(instr: AudioInstruction) -> str:
     """Describe what this audio track becomes."""
-    codec = instr.codec_name.upper()
-    ch = ""
-    if instr.channels:
-        ch_map = {1: "1.0", 2: "2.0", 6: "5.1", 8: "7.1"}
-        ch = ch_map.get(instr.channels, f"{instr.channels}ch")
+    src_codec = instr.codec_name.upper()
+    layout = _target_channel_layout(instr)
 
     if instr.action == AudioAction.COPY:
-        return f"{codec} {ch} (copy)".strip()
+        return " ".join(p for p in [src_codec, layout, "(copy)"] if p)
     if instr.action == AudioAction.DENORM:
-        return f"{codec} {ch} (denorm)".strip()
+        return " ".join(p for p in [src_codec, layout, "(denorm)"] if p)
     if instr.action in (AudioAction.DECODE_ENCODE, AudioAction.FFMPEG_ENCODE):
-        return f"AAC (from {codec})".strip()
-    return codec
+        return " ".join(p for p in ["AAC", layout, f"(from {src_codec})"] if p)
+    return src_codec
 
 
 def _sub_target_label(instr: SubtitleInstruction) -> str:

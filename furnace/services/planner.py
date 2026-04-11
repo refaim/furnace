@@ -11,6 +11,7 @@ from collections.abc import Callable
 from ..core.models import (
     AudioInstruction,
     CropRect,
+    DownmixMode,
     DvMode,
     Job,
     JobStatus,
@@ -33,6 +34,13 @@ from ..core.rules import get_audio_action, get_subtitle_action
 from furnace import VERSION as FURNACE_VERSION
 
 logger = logging.getLogger(__name__)
+
+# ITU-R BT.601 PAL 4:3 sample aspect ratio. Applied as a SAR override to DVD
+# sources that ffprobe reports as square-pixel 720x480/720x576 — the correct
+# display geometry for a standard NTSC/PAL DVD is 4:3, which requires
+# non-square pixels at 64:45 (or 32:27 for 16:9, which we don't apply here).
+DVD_SAR_NUM = 64
+DVD_SAR_DEN = 45
 
 # Callback type: (movie, candidate_tracks, track_type) -> selected_tracks
 TrackSelectorFn = Callable[[Movie, list[Track], TrackType], list[Track]]
@@ -61,6 +69,9 @@ class PlannerService:
         sub_lang_filter: list[str],
         vmaf_enabled: bool,
         dry_run: bool,
+        *,
+        sar_overrides: set[Path] | None = None,
+        downmix_overrides: dict[tuple[Path, int], DownmixMode] | None = None,
     ) -> Plan:
         """For each Movie:
         1. Skip logic
@@ -77,8 +88,25 @@ class PlannerService:
         source = str(movies[0][0].main_file.parent) if movies else ""
         destination = str(movies[0][1].parent) if movies else ""
 
+        # Preserve the caller's dict/set identity. Using `or {}` here would
+        # silently swap an empty caller dict for a fresh literal and break the
+        # reference, so any closure that mutates the caller's dict during
+        # track selection (e.g. cli.py's _select_tracks_tui_for_planner) would
+        # have its updates dropped on the floor.
+        effective_overrides: dict[tuple[Path, int], DownmixMode] = (
+            downmix_overrides if downmix_overrides is not None else {}
+        )
+        effective_sar_overrides: set[Path] = (
+            sar_overrides if sar_overrides is not None else set()
+        )
+
         for movie, output_path in movies:
-            job = self._build_job(movie, output_path, audio_lang_filter, sub_lang_filter, vmaf_enabled, dry_run)
+            job = self._build_job(
+                movie, output_path, audio_lang_filter, sub_lang_filter,
+                vmaf_enabled, dry_run,
+                sar_overrides=effective_sar_overrides,
+                downmix_overrides=effective_overrides,
+            )
             if job is not None:
                 jobs.append(job)
 
@@ -101,6 +129,9 @@ class PlannerService:
         sub_lang_filter: list[str],
         vmaf_enabled: bool,
         dry_run: bool,
+        *,
+        sar_overrides: set[Path],
+        downmix_overrides: dict[tuple[Path, int], DownmixMode],
     ) -> Job | None:
         """Build a single Job for a Movie."""
         # Detect crop
@@ -135,11 +166,15 @@ class PlannerService:
                 logger.warning("Crop detection failed for %s: %s", movie.main_file.name, exc)
 
         # Build video params
-        video_params = self._build_video_params(movie.video, crop)
+        video_params = self._build_video_params(
+            movie.video, crop,
+            source_file=movie.main_file,
+            sar_overrides=sar_overrides,
+        )
 
         # Auto-select audio tracks
         audio_candidates = self._filter_audio_tracks_by_lang(movie.audio_tracks, audio_lang_filter)
-        selected_audio = self._auto_select_from_candidates(audio_candidates)
+        selected_audio = self._auto_select_from_candidates(audio_candidates, TrackType.AUDIO)
         if selected_audio is None:
             if self._track_selector is not None:
                 logger.debug(
@@ -156,7 +191,7 @@ class PlannerService:
 
         # Auto-select subtitle tracks
         sub_candidates = self._filter_sub_tracks_by_lang(movie.subtitle_tracks, sub_lang_filter)
-        selected_subs = self._auto_select_from_candidates(sub_candidates)
+        selected_subs = self._auto_select_from_candidates(sub_candidates, TrackType.SUBTITLE)
         if selected_subs is None:
             if self._track_selector is not None:
                 logger.debug(
@@ -180,7 +215,9 @@ class PlannerService:
         audio_instructions: list[AudioInstruction] = []
         for i, track in enumerate(selected_audio):
             is_default = i == 0
-            audio_instr = self._build_audio_instruction(track, is_default)
+            track_key = (Path(track.source_file), track.index)
+            track_downmix = downmix_overrides.get(track_key)
+            audio_instr = self._build_audio_instruction(track, is_default, track_downmix)
             audio_instructions.append(audio_instr)
 
         # Resolve und languages for selected subs
@@ -287,10 +324,12 @@ class PlannerService:
         return tracks
 
     def _auto_select_from_candidates(
-        self, candidates: list[Track],
+        self, candidates: list[Track], track_type: TrackType,
     ) -> list[Track] | None:
         """If exactly one track per language -> auto-select.
-        If multiple tracks for any language -> return None (caller shows TUI).
+        For AUDIO only: additionally force TUI if any candidate has >2 channels
+        (so the user can configure downmix even on unambiguous files).
+        Returns None when the caller should invoke the track_selector.
         """
         if not candidates:
             return candidates
@@ -303,9 +342,22 @@ class PlannerService:
             if len(group) > 1:
                 return None
 
+        # X-A: for audio only, any candidate with >2 channels forces the TUI
+        if track_type == TrackType.AUDIO:
+            for track in candidates:
+                if track.channels is not None and track.channels > 2:
+                    return None
+
         return candidates
 
-    def _build_video_params(self, video: VideoInfo, crop: CropRect | None) -> VideoParams:
+    def _build_video_params(
+        self,
+        video: VideoInfo,
+        crop: CropRect | None,
+        *,
+        source_file: Path,
+        sar_overrides: set[Path],
+    ) -> VideoParams:
         """CQ interpolation, GOP calc, colorspace determination, deinterlace detection."""
         # Use cropped area for CQ if crop is applied
         if crop is not None:
@@ -343,6 +395,15 @@ class PlannerService:
         # HDR metadata passthrough
         hdr = video.hdr if (video.hdr.mastering_display or video.hdr.content_light) else None
 
+        # SAR override: if the source file is flagged, force the DVD 4:3 SAR
+        # (see DVD_SAR_NUM/DVD_SAR_DEN at module top for rationale).
+        if source_file in sar_overrides:
+            sar_num = DVD_SAR_NUM
+            sar_den = DVD_SAR_DEN
+        else:
+            sar_num = video.sar_num
+            sar_den = video.sar_den
+
         return VideoParams(
             cq=cq,
             crop=crop,
@@ -359,16 +420,34 @@ class PlannerService:
             source_height=video.height,
             source_codec=video.codec_name,
             source_bitrate=video.bitrate,
-            sar_num=video.sar_num,
-            sar_den=video.sar_den,
+            sar_num=sar_num,
+            sar_den=sar_den,
             dv_mode=dv_mode,
         )
 
-    def _build_audio_instruction(self, track: Track, is_default: bool) -> AudioInstruction:
-        """Route through rules.get_audio_action()."""
+    def _build_audio_instruction(
+        self,
+        track: Track,
+        is_default: bool,
+        downmix: DownmixMode | None = None,
+    ) -> AudioInstruction:
+        """Route through rules.get_audio_action(), unless downmix forces
+        DECODE_ENCODE. Validates downmix applicability."""
         from ..core.models import AudioAction, AudioCodecId
 
-        if track.codec_id is not None and not isinstance(track.codec_id, AudioCodecId):
+        if downmix is not None:
+            if track.channels is None or track.channels <= 2:
+                raise ValueError(
+                    f"Downmix not applicable: track has {track.channels} channels "
+                    f"({track.source_file} index {track.index})"
+                )
+            if downmix == DownmixMode.DOWN6 and track.channels <= 6:
+                raise ValueError(
+                    f"DOWN6 not applicable: track has {track.channels} channels "
+                    f"({track.source_file} index {track.index})"
+                )
+            action = AudioAction.DECODE_ENCODE
+        elif track.codec_id is not None and not isinstance(track.codec_id, AudioCodecId):
             # Should not happen for audio tracks, but guard
             action = AudioAction.FFMPEG_ENCODE
         elif track.codec_id is not None:
@@ -387,6 +466,7 @@ class PlannerService:
             codec_name=track.codec_name,
             channels=track.channels,
             bitrate=track.bitrate,
+            downmix=downmix,
         )
 
     def _build_subtitle_instruction(self, track: Track, is_default: bool) -> SubtitleInstruction:

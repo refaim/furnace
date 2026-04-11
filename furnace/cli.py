@@ -83,13 +83,13 @@ def plan(
     from .adapters.makemkv import MakemkvAdapter
     from .adapters.mpv import MpvAdapter
     from .config import load_config
-    from .core.models import DiscTitle, DiscSource, DiscType, Movie, ScanResult, Track, TrackType
+    from .core.models import DiscTitle, DiscSource, DiscType, DownmixMode, Movie, ScanResult, Track, TrackType
     from .plan import save_plan
     from .services.analyzer import Analyzer
     from .services.disc_demuxer import DiscDemuxer
     from .services.planner import PlannerService
     from .services.scanner import Scanner
-    from .ui.tui import FileSelection, FileSelectorScreen, LanguageSelectorScreen, PlaylistSelectorScreen, TrackSelectorScreen
+    from .ui.tui import FileSelection, FileSelectorScreen, LanguageSelectorScreen, PlaylistSelectorScreen, TrackSelection, TrackSelectorScreen
 
     # 1. Load config
     cfg = load_config(config)
@@ -256,10 +256,6 @@ def plan(
     for sr in scan_results:
         movie = analyzer.analyze(sr)
         if movie is not None:
-            # Apply SAR override for DVD files marked by user
-            if sr.main_file in sar_override_paths:
-                movie.video.sar_num = 64
-                movie.video.sar_den = 45
             movies_with_paths.append((movie, sr.output_path))
 
     # 8. PlannerService.create_plan() with TUI track selector
@@ -272,23 +268,25 @@ def plan(
                 mpv_adapter.preview_subtitle(movie.main_file, track.source_file, track.index)
         return _preview_track
 
-    def _select_tracks_tui(movie: Movie, candidates: list[Track], track_type: TrackType) -> list[Track]:
+    def _select_tracks_tui(
+        movie: Movie, candidates: list[Track], track_type: TrackType,
+    ) -> TrackSelection:
         """Run Textual TrackSelectorScreen synchronously for user to pick tracks."""
         from textual.app import App, ComposeResult
         from textual.widgets import Header
 
-        selected: list[Track] = []
+        selection: TrackSelection = TrackSelection(tracks=[], downmix={})
 
-        class _SelectorApp(App[list[Track]]):
+        class _SelectorApp(App[TrackSelection]):
             TITLE = "Furnace"
             def compose(self) -> ComposeResult:
                 yield Header()
 
             def on_mount(self) -> None:
-                def _on_dismiss(result: list[Track] | None) -> None:
-                    nonlocal selected
-                    selected = result or []
-                    self.exit(selected)
+                def _on_dismiss(result: TrackSelection | None) -> None:
+                    nonlocal selection
+                    selection = result if result is not None else TrackSelection(tracks=[], downmix={})
+                    self.exit(selection)
 
                 self.push_screen(
                     TrackSelectorScreen(
@@ -301,7 +299,17 @@ def plan(
                 )
 
         _SelectorApp().run()
-        return selected
+        return selection
+
+    downmix_overrides: dict[tuple[Path, int], DownmixMode] = {}
+
+    def _select_tracks_tui_for_planner(
+        movie: Movie, candidates: list[Track], track_type: TrackType,
+    ) -> list[Track]:
+        result = _select_tracks_tui(movie, candidates, track_type)
+        if track_type == TrackType.AUDIO:
+            downmix_overrides.update(result.downmix)
+        return result.tracks
 
     def _resolve_und_language_tui(movie: Movie, track: Track, lang_list: list[str]) -> str:
         """Run Textual LanguageSelectorScreen synchronously for user to pick a language."""
@@ -337,7 +345,7 @@ def plan(
     planner = PlannerService(
         prober=ffmpeg_adapter,
         previewer=mpv_adapter,
-        track_selector=_select_tracks_tui if not dry_run else None,
+        track_selector=_select_tracks_tui_for_planner if not dry_run else None,
         und_resolver=_resolve_und_language_tui if not dry_run else None,
     )
     plan_obj = planner.create_plan(
@@ -346,6 +354,8 @@ def plan(
         sub_lang_filter=sub_lang_list,
         vmaf_enabled=vmaf,
         dry_run=dry_run,
+        sar_overrides=sar_override_paths,
+        downmix_overrides=downmix_overrides,
     )
 
     # Set demux_dir on the plan if disc demux happened

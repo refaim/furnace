@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from furnace.core.models import DvBlCompatibility, DvMode, EncodeResult
+from furnace.core.models import DownmixMode, DvBlCompatibility, DvMode, EncodeResult
 
 
 class TestDvBlCompatibility:
@@ -35,3 +35,18 @@ class TestEncodeResult:
         r = EncodeResult(return_code=0, encoder_settings="test", vmaf_score=95.4, ssim_score=0.987)
         assert r.vmaf_score == 95.4
         assert r.ssim_score == 0.987
+
+
+class TestDownmixMode:
+    def test_values(self) -> None:
+        assert DownmixMode.STEREO.value == "stereo"
+        assert DownmixMode.DOWN6.value == "down6"
+
+    def test_from_string(self) -> None:
+        assert DownmixMode("stereo") == DownmixMode.STEREO
+        assert DownmixMode("down6") == DownmixMode.DOWN6
+
+    def test_invalid_string_raises(self) -> None:
+        import pytest
+        with pytest.raises(ValueError):
+            DownmixMode("foo")

@@ -10,7 +10,7 @@ from textual.containers import Container
 from textual.screen import Screen
 from textual.widgets import Footer, Header, Input, ListItem, ListView, Static
 
-from furnace.core.models import CropRect, DiscTitle, Movie, Track, TrackType
+from furnace.core.models import CropRect, DiscTitle, DownmixMode, Movie, Track, TrackType
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -31,7 +31,11 @@ def _fmt_duration(s: float) -> str:
     return f"{m}:{sec:02d}"
 
 
-def _fmt_audio_track(track: Track, selected: bool) -> str:
+def _fmt_audio_track(
+    track: Track,
+    selected: bool,
+    downmix: DownmixMode | None = None,
+) -> str:
     mark = "x" if selected else " "
     lang = (track.language or "und").ljust(4)
     codec = track.codec_name.upper()
@@ -44,7 +48,14 @@ def _fmt_audio_track(track: Track, selected: bool) -> str:
     if track.bitrate:
         bitrate = f"{track.bitrate // 1000} kbps"
     title = f"'{track.title}'" if track.title else ""
-    parts = [p for p in [lang, codec_layout, bitrate, title] if p]
+
+    downmix_tag = ""
+    if downmix == DownmixMode.STEREO:
+        downmix_tag = "\\[-> 2.0]"
+    elif downmix == DownmixMode.DOWN6:
+        downmix_tag = "\\[-> 5.1]"
+
+    parts = [p for p in [lang, codec_layout, bitrate, title, downmix_tag] if p]
     # Escape brackets so Rich doesn't interpret them as markup tags
     return f"\\[{mark}]  {'  '.join(parts)}"
 
@@ -61,13 +72,29 @@ def _fmt_subtitle_track(track: Track, selected: bool) -> str:
 
 
 # ---------------------------------------------------------------------------
+# TrackSelection result
+# ---------------------------------------------------------------------------
+
+@dataclass
+class TrackSelection:
+    """Result from TrackSelectorScreen.
+
+    `tracks` — tracks the user selected (same as the old list[Track] return).
+    `downmix` — per-track downmix override keyed by (source_file, stream_index).
+                Always empty for subtitle screens.
+    """
+    tracks: list[Track]
+    downmix: dict[tuple[Path, int], DownmixMode]
+
+
+# ---------------------------------------------------------------------------
 # TrackSelectorScreen
 # ---------------------------------------------------------------------------
 
-class TrackSelectorScreen(Screen[list[Track]]):
+class TrackSelectorScreen(Screen[TrackSelection]):
     """Screen for selecting audio or subtitle tracks.
 
-    Returns a list of selected Track objects via dismiss().
+    Returns a TrackSelection via dismiss().
     """
 
     BINDINGS = [
@@ -75,6 +102,8 @@ class TrackSelectorScreen(Screen[list[Track]]):
         Binding("down", "move_down", "Down", show=False),
         Binding("space", "toggle_track", "Toggle"),
         Binding("p", "preview_track", "Preview"),
+        Binding("s", "set_downmix('stereo')", "Stereo", show=False),
+        Binding("6", "set_downmix('down6')", "5.1", show=False),
         Binding("d", "done", "Done"),
     ]
 
@@ -92,6 +121,7 @@ class TrackSelectorScreen(Screen[list[Track]]):
         self._preview_cb = preview_cb
         # Pre-select tracks that are marked as default
         self._selected: list[bool] = [t.is_default for t in tracks]
+        self._downmix: list[DownmixMode | None] = [None] * len(tracks)
         self._cursor: int = 0
 
     # ------------------------------------------------------------------
@@ -113,6 +143,11 @@ class TrackSelectorScreen(Screen[list[Track]]):
             id="track-header",
         )
         yield Static(f"Select {kind} tracks  (Space=toggle  P=preview  D=done)", id="track-hint")
+        if self._track_type == TrackType.AUDIO:
+            yield Static(
+                "Downmix >2ch:  S=stereo  6=7.1->5.1",
+                id="track-downmix-hint",
+            )
 
         items: list[ListItem] = []
         for i, track in enumerate(self._tracks):
@@ -131,7 +166,7 @@ class TrackSelectorScreen(Screen[list[Track]]):
         track = self._tracks[index]
         selected = self._selected[index]
         if self._track_type == TrackType.AUDIO:
-            return _fmt_audio_track(track, selected)
+            return _fmt_audio_track(track, selected, self._downmix[index])
         return _fmt_subtitle_track(track, selected)
 
     def _refresh_item(self, index: int) -> None:
@@ -163,9 +198,30 @@ class TrackSelectorScreen(Screen[list[Track]]):
             return
         self._preview_cb(self._tracks[self._cursor])
 
+    def action_set_downmix(self, mode: str) -> None:
+        if not self._tracks or self._track_type != TrackType.AUDIO:
+            return
+        track = self._tracks[self._cursor]
+        if track.channels is None or track.channels <= 2:
+            return
+        new_mode = DownmixMode(mode)
+        if new_mode == DownmixMode.DOWN6 and track.channels <= 6:
+            return
+        if self._downmix[self._cursor] == new_mode:
+            self._downmix[self._cursor] = None
+        else:
+            self._downmix[self._cursor] = new_mode
+        self._refresh_item(self._cursor)
+
     def action_done(self) -> None:
-        result = [t for t, sel in zip(self._tracks, self._selected) if sel]
-        self.dismiss(result)
+        selected_tracks = [
+            t for t, sel in zip(self._tracks, self._selected) if sel
+        ]
+        downmix_map: dict[tuple[Path, int], DownmixMode] = {}
+        for i, (track, mode) in enumerate(zip(self._tracks, self._downmix)):
+            if mode is not None and self._selected[i]:
+                downmix_map[(Path(str(track.source_file)), track.index)] = mode
+        self.dismiss(TrackSelection(tracks=selected_tracks, downmix=downmix_map))
 
     # ------------------------------------------------------------------
     # Event handlers
@@ -665,8 +721,8 @@ class FurnacePlanApp(App[list[_PlanResult]]):
         result = _PlanResult()
         self.results.append(result)
 
-        def _after_audio(selected_audio: list[Track] | None) -> None:
-            result.audio_tracks = selected_audio or []
+        def _after_audio(selected_audio: TrackSelection | None) -> None:
+            result.audio_tracks = selected_audio.tracks if selected_audio else []
             self.push_screen(
                 TrackSelectorScreen(
                     movie=movie,
@@ -677,8 +733,8 @@ class FurnacePlanApp(App[list[_PlanResult]]):
                 _after_subtitles,
             )
 
-        def _after_subtitles(selected_subs: list[Track] | None) -> None:
-            result.subtitle_tracks = selected_subs or []
+        def _after_subtitles(selected_subs: TrackSelection | None) -> None:
+            result.subtitle_tracks = selected_subs.tracks if selected_subs else []
             video = movie.video
             # Only show crop screen if there is a detectable crop to confirm;
             # callers may pre-populate a detected CropRect. Here we use a

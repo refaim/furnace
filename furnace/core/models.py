@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import enum
 from dataclasses import dataclass, field
+from enum import StrEnum
 from pathlib import Path
 
 
@@ -51,6 +52,16 @@ class AudioAction(enum.Enum):
     DENORM = "denorm"            # AC3/EAC3/DTS core -- eac3to denormalize
     DECODE_ENCODE = "decode_encode"  # lossless -> eac3to WAV -> qaac64 AAC
     FFMPEG_ENCODE = "ffmpeg_encode"  # экзотика -> ffmpeg WAV -> qaac64 AAC
+
+
+class DownmixMode(StrEnum):
+    """Audio downmix target applied via eac3to flags.
+
+    STEREO -> eac3to: -downStereo  (multichannel -> 2.0 AAC)
+    DOWN6  -> eac3to: -down6       (7.1/6.1 -> 5.1 AAC)
+    """
+    STEREO = "stereo"
+    DOWN6 = "down6"
 
 
 class SubtitleAction(enum.Enum):
@@ -220,6 +231,7 @@ class AudioInstruction:
     codec_name: str                    # исходный кодек для информации
     channels: int | None
     bitrate: int | None
+    downmix: DownmixMode | None = None  # None = no downmix applied
 
 
 @dataclass
