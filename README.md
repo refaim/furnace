@@ -6,6 +6,7 @@ Batch video transcoder for home archival. Scans your movie collection, lets you 
 
 - **Plan, review, then run** — choose tracks and preview in a TUI, save a JSON plan you can inspect or edit before hours of encoding
 - **Resumable** — failed jobs retry on next run, plan updated atomically after each job
+- **Live progress on every long step** — ffmpeg extraction, eac3to, qaac, mkvmerge, NVEncC all stream into one unified progress bar; no more silent multi-gigabyte waits
 - **Auto quality** — CQ value interpolated by pixel area, no manual tuning across SD/720p/1080p/4K
 - **Disc demux** — Blu-ray (BDMV) and DVD (VIDEO_TS) fed straight into the pipeline with playlist/title selection
 - **Anamorphic SAR fix** — detects and corrects wrong sample aspect ratio on DVD sources
@@ -14,6 +15,7 @@ Batch video transcoder for home archival. Scans your movie collection, lets you 
 - **Auto deinterlace** — detects interlaced content from the video stream and applies nnedi (neural network) automatically
 - **Smart crop** — black bars detected automatically across the timeline
 - **mpv preview** — audition audio tracks, check subtitles, or preview video right from the TUI before committing
+- **Per-track downmix** — fold 7.1 or 5.1 into stereo or 5.1 from the track selector, useful when the multichannel mix is a fake upmix or the movie is dialogue-heavy
 - **Satellite files** — external audio and subtitle files next to the video are picked up as extra tracks automatically
 
 ## Workflow

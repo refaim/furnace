@@ -1,6 +1,5 @@
 /.claude
 /.mypy_cache
-/.omc
 /.pytest_cache
 /.ruff_cache
 /furnace.toml

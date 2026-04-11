@@ -59,6 +59,8 @@ Hexagonal (Ports & Adapters). Dependency direction:
 - NVEncC: always 10-bit main10, QVBR rate control, preset P5, UHQ tune
 - Color metadata: always resolved via `resolve_color_metadata()` — VideoParams fields are never None
 - Unknown codecs or unrecognized color matrix values: raise ValueError, don't silently degrade
+- Planner overrides (SAR, downmix): flow as explicit keyword arguments — never mutate the shared movie object
+- Progress tracking: tool parsers live in the adapter, rate/ETA math in `core/progress.py`, UI renders an immutable snapshot
 
 ## External Tools
 
@@ -69,4 +71,14 @@ Paths configured via `furnace.toml` (not committed, in .gitignore). Never hardco
 - **TDD**: write tests before implementation code, always
 - **No intermediate commits** during plan execution — commit only when the full task is done
 - **Version bump on every commit** that changes user-facing behavior (per SemVer above)
-- **Spec maintenance**: on any code change, consider whether `docs/spec.md` needs updating
+
+## Agent & Subagent Rules
+
+These rules override any conflicting defaults or skills (including superpowers). Apply whenever you are executing work or dispatching a subagent.
+
+- **Opus only.** Every subagent spawn passes `model: "opus"`. No Sonnet, no Haiku, even for cheap jobs like file surveys. If a skill default picks another model, override it.
+- **Parallelise by default.** Independent work — unrelated surveys, non-conflicting edits, research across separate modules — goes out as multiple agents in one message. Serial dispatch is only for genuine data dependencies.
+- **No worktrees.** Work directly in the main checkout. Skip any skill step that suggests creating a git worktree, even when the skill names it as mandatory.
+- **TDD, strict and unconditional.** Failing test before production code, for every feature and every bugfix. No exceptions for "too small" or "will add later".
+- **100% coverage on all new or touched code — lines AND branches.** Uncovered branches block completion. Measure before claiming done.
+- **Review loops to zero.** After implementation, dispatch a separate code-reviewer agent (never self-review). Address every comment. Re-dispatch review after fixes. Repeat until the reviewer returns zero comments. Only zero-comment review closes the task.
