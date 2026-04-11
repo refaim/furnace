@@ -88,9 +88,13 @@ def _convert_crop(crop: CropRect, source_width: int, source_height: int) -> tupl
 
 # Codecs supported by NVDEC hardware decoder
 _NVDEC_CODECS: set[str] = {
-    "h264", "hevc", "mpeg2video", "mpeg4", "vp8", "vp9", "vc1", "av1",
-    "mpeg1video",
+    "h264", "hevc", "mpeg4", "vp8", "vp9", "vc1", "av1",
 }
+# mpeg1video and mpeg2video are deliberately NOT in this set: NVDEC's
+# MPEG1/2 path is unreliable on interlaced DVD sources (encoder stops
+# after ~40 frames with a clean exit code on PAL DVD MPEG2 with
+# field-picture flags set). Software decoding of MPEG1/2 is trivial on
+# any modern CPU, so we always fall back to --avsw for those codecs.
 
 
 class NVEncCAdapter:

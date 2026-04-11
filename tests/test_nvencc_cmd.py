@@ -109,6 +109,22 @@ class TestNVEncCBasicCommand:
         cmd = _cmd(_make_vp())
         assert "--avhw" in cmd
 
+    def test_mpeg2_uses_avsw(self) -> None:
+        """MPEG2 sources fall back to software decode because NVDEC's MPEG2
+        path is unreliable on interlaced DVD streams."""
+        cmd = _cmd(_make_vp(source_codec="mpeg2video"))
+        assert "--avsw" in cmd
+        assert "--avhw" not in cmd
+
+    def test_mpeg1_uses_avsw(self) -> None:
+        cmd = _cmd(_make_vp(source_codec="mpeg1video"))
+        assert "--avsw" in cmd
+        assert "--avhw" not in cmd
+
+    def test_h264_uses_avhw(self) -> None:
+        cmd = _cmd(_make_vp(source_codec="h264"))
+        assert "--avhw" in cmd
+
     def test_input_output_paths(self) -> None:
         cmd = _cmd(_make_vp())
         idx_i = cmd.index("-i")
