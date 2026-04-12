@@ -19,11 +19,25 @@ Format: `MAJOR.MINOR.PATCH`
 
 Before committing:
 
-    uv run ruff check furnace/
-    uv run mypy furnace/ --strict
-    uv run pytest tests/ -q
+    make check
 
-All three must pass clean.
+Runs ruff, mypy (strict) and pytest with 100% line+branch coverage on
+both `furnace/` and `tests/`. All three must pass clean.
+
+**Linters and tests are ONLY invoked via the Makefile.** Never run
+`uv run ruff`, `uv run mypy` or `uv run pytest` directly — use
+`make lint`, `make typecheck`, `make test` or `make check`. This keeps
+flags, paths and coverage thresholds consistent across the repo, local
+dev and the pre-commit hook.
+
+The pre-commit hook lives in `.githooks/pre-commit` (tracked in the
+repo) and runs `make check` on every commit. After cloning the repo,
+run once:
+
+    make install-hooks
+
+This sets `core.hooksPath` to `.githooks` for the local clone. Without
+this step commits proceed without running the quality gate.
 
 ## Architecture Rules
 

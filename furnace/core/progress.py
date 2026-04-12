@@ -6,10 +6,13 @@ computes a `TrackerSnapshot` (immutable view) that the UI consumes. No I/O;
 wall time is passed as a parameter on every `add()` so the tracker is fully
 unit-testable against synthetic clocks.
 """
+
 from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass
+
+_MIN_SAMPLES_FOR_RATE = 2  # need start+end sample to compute a non-degenerate rate
 
 
 @dataclass(frozen=True)
@@ -21,6 +24,7 @@ class ProgressSample:
     only when the tool emits it directly (e.g., ffmpeg `speed=2.5x`,
     qaac `(30.5x)`).
     """
+
     processed_s: float | None = None
     fraction: float | None = None
     speed: float | None = None
@@ -29,6 +33,7 @@ class ProgressSample:
 @dataclass(frozen=True)
 class TrackerSnapshot:
     """Immutable view of tracker state, passed thread-safely to the UI."""
+
     fraction: float
     speed: float | None
     eta_s: float | None
@@ -78,9 +83,9 @@ class ProgressTracker:
     def _eta(self) -> float | None:
         """ETA in seconds, derived from the wall-time rate of change of
         fraction over the last 5 samples. Returns None when history is
-        insufficient (<2 samples) or progress has stalled."""
+        insufficient (<_MIN_SAMPLES_FOR_RATE samples) or progress has stalled."""
         recent = self._recent()
-        if len(recent) < 2:
+        if len(recent) < _MIN_SAMPLES_FOR_RATE:
             return None
         start_wall, start_frac, _ = recent[0]
         now_wall, now_frac, _ = recent[-1]

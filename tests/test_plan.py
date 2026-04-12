@@ -23,7 +23,6 @@ from furnace.core.models import (
 )
 from furnace.plan import atomic_write, load_plan, save_plan, update_job_status
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -152,7 +151,7 @@ def make_plan(jobs: list[Job] | None = None, demux_dir: str | None = None) -> Pl
 # ---------------------------------------------------------------------------
 
 class TestPlanRoundtrip:
-    def test_basic_roundtrip(self, tmp_path):
+    def test_basic_roundtrip(self, tmp_path: Path) -> None:
         """save -> load -> save produces identical JSON."""
         plan = make_plan()
         plan_path = tmp_path / "plan.json"
@@ -166,7 +165,7 @@ class TestPlanRoundtrip:
 
         assert json1 == json2
 
-    def test_roundtrip_with_crop(self, tmp_path):
+    def test_roundtrip_with_crop(self, tmp_path: Path) -> None:
         """Plan with CropRect survives roundtrip."""
         crop = CropRect(w=1920, h=800, x=0, y=140)
         vp = make_video_params(crop=crop)
@@ -191,7 +190,7 @@ class TestPlanRoundtrip:
 
         assert loaded.jobs[0].video_params.crop == crop
 
-    def test_roundtrip_with_hdr(self, tmp_path):
+    def test_roundtrip_with_hdr(self, tmp_path: Path) -> None:
         """Plan with HDR metadata survives roundtrip."""
         hdr = HdrMetadata(
             mastering_display="G(0.265,0.69)B(0.15,0.06)R(0.68,0.32)WP(0.3127,0.329)L(1000,0.005)",
@@ -229,7 +228,7 @@ class TestPlanRoundtrip:
         assert loaded_hdr.mastering_display == hdr.mastering_display
         assert loaded_hdr.content_light == hdr.content_light
 
-    def test_roundtrip_preserves_job_fields(self, tmp_path):
+    def test_roundtrip_preserves_job_fields(self, tmp_path: Path) -> None:
         """All job scalar fields survive roundtrip."""
         job = make_job(job_id="abc-123", output_file="/out/test.mkv")
         plan = make_plan(jobs=[job])
@@ -243,7 +242,7 @@ class TestPlanRoundtrip:
         assert loaded_job.output_file == "/out/test.mkv"
         assert loaded_job.status == JobStatus.PENDING
 
-    def test_roundtrip_empty_jobs(self, tmp_path):
+    def test_roundtrip_empty_jobs(self, tmp_path: Path) -> None:
         """Plan with no jobs roundtrips correctly."""
         plan = make_plan(jobs=[])
         plan_path = tmp_path / "plan.json"
@@ -253,7 +252,7 @@ class TestPlanRoundtrip:
 
         assert loaded.jobs == []
 
-    def test_roundtrip_multiple_jobs(self, tmp_path):
+    def test_roundtrip_multiple_jobs(self, tmp_path: Path) -> None:
         """Multiple jobs all survive roundtrip."""
         jobs = [make_job(job_id=f"job-{i}", output_file=f"/out/movie{i}.mkv") for i in range(3)]
         plan = make_plan(jobs=jobs)
@@ -265,7 +264,7 @@ class TestPlanRoundtrip:
         assert len(loaded.jobs) == 3
         assert [j.id for j in loaded.jobs] == ["job-0", "job-1", "job-2"]
 
-    def test_roundtrip_audio_action_preserved(self, tmp_path):
+    def test_roundtrip_audio_action_preserved(self, tmp_path: Path) -> None:
         """AudioAction enum values survive roundtrip."""
         audio = make_audio_instruction(action=AudioAction.DECODE_ENCODE)
         job = make_job(audio=[audio])
@@ -277,7 +276,7 @@ class TestPlanRoundtrip:
 
         assert loaded.jobs[0].audio[0].action == AudioAction.DECODE_ENCODE
 
-    def test_roundtrip_subtitle_instruction(self, tmp_path):
+    def test_roundtrip_subtitle_instruction(self, tmp_path: Path) -> None:
         """SubtitleInstruction with COPY_RECODE survives roundtrip."""
         sub = make_subtitle_instruction(
             action=SubtitleAction.COPY_RECODE,
@@ -297,7 +296,7 @@ class TestPlanRoundtrip:
         assert loaded_sub.source_encoding == "cp1251"
         assert loaded_sub.is_forced is True
 
-    def test_roundtrip_with_downmix(self, tmp_path):
+    def test_roundtrip_with_downmix(self, tmp_path: Path) -> None:
         """AudioInstruction.downmix survives save -> load."""
         audio = [
             make_audio_instruction(
@@ -325,7 +324,7 @@ class TestPlanRoundtrip:
         assert loaded_audio[1].downmix == DownmixMode.DOWN6
         assert loaded_audio[2].downmix is None
 
-    def test_legacy_plan_without_downmix_key_loads(self, tmp_path):
+    def test_legacy_plan_without_downmix_key_loads(self, tmp_path: Path) -> None:
         """A JSON plan produced before the downmix field existed must still load."""
         raw = {
             "version": "2",
@@ -383,7 +382,7 @@ class TestPlanRoundtrip:
 
         assert loaded.jobs[0].audio[0].downmix is None
 
-    def test_invalid_downmix_string_raises(self, tmp_path):
+    def test_invalid_downmix_string_raises(self, tmp_path: Path) -> None:
         """An unknown downmix string in JSON must raise ValueError on load."""
         plan = make_plan()
         plan_path = tmp_path / "plan.json"
@@ -394,7 +393,7 @@ class TestPlanRoundtrip:
         raw["jobs"][0]["audio"][0]["downmix"] = "foo"
         plan_path.write_text(json.dumps(raw), encoding="utf-8")
 
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="foo"):
             load_plan(plan_path)
 
 
@@ -403,7 +402,7 @@ class TestPlanRoundtrip:
 # ---------------------------------------------------------------------------
 
 class TestPlanVersionValidation:
-    def test_correct_version_loads(self, tmp_path):
+    def test_correct_version_loads(self, tmp_path: Path) -> None:
         """Plan with version '2' loads without error."""
         plan = make_plan()
         plan_path = tmp_path / "plan.json"
@@ -411,7 +410,7 @@ class TestPlanVersionValidation:
         loaded = load_plan(plan_path)
         assert loaded.version == "2"
 
-    def test_wrong_version_raises(self, tmp_path):
+    def test_wrong_version_raises(self, tmp_path: Path) -> None:
         """Plan with wrong version -> ValueError."""
         plan_path = tmp_path / "plan.json"
         data = {"version": "99", "furnace_version": "0.1.0", "created_at": "2026-01-01T00:00:00",
@@ -421,7 +420,7 @@ class TestPlanVersionValidation:
         with pytest.raises(ValueError, match="Unsupported plan version"):
             load_plan(plan_path)
 
-    def test_missing_version_raises(self, tmp_path):
+    def test_missing_version_raises(self, tmp_path: Path) -> None:
         """Plan with no version field -> ValueError."""
         plan_path = tmp_path / "plan.json"
         data = {"furnace_version": "0.1.0", "created_at": "2026-01-01T00:00:00",
@@ -437,7 +436,7 @@ class TestPlanVersionValidation:
 # ---------------------------------------------------------------------------
 
 class TestUpdateJobStatus:
-    def test_update_pending_to_done(self, tmp_path):
+    def test_update_pending_to_done(self, tmp_path: Path) -> None:
         """Update job from PENDING -> DONE."""
         plan = make_plan(jobs=[make_job(job_id="j1")])
         plan_path = tmp_path / "plan.json"
@@ -450,7 +449,7 @@ class TestUpdateJobStatus:
         assert job_raw["status"] == "done"
         assert job_raw["error"] is None
 
-    def test_update_to_error_with_message(self, tmp_path):
+    def test_update_to_error_with_message(self, tmp_path: Path) -> None:
         """Update job to ERROR with error message."""
         plan = make_plan(jobs=[make_job(job_id="j2")])
         plan_path = tmp_path / "plan.json"
@@ -463,7 +462,7 @@ class TestUpdateJobStatus:
         assert job_raw["status"] == "error"
         assert job_raw["error"] == "ffmpeg died"
 
-    def test_update_with_vmaf_score(self, tmp_path):
+    def test_update_with_vmaf_score(self, tmp_path: Path) -> None:
         """vmaf_score is persisted when provided."""
         plan = make_plan(jobs=[make_job(job_id="j3")])
         plan_path = tmp_path / "plan.json"
@@ -474,7 +473,7 @@ class TestUpdateJobStatus:
         raw = json.loads(plan_path.read_text(encoding="utf-8"))
         assert raw["jobs"][0]["vmaf_score"] == pytest.approx(95.4)
 
-    def test_update_with_output_size(self, tmp_path):
+    def test_update_with_output_size(self, tmp_path: Path) -> None:
         """output_size is persisted when provided."""
         plan = make_plan(jobs=[make_job(job_id="j4")])
         plan_path = tmp_path / "plan.json"
@@ -485,7 +484,7 @@ class TestUpdateJobStatus:
         raw = json.loads(plan_path.read_text(encoding="utf-8"))
         assert raw["jobs"][0]["output_size"] == 500_000_000
 
-    def test_update_nonexistent_job_raises(self, tmp_path):
+    def test_update_nonexistent_job_raises(self, tmp_path: Path) -> None:
         """Updating a job ID that doesn't exist -> KeyError."""
         plan = make_plan(jobs=[make_job(job_id="j5")])
         plan_path = tmp_path / "plan.json"
@@ -494,7 +493,7 @@ class TestUpdateJobStatus:
         with pytest.raises(KeyError):
             update_job_status(plan_path, "nonexistent", JobStatus.DONE)
 
-    def test_update_correct_job_among_multiple(self, tmp_path):
+    def test_update_correct_job_among_multiple(self, tmp_path: Path) -> None:
         """Only the targeted job is updated when multiple jobs exist."""
         jobs = [make_job(job_id="j-a"), make_job(job_id="j-b"), make_job(job_id="j-c")]
         plan = make_plan(jobs=jobs)
@@ -515,35 +514,35 @@ class TestUpdateJobStatus:
 # ---------------------------------------------------------------------------
 
 class TestAtomicWrite:
-    def test_writes_content(self, tmp_path):
+    def test_writes_content(self, tmp_path: Path) -> None:
         """atomic_write creates the file with correct content."""
         target = tmp_path / "output.json"
         atomic_write(target, '{"key": "value"}')
         assert target.exists()
         assert target.read_text(encoding="utf-8") == '{"key": "value"}'
 
-    def test_overwrites_existing(self, tmp_path):
+    def test_overwrites_existing(self, tmp_path: Path) -> None:
         """atomic_write overwrites an existing file atomically."""
         target = tmp_path / "output.json"
         target.write_text("old content", encoding="utf-8")
         atomic_write(target, "new content")
         assert target.read_text(encoding="utf-8") == "new content"
 
-    def test_no_tmp_file_left_on_success(self, tmp_path):
+    def test_no_tmp_file_left_on_success(self, tmp_path: Path) -> None:
         """No .tmp file remains after successful write."""
         target = tmp_path / "output.json"
         atomic_write(target, "data")
         tmp_files = list(tmp_path.glob("*.tmp"))
         assert tmp_files == []
 
-    def test_unicode_content(self, tmp_path):
+    def test_unicode_content(self, tmp_path: Path) -> None:
         """atomic_write handles Unicode content correctly."""
         target = tmp_path / "output.json"
         content = '{"title": "Фильм — тест"}'
         atomic_write(target, content)
         assert target.read_text(encoding="utf-8") == content
 
-    def test_write_to_nested_existing_dir(self, tmp_path):
+    def test_write_to_nested_existing_dir(self, tmp_path: Path) -> None:
         """atomic_write works when parent dir exists."""
         subdir = tmp_path / "plans"
         subdir.mkdir()
@@ -557,14 +556,14 @@ class TestAtomicWrite:
 # ---------------------------------------------------------------------------
 
 class TestPlanDemuxDir:
-    def test_roundtrip_with_demux_dir(self, tmp_path):
+    def test_roundtrip_with_demux_dir(self, tmp_path: Path) -> None:
         plan = make_plan(demux_dir="/src/.furnace_demux")
         plan_path = tmp_path / "plan.json"
         save_plan(plan, plan_path)
         loaded = load_plan(plan_path)
         assert loaded.demux_dir == "/src/.furnace_demux"
 
-    def test_roundtrip_without_demux_dir(self, tmp_path):
+    def test_roundtrip_without_demux_dir(self, tmp_path: Path) -> None:
         plan = make_plan(demux_dir=None)
         plan_path = tmp_path / "plan.json"
         save_plan(plan, plan_path)
@@ -577,10 +576,9 @@ class TestPlanDemuxDir:
 # ---------------------------------------------------------------------------
 
 class TestPlanDvModeRoundtrip:
-    def test_roundtrip_dv_mode_to_8_1(self, tmp_path) -> None:
-        import dataclasses as dc
+    def test_roundtrip_dv_mode_to_8_1(self, tmp_path: Path) -> None:
         vp = make_video_params()
-        vp = dc.replace(vp, dv_mode=DvMode.TO_8_1)
+        vp = dataclasses.replace(vp, dv_mode=DvMode.TO_8_1)
         job = Job(
             id="dv-job", source_files=["/src/dv.mkv"], output_file="/out/dv.mkv",
             video_params=vp, audio=[], subtitles=[], attachments=[],
@@ -592,15 +590,14 @@ class TestPlanDvModeRoundtrip:
         loaded = load_plan(plan_path)
         assert loaded.jobs[0].video_params.dv_mode == DvMode.TO_8_1
 
-    def test_roundtrip_dv_mode_none(self, tmp_path) -> None:
+    def test_roundtrip_dv_mode_none(self, tmp_path: Path) -> None:
         plan = make_plan()
         plan_path = tmp_path / "plan.json"
         save_plan(plan, plan_path)
         loaded = load_plan(plan_path)
         assert loaded.jobs[0].video_params.dv_mode is None
 
-    def test_roundtrip_hdr_with_dv_fields(self, tmp_path) -> None:
-        import dataclasses as dc
+    def test_roundtrip_hdr_with_dv_fields(self, tmp_path: Path) -> None:
         hdr = HdrMetadata(
             mastering_display="G(0.265,0.69)B(0.15,0.06)R(0.68,0.32)WP(0.3127,0.329)L(1000,0.005)",
             content_light="MaxCLL=1000,MaxFALL=400",
@@ -609,7 +606,7 @@ class TestPlanDvModeRoundtrip:
             dv_bl_compatibility=DvBlCompatibility.HDR10,
         )
         vp = make_video_params(color_matrix="bt2020nc", hdr=hdr)
-        vp = dc.replace(vp, dv_mode=DvMode.COPY)
+        vp = dataclasses.replace(vp, dv_mode=DvMode.COPY)
         job = Job(
             id="dv-hdr-job", source_files=["/src/dv.mkv"], output_file="/out/dv.mkv",
             video_params=vp, audio=[], subtitles=[], attachments=[],

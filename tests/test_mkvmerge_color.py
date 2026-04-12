@@ -2,12 +2,13 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 from furnace.adapters.mkvmerge import MkvmergeAdapter
 
 
 def _build_cmd(
-    video_meta: dict | None = None,
+    video_meta: dict[str, Any] | None = None,
 ) -> list[str]:
     """Helper: build mkvmerge command with minimal args and optional video_meta."""
     adapter = MkvmergeAdapter(Path("mkvmerge.exe"))
@@ -18,7 +19,6 @@ def _build_cmd(
         attachments=[],
         chapters_source=None,
         output_path=Path("output.mkv"),
-        furnace_version="0.1.0",
         video_meta=video_meta,
     )
 

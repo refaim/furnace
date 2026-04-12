@@ -44,9 +44,7 @@ def load_config(config_path: Path | None = None) -> ToolPaths:
     if config_path is not None:
         data = try_load(config_path)
         if data is None:
-            raise FileNotFoundError(
-                f"Config file not found at explicit path: {config_path}"
-            )
+            raise FileNotFoundError(f"Config file not found at explicit path: {config_path}")
     else:
         # Try CWD
         data = try_load(Path.cwd() / "furnace.toml")
@@ -64,13 +62,22 @@ def load_config(config_path: Path | None = None) -> ToolPaths:
 
     if data is None:
         searched_str = "\n  ".join(str(p) for p in searched)
-        raise FileNotFoundError(
-            f"No furnace.toml config found. Searched:\n  {searched_str}"
-        )
+        raise FileNotFoundError(f"No furnace.toml config found. Searched:\n  {searched_str}")
 
     tools_section: dict[str, Any] = data.get("tools", {})
 
-    mandatory_tools = ("ffmpeg", "ffprobe", "mkvmerge", "mkvpropedit", "mkclean", "eac3to", "qaac64", "mpv", "makemkvcon", "nvencc")
+    mandatory_tools = (
+        "ffmpeg",
+        "ffprobe",
+        "mkvmerge",
+        "mkvpropedit",
+        "mkclean",
+        "eac3to",
+        "qaac64",
+        "mpv",
+        "makemkvcon",
+        "nvencc",
+    )
     resolved: dict[str, Path] = {}
 
     for name in mandatory_tools:
@@ -78,9 +85,7 @@ def load_config(config_path: Path | None = None) -> ToolPaths:
             raise KeyError(f"Missing required key [tools].{name} in config")
         tool_path = Path(tools_section[name])
         if not tool_path.exists():
-            raise FileNotFoundError(
-                f"Tool '{name}' not found at path: {tool_path}"
-            )
+            raise FileNotFoundError(f"Tool '{name}' not found at path: {tool_path}")
         resolved[name] = tool_path
 
     # Optional tools
@@ -88,9 +93,7 @@ def load_config(config_path: Path | None = None) -> ToolPaths:
     if "dovi_tool" in tools_section:
         dovi_tool_path = Path(tools_section["dovi_tool"])
         if not dovi_tool_path.exists():
-            raise FileNotFoundError(
-                f"Tool 'dovi_tool' not found at path: {dovi_tool_path}"
-            )
+            raise FileNotFoundError(f"Tool 'dovi_tool' not found at path: {dovi_tool_path}")
 
     return ToolPaths(
         ffmpeg=resolved["ffmpeg"],

@@ -1,6 +1,6 @@
 [project]
 name = "furnace"
-version = "1.11.0"
+version = "1.12.0"
 description = "Movie collection transcoding tool for home archival"
 license = "MIT"
 requires-python = ">=3.13"
@@ -26,57 +26,40 @@ line-length = 120
 [tool.ruff.lint]
 select = ["ALL"]
 ignore = [
-    "D",        # docstrings not required
-    "COM812",   # trailing comma (formatter conflict)
-    "ISC001",   # implicit string concat (formatter conflict)
-    "S603",     # subprocess untrusted input (CLI tool, paths from config)
-    "S607",     # partial executable path
-    "PLW1510",  # subprocess.run without check (we check returncode manually)
-    "TC003",    # move imports to TYPE_CHECKING (not worth for this project)
-    "TID252",   # relative parent imports (standard in packages)
-    "PLC0415",  # import not at top-level (lazy imports for circular avoidance)
-    "B008",     # function call in default arg (standard typer pattern)
-    "PLR2004",  # magic values in comparison (acceptable for thresholds)
-    "C901",     # too complex (ffmpeg encode is inherently complex)
-    "PLR0912",  # too many branches (ffmpeg encode)
-    "PLR0915",  # too many statements (ffmpeg encode)
-    "EM102",    # f-string in exception (clearer inline)
-    "TRY003",   # long exception messages
-    "S101",     # assert usage (used for type narrowing)
-    "PLW2901",  # loop variable overwritten (intentional strip)
-    "BLE001",   # catch blind Exception (intentional fallback)
-    "ARG002",   # unused method argument (Protocol conformance)
-    "FBT001",   # boolean positional arg
-    "FBT002",   # boolean default
-    "ANN401",   # Any in type annotation (needed for dict values)
-    "PLR0913",  # too many arguments (mux/executor genuinely need them)
-    "PLR0911",  # too many return statements
-    "RUF002",   # ambiguous unicode (Cyrillic in docstrings is intentional)
-    "RUF003",   # ambiguous unicode in comments (Cyrillic comments intentional)
-    "RUF012",   # mutable class attr default (standard Textual pattern)
-    "ARG001",   # unused function argument (signature conformance)
-    "PTH105",   # os.replace -> Path.replace (mkstemp returns str)
-    "PTH108",   # os.unlink -> Path.unlink (mkstemp returns str)
-    "TRY300",   # move to else block
-    "PYI034",   # Self return type
-    "B905",     # zip strict (not needed here)
-    "FURB171",  # single-item container membership
-    "N806",     # variable naming in function
-    "RUF001",   # ambiguous unicode
-    "SIM105",   # contextlib.suppress (try/except is clearer here)
-    "SIM108",   # ternary operator (if/else is clearer)
-    "TC001",    # move app imports to TYPE_CHECKING
-    "TC002",    # move third-party imports to TYPE_CHECKING
-    "RET504",   # unnecessary assignment before return
-    "TRY400",   # logging.exception vs error
-    "FBT003",   # boolean positional value in call (typer pattern)
-    "E501",     # line too long (120 configured but some lines need it)
-    "PERF102",  # dict .values() (readability)
-    "B007",     # unused loop variable (readability)
-    "PERF401",  # list.extend vs append loop
-    "ERA001",   # commented-out code
-    "I001",     # import sorting (auto-format handles this)
-    "UP007",    # X | None vs Optional (already using both)
+    "D",       # docstrings not required — project policy
+    "COM812",  # trailing comma — conflicts with `ruff format` magic trailing comma
+    "ISC001",  # implicit string concat — conflicts with `ruff format`
+    "TRY003",  # long exception messages — inline f-strings are more readable here
+    "EM101",   # raw string in exception — same reason
+    "EM102",   # f-string in exception — same reason
+    "TC001",   # move first-party imports into TYPE_CHECKING — banned, see banned-api below
+    "TC002",   # move third-party imports into TYPE_CHECKING — banned, see banned-api below
+    "TC003",   # move stdlib imports into TYPE_CHECKING — banned, see banned-api below
+    "S603",    # subprocess without shell — CLI tool, all paths from furnace.toml config
+    "SIM117",  # nested with statements — explicit nesting is clearer for patch() chains in tests
+]
+
+# `TYPE_CHECKING` blocks are forbidden project-wide: we already use
+# `from __future__ import annotations`, so annotations are lazy strings at
+# runtime and the extra block buys nothing but visual noise.
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+"typing.TYPE_CHECKING".msg = "TYPE_CHECKING blocks are banned; annotations are already lazy via `from __future__ import annotations`."
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = [
+    "S101",     # pytest idiom: every assertion is `assert`
+    "PLR2004",  # magic values in tests are the concrete expected outputs of the scenario
+    "ARG001",   # unused function args in test stubs/fakes (mock callbacks, fake run_tool)
+    "ARG005",   # unused lambda args in test stubs (e.g. monkeypatched no-op callbacks)
+]
+"furnace/ui/*.py" = [
+    "RUF012",  # Textual pattern: BINDINGS = [...] as mutable class attr is standard
+]
+"furnace/cli.py" = [
+    "FBT001",  # typer pattern: bool flag = typer.Option(False, "--flag") is standard
+    "FBT002",
+    "FBT003",
+    "B008",    # typer pattern: typer.Argument()/typer.Option() in defaults is required
 ]
 
 [tool.mypy]
@@ -93,6 +76,7 @@ testpaths = ["tests"]
 dev = [
     "mypy>=1.20.0",
     "pytest>=9.0.2",
+    "pytest-cov>=7.1.0",
     "ruff>=0.15.8",
     "types-psutil>=7.2.2.20260402",
 ]

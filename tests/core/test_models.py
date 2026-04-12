@@ -1,14 +1,16 @@
 from __future__ import annotations
 
+import pytest
+
 from furnace.core.models import DownmixMode, DvBlCompatibility, DvMode, EncodeResult
 
 
 class TestDvBlCompatibility:
     def test_values(self) -> None:
-        assert DvBlCompatibility.NONE == 0
-        assert DvBlCompatibility.HDR10 == 1
-        assert DvBlCompatibility.SDR == 2
-        assert DvBlCompatibility.HLG == 4
+        assert int(DvBlCompatibility.NONE) == 0
+        assert int(DvBlCompatibility.HDR10) == 1
+        assert int(DvBlCompatibility.SDR) == 2
+        assert int(DvBlCompatibility.HLG) == 4
 
     def test_from_int(self) -> None:
         assert DvBlCompatibility(1) == DvBlCompatibility.HDR10
@@ -17,8 +19,8 @@ class TestDvBlCompatibility:
 
 class TestDvMode:
     def test_values(self) -> None:
-        assert DvMode.COPY == 0
-        assert DvMode.TO_8_1 == 2
+        assert int(DvMode.COPY) == 0
+        assert int(DvMode.TO_8_1) == 2
 
     def test_from_int(self) -> None:
         assert DvMode(0) == DvMode.COPY
@@ -47,6 +49,5 @@ class TestDownmixMode:
         assert DownmixMode("down6") == DownmixMode.DOWN6
 
     def test_invalid_string_raises(self) -> None:
-        import pytest
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="foo"):
             DownmixMode("foo")

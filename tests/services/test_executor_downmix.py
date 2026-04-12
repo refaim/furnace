@@ -1,6 +1,7 @@
 """Tests for the DECODE_ENCODE branch with downmix in the Executor."""
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -14,6 +15,7 @@ from furnace.core.models import (
     JobStatus,
     VideoParams,
 )
+from furnace.services.executor import Executor
 
 
 def _instr(
@@ -69,11 +71,9 @@ def _job(duration_s: float = 5400.0) -> Job:
 
 
 @pytest.fixture
-def executor_with_mocks():
+def executor_with_mocks() -> tuple[Executor, SimpleNamespace]:
     """Construct an Executor with all adapter ports mocked.
     Returns (executor, mocks) where mocks holds the adapter MagicMocks."""
-    from furnace.services.executor import Executor
-
     mocks = SimpleNamespace(
         encoder=MagicMock(),
         audio_extractor=MagicMock(),
@@ -103,7 +103,9 @@ def executor_with_mocks():
 
 
 class TestDecodeEncodeDownmixRouting:
-    def test_truehd_downmix_uses_extract_track(self, executor_with_mocks, tmp_path):
+    def test_truehd_downmix_uses_extract_track(
+        self, executor_with_mocks: tuple[Executor, SimpleNamespace], tmp_path: Path,
+    ) -> None:
         """TrueHD is eac3to-supported -> extract_track, not ffmpeg_to_wav."""
         executor, mocks = executor_with_mocks
         instr = _instr("truehd", downmix=DownmixMode.STEREO)
@@ -114,7 +116,9 @@ class TestDecodeEncodeDownmixRouting:
         decode_call = mocks.audio_decoder.decode_lossless.call_args
         assert decode_call.kwargs.get("downmix") == DownmixMode.STEREO
 
-    def test_opus_downmix_uses_ffmpeg_to_wav(self, executor_with_mocks, tmp_path):
+    def test_opus_downmix_uses_ffmpeg_to_wav(
+        self, executor_with_mocks: tuple[Executor, SimpleNamespace], tmp_path: Path,
+    ) -> None:
         """Opus is NOT eac3to-supported -> ffmpeg_to_wav, then eac3to downmix."""
         executor, mocks = executor_with_mocks
         instr = _instr("opus", downmix=DownmixMode.STEREO)
@@ -125,7 +129,9 @@ class TestDecodeEncodeDownmixRouting:
         decode_call = mocks.audio_decoder.decode_lossless.call_args
         assert decode_call.kwargs.get("downmix") == DownmixMode.STEREO
 
-    def test_vorbis_downmix_uses_ffmpeg_to_wav(self, executor_with_mocks, tmp_path):
+    def test_vorbis_downmix_uses_ffmpeg_to_wav(
+        self, executor_with_mocks: tuple[Executor, SimpleNamespace], tmp_path: Path,
+    ) -> None:
         executor, mocks = executor_with_mocks
         instr = _instr("vorbis", downmix=DownmixMode.DOWN6)
         executor._process_audio_track(instr, tmp_path, _job())
@@ -133,7 +139,9 @@ class TestDecodeEncodeDownmixRouting:
         assert mocks.audio_extractor.ffmpeg_to_wav.called
         assert not mocks.audio_extractor.extract_track.called
 
-    def test_no_downmix_on_truehd_passes_none(self, executor_with_mocks, tmp_path):
+    def test_no_downmix_on_truehd_passes_none(
+        self, executor_with_mocks: tuple[Executor, SimpleNamespace], tmp_path: Path,
+    ) -> None:
         """Regression guard: existing DECODE_ENCODE flow passes downmix=None."""
         executor, mocks = executor_with_mocks
         instr = _instr("truehd", downmix=None)
@@ -142,7 +150,9 @@ class TestDecodeEncodeDownmixRouting:
         decode_call = mocks.audio_decoder.decode_lossless.call_args
         assert decode_call.kwargs.get("downmix") is None
 
-    def test_dts_downmix_uses_extract_track(self, executor_with_mocks, tmp_path):
+    def test_dts_downmix_uses_extract_track(
+        self, executor_with_mocks: tuple[Executor, SimpleNamespace], tmp_path: Path,
+    ) -> None:
         executor, mocks = executor_with_mocks
         instr = _instr("dts", downmix=DownmixMode.STEREO)
         executor._process_audio_track(instr, tmp_path, _job())
@@ -157,8 +167,8 @@ class TestDecodeEncodeDownmixProgressWiring:
     tracking refactor from commit 0d6e0c2."""
 
     def test_eac3to_supported_path_wires_three_progress_callbacks(
-        self, executor_with_mocks, tmp_path,
-    ):
+        self, executor_with_mocks: tuple[Executor, SimpleNamespace], tmp_path: Path,
+    ) -> None:
         """extract_track + decode_lossless + encode_aac each get a callback."""
         executor, mocks = executor_with_mocks
         instr = _instr("truehd", downmix=DownmixMode.STEREO)
@@ -174,8 +184,8 @@ class TestDecodeEncodeDownmixProgressWiring:
         assert callable(encode_call.kwargs.get("on_progress"))
 
     def test_non_eac3to_path_wires_three_progress_callbacks(
-        self, executor_with_mocks, tmp_path,
-    ):
+        self, executor_with_mocks: tuple[Executor, SimpleNamespace], tmp_path: Path,
+    ) -> None:
         """ffmpeg_to_wav + decode_lossless + encode_aac each get a callback."""
         executor, mocks = executor_with_mocks
         instr = _instr("opus", downmix=DownmixMode.STEREO)

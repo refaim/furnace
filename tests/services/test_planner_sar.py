@@ -53,7 +53,7 @@ def _make_movie(tmp_path: Path, sar_num: int = 1, sar_den: int = 1) -> Movie:
 
 
 class TestSarOverrides:
-    def test_sar_override_applied(self, tmp_path):
+    def test_sar_override_applied(self, tmp_path: Path) -> None:
         movie = _make_movie(tmp_path, sar_num=1, sar_den=1)
         prober = MagicMock()
         prober.detect_crop.return_value = None
@@ -72,7 +72,7 @@ class TestSarOverrides:
         assert vp.sar_num == 64
         assert vp.sar_den == 45
 
-    def test_sar_not_overridden_when_path_not_in_set(self, tmp_path):
+    def test_sar_not_overridden_when_path_not_in_set(self, tmp_path: Path) -> None:
         movie = _make_movie(tmp_path, sar_num=1, sar_den=1)
         prober = MagicMock()
         prober.detect_crop.return_value = None
@@ -91,7 +91,7 @@ class TestSarOverrides:
         assert vp.sar_num == 1
         assert vp.sar_den == 1
 
-    def test_sar_overrides_none_behaves_as_empty(self, tmp_path):
+    def test_sar_overrides_none_behaves_as_empty(self, tmp_path: Path) -> None:
         """Omitting sar_overrides (None default) must leave SAR at source."""
         movie = _make_movie(tmp_path, sar_num=1, sar_den=1)
         prober = MagicMock()
@@ -110,7 +110,7 @@ class TestSarOverrides:
         assert vp.sar_num == 1
         assert vp.sar_den == 1
 
-    def test_movie_video_sar_not_mutated_by_planner(self, tmp_path):
+    def test_movie_video_sar_not_mutated_by_planner(self, tmp_path: Path) -> None:
         """Regression guard: the planner must NOT mutate movie.video.sar_num/den."""
         movie = _make_movie(tmp_path, sar_num=1, sar_den=1)
         original_num = movie.video.sar_num

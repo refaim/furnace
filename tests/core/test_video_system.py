@@ -35,13 +35,13 @@ class TestDetectVideoSystem:
 
     # Non-standard SD -> ValueError
     def test_unknown_sd_544(self) -> None:
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="Unknown SD height"):
             detect_video_system(544)
 
     def test_unknown_sd_352(self) -> None:
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="Unknown SD height"):
             detect_video_system(352)
 
     def test_unknown_sd_360(self) -> None:
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="Unknown SD height"):
             detect_video_system(360)

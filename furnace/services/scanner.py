@@ -3,18 +3,35 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from ..core.models import ScanResult
-from ..core.ports import Prober
+from furnace.core.models import ScanResult
+from furnace.core.ports import Prober
 
 logger = logging.getLogger(__name__)
 
 VIDEO_EXTENSIONS: set[str] = {
-    ".mkv", ".avi", ".mp4", ".m4v", ".mov",
-    ".wmv", ".flv", ".ts", ".mpg", ".mpeg",
+    ".mkv",
+    ".avi",
+    ".mp4",
+    ".m4v",
+    ".mov",
+    ".wmv",
+    ".flv",
+    ".ts",
+    ".mpg",
+    ".mpeg",
 }
 SATELLITE_EXTENSIONS: set[str] = {
-    ".srt", ".ass", ".ssa", ".ac3", ".dts",
-    ".eac3", ".flac", ".m4a", ".mp3", ".wav", ".sup",
+    ".srt",
+    ".ass",
+    ".ssa",
+    ".ac3",
+    ".dts",
+    ".eac3",
+    ".flac",
+    ".m4a",
+    ".mp3",
+    ".wav",
+    ".sup",
 }
 WINDOWS_FORBIDDEN_CHARS: str = '<>/:"|?*'
 
@@ -36,11 +53,13 @@ class Scanner:
             if source.suffix.lower() in VIDEO_EXTENSIONS:
                 satellites = self.find_satellites(source)
                 output_path = self.build_output_path(source, source.parent, dest, names_map)
-                results.append(ScanResult(
-                    main_file=source,
-                    satellite_files=satellites,
-                    output_path=output_path,
-                ))
+                results.append(
+                    ScanResult(
+                        main_file=source,
+                        satellite_files=satellites,
+                        output_path=output_path,
+                    )
+                )
             return results
 
         for path in sorted(source.rglob("*")):
@@ -53,11 +72,13 @@ class Scanner:
                 continue
             satellites = self.find_satellites(path)
             output_path = self.build_output_path(path, source, dest, names_map)
-            results.append(ScanResult(
-                main_file=path,
-                satellite_files=satellites,
-                output_path=output_path,
-            ))
+            results.append(
+                ScanResult(
+                    main_file=path,
+                    satellite_files=satellites,
+                    output_path=output_path,
+                )
+            )
             logger.debug("Scanned %s -> %s (%d satellites)", path, output_path, len(satellites))
 
         logger.debug("Scan complete: %d video files found in %s", len(results), source)
@@ -90,9 +111,7 @@ class Scanner:
                 # skip other forbidden chars
             else:
                 result.append(ch)
-        cleaned = "".join(result)
-        cleaned = cleaned.rstrip(".")
-        return cleaned
+        return "".join(result).rstrip(".")
 
     @staticmethod
     def build_output_path(
@@ -126,16 +145,15 @@ class Scanner:
 
         # Mirror directory structure
         relative_dir = relative.parent
-        output_path = dest_root / relative_dir / new_filename
-        return output_path
+        return dest_root / relative_dir / new_filename
 
     @staticmethod
     def load_names_map(path: Path) -> dict[str, str]:
         """Parse rename file: 'old.mkv = New Name' format."""
         names_map: dict[str, str] = {}
         with path.open("r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
+            for raw_line in f:
+                line = raw_line.strip()
                 if not line or line.startswith("#"):
                     continue
                 if "=" not in line:

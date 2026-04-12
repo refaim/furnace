@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import enum
 from dataclasses import dataclass
 from pathlib import Path
@@ -7,8 +8,10 @@ from typing import Any
 
 from .models import AudioCodecId, CropRect, DvBlCompatibility, HdrMetadata, SubtitleCodecId, Track
 
+
 class VideoSystem(enum.Enum):
     """Video system determined from frame height."""
+
     PAL = "pal"
     NTSC = "ntsc"
     HD = "hd"
@@ -16,6 +19,7 @@ class VideoSystem(enum.Enum):
 
 _PAL_HEIGHTS = frozenset({576, 288})
 _NTSC_HEIGHTS = frozenset({480, 486, 240})
+_HD_MIN_HEIGHT = 720  # anything at 720 or above is treated as HD
 
 
 def detect_video_system(height: int) -> VideoSystem:
@@ -30,7 +34,7 @@ def detect_video_system(height: int) -> VideoSystem:
         return VideoSystem.PAL
     if height in _NTSC_HEIGHTS:
         return VideoSystem.NTSC
-    if height >= 720:
+    if height >= _HD_MIN_HEIGHT:
         return VideoSystem.HD
     raise ValueError(
         f"Unknown SD height {height}: cannot determine PAL/NTSC. "
@@ -41,9 +45,10 @@ def detect_video_system(height: int) -> VideoSystem:
 @dataclass(frozen=True)
 class ResolvedColor:
     """Resolved color metadata for NVEncC flags."""
-    matrix: str      # --colormatrix
-    transfer: str    # --transfer
-    primaries: str   # --colorprim
+
+    matrix: str  # --colormatrix
+    transfer: str  # --transfer
+    primaries: str  # --colorprim
 
 
 _BT2020_MATRICES = frozenset({"bt2020nc", "bt2020c"})
@@ -62,6 +67,7 @@ def resolve_color_metadata(
     transfer_raw: str | None,
     primaries_raw: str | None,
     system: VideoSystem,
+    *,
     has_hdr: bool,
 ) -> ResolvedColor:
     """Resolve color metadata, filling in missing values per ITU standards.
@@ -137,18 +143,18 @@ FULL_TRACKNAME_KEYWORDS: list[str] = ["sdh"]
 
 
 def detect_forced_subtitles(subtitle_tracks: list[Track]) -> None:
-    """Трёхэтапный алгоритм (in-place мутация is_forced):
-    1. Ключевые слова в имени файла (для satellite files) -- FORCED_FILENAME_KEYWORDS / FORCED_FILENAME_EXCLUDE
-    2. Ключевые слова в имени дорожки -- FORCED_TRACKNAME_KEYWORDS (но исключить FORCED_TRACKNAME_EXCLUDE)
-    3. Статистический анализ:
-       a. Исключить дорожки с языком 'chi' и дорожки с 'sdh' в названии из статистического сравнения.
-       b. Разделить оставшиеся дорожки на две группы:
-          - binary (PGS, VOBSUB): сравнивать по num_frames
-          - text (SRT, ASS): сравнивать по num_captions
-       c. Внутри каждой группы: для каждого языка найти максимум метрики.
-          Если дорожка < 50% от максимума на том же языке -> forced.
-       d. Использовать обе метрики (num_frames И num_captions) когда обе доступны,
-          достаточно одной метрики < 50% для пометки forced.
+    """Three-stage algorithm that mutates is_forced in place:
+    1. Filename keywords (for satellite files) -- FORCED_FILENAME_KEYWORDS / FORCED_FILENAME_EXCLUDE.
+    2. Track-name keywords -- FORCED_TRACKNAME_KEYWORDS, minus FORCED_TRACKNAME_EXCLUDE.
+    3. Statistical analysis:
+       a. Exclude tracks with language 'chi' and tracks with 'sdh' in the title from the comparison.
+       b. Split the remaining tracks into two groups:
+          - binary (PGS, VOBSUB): compared by num_frames
+          - text (SRT, ASS): compared by num_captions
+       c. Within each group, find the per-language max of the metric.
+          A track with < 50% of the max for its language is marked forced.
+       d. Use both metrics (num_frames AND num_captions) when both are available;
+          either one falling below 50% is enough to mark the track forced.
     """
     # Stage 1: filename keywords
     for track in subtitle_tracks:
@@ -171,10 +177,7 @@ def detect_forced_subtitles(subtitle_tracks: list[Track]) -> None:
     _text_codecs = {SubtitleCodecId.SRT, SubtitleCodecId.ASS}
 
     # a. Exclude chi language and sdh tracks from statistical comparison
-    stat_tracks = [
-        t for t in subtitle_tracks
-        if t.language != "chi" and "sdh" not in t.title.lower()
-    ]
+    stat_tracks = [t for t in subtitle_tracks if t.language != "chi" and "sdh" not in t.title.lower()]
 
     # b. Split into binary and text groups
     binary_tracks = [t for t in stat_tracks if t.codec_id in _binary_codecs]
@@ -229,11 +232,14 @@ def cluster_crop_values(
 
     for anchor in crops:
         members = [
-            c for c in crops
-            if (abs(c.w - anchor.w) <= tolerance
+            c
+            for c in crops
+            if (
+                abs(c.w - anchor.w) <= tolerance
                 and abs(c.h - anchor.h) <= tolerance
                 and abs(c.x - anchor.x) <= tolerance
-                and abs(c.y - anchor.y) <= tolerance)
+                and abs(c.y - anchor.y) <= tolerance
+            )
         ]
         if len(members) > len(best_members):
             best_members = members
@@ -287,9 +293,11 @@ def _fraction_numerator(val: str) -> str:
 
 
 def detect_hdr(stream_data: dict[str, Any], side_data: list[dict[str, Any]] | None) -> HdrMetadata:
-    """Анализирует side_data_list из ffprobe для MDCV и CLL.
-    Проверяет codec_name для Dolby Vision (dvhe/dvh1) и
-    HDR10+ (наличие dynamic metadata в side_data)."""
+    """Parse ffprobe side_data_list for MDCV and CLL.
+
+    Also inspects codec_name for Dolby Vision (dvhe/dvh1) and detects
+    HDR10+ by the presence of dynamic metadata in side_data.
+    """
     mastering_display: str | None = None
     content_light: str | None = None
     is_dolby_vision: bool = False
@@ -329,10 +337,8 @@ def detect_hdr(stream_data: dict[str, Any], side_data: list[dict[str, Any]] | No
                 dv_profile = int(raw_profile)
             raw_compat = entry.get("dv_bl_signal_compatibility_id")
             if raw_compat is not None:
-                try:
+                with contextlib.suppress(ValueError):
                     dv_bl_compatibility = DvBlCompatibility(int(raw_compat))
-                except ValueError:
-                    pass
 
         elif side_type in ("Dolby Vision RPU Data", "Dolby Vision Metadata"):
             # Frame-level markers (no profile info).
@@ -360,9 +366,9 @@ def should_skip_file(
     output_path: Path,
     encoder_tag: str | None,
 ) -> tuple[bool, str]:
-    """Возвращает (skip, reason). Skip если:
-    - output_path существует
-    - encoder_tag начинается с 'Furnace'
+    """Return (skip, reason). Skip if:
+    - output_path already exists, or
+    - encoder_tag starts with 'Furnace'.
     """
     if output_path.exists():
         return True, f"output file already exists: {output_path}"
@@ -375,20 +381,18 @@ def check_unsupported_codecs(
     audio_tracks: list[Track],
     subtitle_tracks: list[Track],
 ) -> str | None:
-    """Возвращает строку с предупреждением если есть неизвестные кодеки, или None."""
-    unknown: list[str] = []
+    """Return a warning string if any unknown codecs are present, or None."""
+    unknown: list[str] = [
+        f"audio stream #{track.index} ({track.codec_name!r}, lang={track.language})"
+        for track in audio_tracks
+        if track.codec_id is AudioCodecId.UNKNOWN
+    ]
 
-    for track in audio_tracks:
-        if track.codec_id is AudioCodecId.UNKNOWN:
-            unknown.append(
-                f"audio stream #{track.index} ({track.codec_name!r}, lang={track.language})"
-            )
-
-    for track in subtitle_tracks:
-        if track.codec_id is SubtitleCodecId.UNKNOWN:
-            unknown.append(
-                f"subtitle stream #{track.index} ({track.codec_name!r}, lang={track.language})"
-            )
+    unknown.extend(
+        f"subtitle stream #{track.index} ({track.codec_name!r}, lang={track.language})"
+        for track in subtitle_tracks
+        if track.codec_id is SubtitleCodecId.UNKNOWN
+    )
 
     if unknown:
         items = ", ".join(unknown)

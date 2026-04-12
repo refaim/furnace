@@ -3,8 +3,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from furnace.core.models import AudioCodecId, DownmixMode, Track, TrackType
-from furnace.ui.tui import _fmt_audio_track
+from furnace.core.models import AudioCodecId, DownmixMode, HdrMetadata, Movie, Track, TrackType, VideoInfo
+from furnace.ui.tui import TrackSelection, TrackSelectorScreen, _fmt_audio_track
 
 
 def _t(channels: int | None = 6, codec: str = "dts", layout: str = "5.1") -> Track:
@@ -25,25 +25,25 @@ def _t(channels: int | None = 6, codec: str = "dts", layout: str = "5.1") -> Tra
 
 
 class TestFmtAudioTrackDownmixTag:
-    def test_no_downmix_has_no_tag(self):
+    def test_no_downmix_has_no_tag(self) -> None:
         line = _fmt_audio_track(_t(), selected=True, downmix=None)
         assert "[->" not in line
 
-    def test_stereo_tag(self):
+    def test_stereo_tag(self) -> None:
         line = _fmt_audio_track(_t(), selected=True, downmix=DownmixMode.STEREO)
         assert "[-> 2.0]" in line
 
-    def test_down6_tag(self):
+    def test_down6_tag(self) -> None:
         line = _fmt_audio_track(_t(channels=8, layout="7.1"), selected=True, downmix=DownmixMode.DOWN6)
         assert "[-> 5.1]" in line
 
-    def test_unselected_still_formats(self):
+    def test_unselected_still_formats(self) -> None:
         line = _fmt_audio_track(_t(), selected=False, downmix=DownmixMode.STEREO)
         assert "[-> 2.0]" in line
         # Unselected marker: a space inside the leading [x/ ]
         assert line.startswith("\\[ ]")
 
-    def test_codec_and_layout_still_present(self):
+    def test_codec_and_layout_still_present(self) -> None:
         """Existing content (codec, layout, bitrate, title) still renders."""
         line = _fmt_audio_track(_t(), selected=True, downmix=DownmixMode.STEREO)
         assert "DTS" in line
@@ -53,14 +53,12 @@ class TestFmtAudioTrackDownmixTag:
 
 
 class TestTrackSelection:
-    def test_default_empty_downmix(self):
-        from furnace.ui.tui import TrackSelection
+    def test_default_empty_downmix(self) -> None:
         sel = TrackSelection(tracks=[], downmix={})
         assert sel.tracks == []
         assert sel.downmix == {}
 
-    def test_with_downmix(self):
-        from furnace.ui.tui import TrackSelection
+    def test_with_downmix(self) -> None:
         t = _t()
         sel = TrackSelection(
             tracks=[t],
@@ -78,10 +76,7 @@ class TestTrackSelectorDownmixLogic:
     to be a no-op for the duration of the test.
     """
 
-    def _make_screen(self, tracks):
-        from furnace.core.models import HdrMetadata, Movie, VideoInfo
-        from furnace.ui.tui import TrackSelectorScreen
-
+    def make_screen(self, tracks: list[Track]) -> TrackSelectorScreen:
         video = VideoInfo(
             index=0,
             codec_name="hevc",
@@ -110,42 +105,44 @@ class TestTrackSelectorDownmixLogic:
             has_chapters=False,
         )
         screen = TrackSelectorScreen(movie, tracks, TrackType.AUDIO)
+        # Monkeypatch the method to a no-op for pure-logic tests; mypy can't model
+        # method reassignment on an instance, so silence [method-assign] here.
         screen._refresh_item = lambda index: None  # type: ignore[method-assign]
         return screen
 
-    def test_set_stereo_on_multichannel(self):
-        screen = self._make_screen([_t(channels=8)])
+    def test_set_stereo_on_multichannel(self) -> None:
+        screen = self.make_screen([_t(channels=8)])
         screen._cursor = 0
         screen.action_set_downmix("stereo")
         assert screen._downmix[0] == DownmixMode.STEREO
 
-    def test_repress_clears_mode(self):
-        screen = self._make_screen([_t(channels=8)])
+    def test_repress_clears_mode(self) -> None:
+        screen = self.make_screen([_t(channels=8)])
         screen._cursor = 0
         screen.action_set_downmix("stereo")
         screen.action_set_downmix("stereo")
         assert screen._downmix[0] is None
 
-    def test_down6_noop_on_5_1(self):
-        screen = self._make_screen([_t(channels=6)])
+    def test_down6_noop_on_5_1(self) -> None:
+        screen = self.make_screen([_t(channels=6)])
         screen._cursor = 0
         screen.action_set_downmix("down6")
         assert screen._downmix[0] is None
 
-    def test_down6_works_on_7_1(self):
-        screen = self._make_screen([_t(channels=8)])
+    def test_down6_works_on_7_1(self) -> None:
+        screen = self.make_screen([_t(channels=8)])
         screen._cursor = 0
         screen.action_set_downmix("down6")
         assert screen._downmix[0] == DownmixMode.DOWN6
 
-    def test_stereo_noop_on_stereo_track(self):
-        screen = self._make_screen([_t(channels=2)])
+    def test_stereo_noop_on_stereo_track(self) -> None:
+        screen = self.make_screen([_t(channels=2)])
         screen._cursor = 0
         screen.action_set_downmix("stereo")
         assert screen._downmix[0] is None
 
-    def test_stereo_noop_on_unknown_channels(self):
-        screen = self._make_screen([_t(channels=None)])
+    def test_stereo_noop_on_unknown_channels(self) -> None:
+        screen = self.make_screen([_t(channels=None)])
         screen._cursor = 0
         screen.action_set_downmix("stereo")
         assert screen._downmix[0] is None

@@ -18,8 +18,12 @@ class Prober(Protocol):
         ...
 
     def detect_crop(
-        self, path: Path, duration_s: float,
-        interlaced: bool = False, is_dvd: bool = False,
+        self,
+        path: Path,
+        duration_s: float,
+        *,
+        interlaced: bool = False,
+        is_dvd: bool = False,
     ) -> CropRect | None:
         """Run cropdetect, return detected values (before alignment)."""
         ...
@@ -46,7 +50,7 @@ class Encoder(Protocol):
         input_path: Path,
         output_path: Path,
         video_params: VideoParams,
-        source_size: int,
+        *,
         on_progress: Callable[[ProgressSample], None] | None = None,
         vmaf_enabled: bool = False,
         rpu_path: Path | None = None,
@@ -84,7 +88,6 @@ class AudioExtractor(Protocol):
         input_path: Path,
         stream_index: int,
         output_path: Path,
-        codec: str,
         on_progress: Callable[[ProgressSample], None] | None = None,
     ) -> int:
         """Extract audio track from container to a separate file.
@@ -161,7 +164,6 @@ class Muxer(Protocol):
         attachments: list[tuple[Path, str, str]],
         chapters_source: Path | None,
         output_path: Path,
-        furnace_version: str,
         video_meta: dict[str, Any] | None = None,
         on_progress: Callable[[ProgressSample], None] | None = None,
     ) -> int:

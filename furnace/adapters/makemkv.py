@@ -13,28 +13,16 @@ from ._subprocess import OutputCallback, run_tool
 logger = logging.getLogger(__name__)
 
 
-def _parse_makemkv_progress_line(line: str) -> ProgressSample | None:
-    """Stub: makemkv progress parsing is not yet implemented.
-
-    Returns None for every line, so the adapter observably behaves the same
-    as before (raw lines flow through `on_output` for the log widget; no
-    structured progress). Implementing a real parser is a follow-up once
-    we see makemkv output formats up close.
-    """
-    return None
-
 # "Title #4 was added (13 cell(s), 1:12:32)"
-_TITLE_ADDED_RE = re.compile(
-    r"Title #(\d+) was added \(\d+ cell\(s\), (\d+:\d{2}:\d{2})\)"
-)
+_TITLE_ADDED_RE = re.compile(r"Title #(\d+) was added \(\d+ cell\(s\), (\d+:\d{2}:\d{2})\)")
 
 
 def _parse_duration(s: str) -> float:
     """Parse 'H:MM:SS' into total seconds."""
     parts = s.split(":")
-    if len(parts) == 3:
+    if len(parts) == len(["H", "MM", "SS"]):
         return int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2])
-    if len(parts) == 2:
+    if len(parts) == len(["M", "SS"]):
         return int(parts[0]) * 60 + int(parts[1])
     return 0.0
 
@@ -70,9 +58,7 @@ class MakemkvAdapter:
         ]
         rc, output = run_tool(cmd, on_output=self._on_output, log_path=self._log_path("list_titles"))
         if rc != 0:
-            raise RuntimeError(
-                f"makemkvcon info failed for {disc_path} (rc={rc})"
-            )
+            raise RuntimeError(f"makemkvcon info failed for {disc_path} (rc={rc})")
         return self._parse_info_output(output)
 
     def demux_title(
@@ -80,13 +66,18 @@ class MakemkvAdapter:
         disc_path: Path,
         title_num: int,
         output_dir: Path,
-        on_progress: Callable[[ProgressSample], None] | None = None,
+        _on_progress: Callable[[ProgressSample], None] | None = None,
     ) -> list[Path]:
         """Demux one DVD title to MKV.
 
         makemkvcon uses 0-based index from the "added" titles list.
         The title_num we receive is the original DVD title number;
         we need to map it to the 0-based index.
+
+        Progress reporting is not implemented for makemkvcon yet: lines
+        flow to `on_output` for the log widget, but no structured samples
+        are emitted. `_on_progress` is accepted for Protocol conformance
+        with DiscDemuxerPort and silently ignored.
         """
         output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -98,9 +89,7 @@ class MakemkvAdapter:
                 index = i
                 break
         if index is None:
-            raise RuntimeError(
-                f"Title {title_num} not found in makemkvcon listing for {disc_path}"
-            )
+            raise RuntimeError(f"Title {title_num} not found in makemkvcon listing for {disc_path}")
 
         # Snapshot files before demux
         before = set(output_dir.iterdir())
@@ -113,35 +102,20 @@ class MakemkvAdapter:
             str(index),
             str(output_dir),
         ]
-        def _on_progress_line(line: str) -> bool:
-            sample = _parse_makemkv_progress_line(line)
-            if sample is None:
-                return False
-            if on_progress is not None:
-                on_progress(sample)
-            return True
 
         rc, _output = run_tool(
             cmd,
             on_output=self._on_output,
-            on_progress_line=_on_progress_line,
             log_path=self._log_path(f"demux_t{title_num}"),
         )
         if rc != 0:
-            raise RuntimeError(
-                f"makemkvcon demux failed for {disc_path} title {title_num} (rc={rc})"
-            )
+            raise RuntimeError(f"makemkvcon demux failed for {disc_path} title {title_num} (rc={rc})")
 
         # Find newly created MKV files
         after = set(output_dir.iterdir())
-        new_files = sorted(
-            p for p in (after - before)
-            if p.is_file() and p.suffix.lower() == ".mkv"
-        )
+        new_files = sorted(p for p in (after - before) if p.is_file() and p.suffix.lower() == ".mkv")
         if not new_files:
-            raise RuntimeError(
-                f"makemkvcon produced no MKV files for {disc_path} title {title_num}"
-            )
+            raise RuntimeError(f"makemkvcon produced no MKV files for {disc_path} title {title_num}")
         return new_files
 
     @staticmethod
@@ -158,9 +132,11 @@ class MakemkvAdapter:
             number = int(m.group(1))
             duration_str = m.group(2)
             duration_s = _parse_duration(duration_str)
-            results.append(DiscTitle(
-                number=number,
-                duration_s=duration_s,
-                raw_label=line.strip(),
-            ))
+            results.append(
+                DiscTitle(
+                    number=number,
+                    duration_s=duration_s,
+                    raw_label=line.strip(),
+                )
+            )
         return results

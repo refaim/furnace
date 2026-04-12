@@ -1,4 +1,5 @@
 """Post-run report printer (Rich)."""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -7,6 +8,16 @@ from rich.console import Console
 from rich.table import Table
 
 from furnace.core.models import JobStatus, Plan
+
+# VMAF (0-100) label thresholds for the post-run summary table.
+_VMAF_EXCELLENT = 95
+_VMAF_GOOD = 85
+_VMAF_FAIR = 70
+
+# SSIM (0-1) label thresholds for the post-run summary table.
+_SSIM_EXCELLENT = 0.99
+_SSIM_GOOD = 0.95
+_SSIM_FAIR = 0.90
 
 
 def _fmt_size(n: int | None) -> str:
@@ -67,22 +78,22 @@ class ReportPrinter:
                 quality_str = ""
                 if job.vmaf_score is not None:
                     v = job.vmaf_score
-                    if v >= 95:
+                    if v >= _VMAF_EXCELLENT:
                         label = "excellent"
-                    elif v >= 85:
+                    elif v >= _VMAF_GOOD:
                         label = "good"
-                    elif v >= 70:
+                    elif v >= _VMAF_FAIR:
                         label = "fair"
                     else:
                         label = "poor"
                     quality_str = f"  VMAF {v:.1f} ({label})"
                 if job.ssim_score is not None:
                     s = job.ssim_score
-                    if s >= 0.99:
+                    if s >= _SSIM_EXCELLENT:
                         slabel = "excellent"
-                    elif s >= 0.95:
+                    elif s >= _SSIM_GOOD:
                         slabel = "good"
-                    elif s >= 0.90:
+                    elif s >= _SSIM_FAIR:
                         slabel = "fair"
                     else:
                         slabel = "poor"

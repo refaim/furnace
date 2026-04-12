@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -14,13 +15,12 @@ from furnace.core.models import (
 )
 from furnace.services.analyzer import Analyzer
 
-
 # ---------------------------------------------------------------------------
 # Helpers / fixtures
 # ---------------------------------------------------------------------------
 
 def make_prober(
-    probe_data: dict | None = None,
+    probe_data: dict[str, Any] | None = None,
     encoder_tag: str | None = None,
     hdr_side_data: list[dict[str, Any]] | None = None,
 ) -> MagicMock:
@@ -43,7 +43,7 @@ def make_scan_result(tmp_path: Path, filename: str = "movie.mkv") -> ScanResult:
     )
 
 
-def _h264_probe_data() -> dict:
+def _h264_probe_data() -> dict[str, Any]:
     """Realistic ffprobe-like dict for a standard H.264 SDR MKV."""
     return {
         "streams": [
@@ -109,7 +109,7 @@ def _h264_probe_data() -> dict:
     }
 
 
-def _dv_probe_data() -> dict:
+def _dv_probe_data() -> dict[str, Any]:
     """ffprobe-like dict for a Dolby Vision file."""
     return {
         "streams": [
@@ -218,7 +218,7 @@ class TestAnalyzerHdrSideDataMerge:
         scan_result = make_scan_result(tmp_path)
         probe_data = _dv_probe_data()  # stream has DOVI configuration record, PQ transfer
         # Real ffprobe-like frame-level side data
-        frame_side_data = [
+        frame_side_data: list[dict[str, Any]] = [
             {
                 "side_data_type": "Mastering display metadata",
                 "red_x": "35400/50000", "red_y": "14600/50000",

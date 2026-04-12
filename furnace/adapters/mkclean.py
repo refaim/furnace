@@ -11,6 +11,8 @@ from ._subprocess import OutputCallback, run_tool
 
 logger = logging.getLogger(__name__)
 
+MKCLEAN_STAGE_COUNT = 3  # mkclean reports "Progress N/3:" — three stages, each 0-100%
+
 _MKCLEAN_PROGRESS_RE = re.compile(r"^Progress\s+(\d)/3:\s*(\d+)%\s*$")
 
 
@@ -34,9 +36,9 @@ def _parse_mkclean_progress_line(line: str) -> ProgressSample | None:
         stage_pct = int(m.group(2))
     except ValueError:
         return None
-    if not 1 <= stage <= 3:
+    if not 1 <= stage <= MKCLEAN_STAGE_COUNT:
         return None
-    fraction = ((stage - 1) + stage_pct / 100.0) / 3.0
+    fraction = ((stage - 1) + stage_pct / 100.0) / MKCLEAN_STAGE_COUNT
     return ProgressSample(fraction=max(0.0, min(1.0, fraction)))
 
 

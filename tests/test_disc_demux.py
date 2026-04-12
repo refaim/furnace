@@ -5,7 +5,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from furnace.core.models import DiscTitle, DiscSource, DiscType
+from furnace.core.models import DiscSource, DiscTitle, DiscType
 from furnace.services.disc_demuxer import DiscDemuxer
 
 

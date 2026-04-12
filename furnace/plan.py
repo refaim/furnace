@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import json
 import os
@@ -46,12 +47,10 @@ def atomic_write(path: Path, data: str) -> None:
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(data)
-        os.replace(tmp_path, str(path))
+        Path(tmp_path).replace(path)
     except:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
+        with contextlib.suppress(OSError):
+            Path(tmp_path).unlink()
         raise
 
 
@@ -73,10 +72,8 @@ def _load_hdr(raw: dict[str, Any] | None) -> HdrMetadata | None:
     dv_bl_compat: DvBlCompatibility | None = None
     raw_compat = raw.get("dv_bl_compatibility")
     if raw_compat is not None:
-        try:
+        with contextlib.suppress(ValueError, TypeError):
             dv_bl_compat = DvBlCompatibility(int(raw_compat))
-        except (ValueError, TypeError):
-            pass
     raw_profile = raw.get("dv_profile")
     dv_profile: int | None = int(raw_profile) if raw_profile is not None else None
     return HdrMetadata(

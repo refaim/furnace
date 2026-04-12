@@ -3,7 +3,8 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from ..core.models import DvMode
+from furnace.core.models import DvMode
+
 from ._subprocess import OutputCallback, run_tool
 
 logger = logging.getLogger(__name__)

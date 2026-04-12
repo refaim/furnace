@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import contextlib
 import logging
+import os
 import shutil
+import subprocess
 import tempfile
 import threading
 import time
@@ -9,16 +12,12 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from ..core.models import (
-    AudioAction,
-    AudioInstruction,
-    Job,
-    JobStatus,
-    Plan,
-    SubtitleAction,
-    SubtitleInstruction,
-)
-from ..core.ports import (
+import psutil
+
+from furnace import VERSION as FURNACE_VERSION
+from furnace.core.chapters import chapters_have_mojibake, write_ogm_chapters
+from furnace.core.models import AudioAction, AudioInstruction, Job, JobStatus, Plan, SubtitleAction, SubtitleInstruction
+from furnace.core.ports import (
     AacEncoder,
     AudioDecoder,
     AudioExtractor,
@@ -29,51 +28,56 @@ from ..core.ports import (
     Prober,
     Tagger,
 )
-from ..core.progress import ProgressSample, ProgressTracker
-from ..plan import update_job_status
-from furnace import VERSION as FURNACE_VERSION
+from furnace.core.progress import ProgressSample, ProgressTracker
+from furnace.plan import update_job_status
 
 logger = logging.getLogger(__name__)
 MAX_STDERR_LINES = 6
 
 # Extension mapping for audio codec names to file extensions
 _AUDIO_CODEC_EXT: dict[str, str] = {
-    "aac":      ".m4a",
-    "ac3":      ".ac3",
-    "eac3":     ".eac3",
-    "dts":      ".dts",
-    "truehd":   ".thd",
-    "flac":     ".flac",
+    "aac": ".m4a",
+    "ac3": ".ac3",
+    "eac3": ".eac3",
+    "dts": ".dts",
+    "truehd": ".thd",
+    "flac": ".flac",
     "pcm_s16le": ".wav",
     "pcm_s24le": ".wav",
     "pcm_s16be": ".wav",
-    "mp2":      ".mp2",
-    "mp3":      ".mp3",
-    "vorbis":   ".ogg",
-    "opus":     ".opus",
-    "wmav2":    ".wma",
-    "wmapro":   ".wma",
-    "amr_nb":   ".amr",
+    "mp2": ".mp2",
+    "mp3": ".mp3",
+    "vorbis": ".ogg",
+    "opus": ".opus",
+    "wmav2": ".wma",
+    "wmapro": ".wma",
+    "amr_nb": ".amr",
 }
 
 # Extension mapping for subtitle codec names
 _SUBTITLE_CODEC_EXT: dict[str, str] = {
-    "subrip":             ".srt",
-    "ass":                ".ass",
-    "hdmv_pgs_subtitle":  ".sup",
-    "dvd_subtitle":       ".mkv",  # VOBSUB can't be extracted raw; wrap in MKV
+    "subrip": ".srt",
+    "ass": ".ass",
+    "hdmv_pgs_subtitle": ".sup",
+    "dvd_subtitle": ".mkv",  # VOBSUB can't be extracted raw; wrap in MKV
 }
 
 
-_EAC3TO_SUPPORTED_SRC: frozenset[str] = frozenset({
-    "ac3", "eac3",
-    "dts",
-    "truehd",
-    "flac",
-    "pcm_s16le", "pcm_s24le", "pcm_s16be",
-    "aac",
-    "mp2", "mp3",
-})
+_EAC3TO_SUPPORTED_SRC: frozenset[str] = frozenset(
+    {
+        "ac3",
+        "eac3",
+        "dts",
+        "truehd",
+        "flac",
+        "pcm_s16le",
+        "pcm_s24le",
+        "pcm_s16be",
+        "aac",
+        "mp2",
+        "mp3",
+    }
+)
 
 
 def _codec_supported_by_eac3to(codec_name: str) -> bool:
@@ -153,10 +157,7 @@ class Executor:
         """
         self._vmaf_enabled = plan.vmaf_enabled
 
-        pending_jobs = [
-            job for job in plan.jobs
-            if job.status in (JobStatus.PENDING, JobStatus.ERROR)
-        ]
+        pending_jobs = [job for job in plan.jobs if job.status in (JobStatus.PENDING, JobStatus.ERROR)]
 
         logger.debug(
             "Starting execution: %d jobs to process (total: %d)",
@@ -197,9 +198,9 @@ class Executor:
                 if self._progress is not None:
                     job.output_size = output_size
                     self._progress.finish_job(job)
-            except Exception as exc:
+            except (OSError, RuntimeError, ValueError, KeyError, subprocess.SubprocessError) as exc:
                 error_msg = str(exc)
-                logger.error("Job %s failed: %s", job.id, error_msg)
+                logger.exception("Job %s failed", job.id)
                 update_job_status(
                     plan_path,
                     job.id,
@@ -216,11 +217,8 @@ class Executor:
         try:
             self._run_pipeline(job, output_path, temp_dir)
         finally:
-            # Always clean up temp files
-            try:
-                shutil.rmtree(temp_dir, ignore_errors=True)
-            except Exception as exc:
-                logger.warning("Failed to clean temp dir %s: %s", temp_dir, exc)
+            # Always clean up temp files (ignore_errors swallows any rmtree failure)
+            shutil.rmtree(temp_dir, ignore_errors=True)
 
     def _run_pipeline(
         self,
@@ -245,10 +243,7 @@ class Executor:
         for i, audio_instr in enumerate(job.audio):
             if self._shutdown_event.is_set():
                 return
-            status_msg = (
-                f"Processing audio {i + 1}/{len(job.audio)} "
-                f"({audio_instr.codec_name} {audio_instr.language})"
-            )
+            status_msg = f"Processing audio {i + 1}/{len(job.audio)} ({audio_instr.codec_name} {audio_instr.language})"
             logger.info(status_msg)
             if self._progress is not None:
                 self._progress.update_status(status_msg)
@@ -274,8 +269,7 @@ class Executor:
             if self._shutdown_event.is_set():
                 return
             status_msg = (
-                f"Processing subtitle {i + 1}/{len(job.subtitles)} "
-                f"({sub_instr.codec_name} {sub_instr.language})"
+                f"Processing subtitle {i + 1}/{len(job.subtitles)} ({sub_instr.codec_name} {sub_instr.language})"
             )
             logger.info(status_msg)
             if self._progress is not None:
@@ -340,7 +334,6 @@ class Executor:
             input_path=main_source,
             output_path=video_output,
             video_params=job.video_params,
-            source_size=job.source_size,
             on_progress=encode_on_progress,
             vmaf_enabled=self._vmaf_enabled,
             rpu_path=rpu_path,
@@ -376,7 +369,8 @@ class Executor:
         chapters_source: Path | None = None
         if job.copy_chapters and job.chapters_source:
             chapters_source = self._extract_chapters_file(
-                Path(job.chapters_source), temp_dir,
+                Path(job.chapters_source),
+                temp_dir,
             )
 
         # Build video metadata for container-level color/HDR flags
@@ -404,7 +398,6 @@ class Executor:
             attachments=attachments,
             chapters_source=chapters_source,
             output_path=muxed_path,
-            furnace_version=FURNACE_VERSION,
             video_meta=video_meta or None,
             on_progress=mux_on_progress,
         )
@@ -447,9 +440,7 @@ class Executor:
         shutil.move(str(cleaned_path), str(output_path))
         logger.debug("Job output written to %s", output_path)
 
-    def _process_audio_track(
-        self, instr: AudioInstruction, temp_dir: Path, job: Job
-    ) -> Path:
+    def _process_audio_track(self, instr: AudioInstruction, temp_dir: Path, job: Job) -> Path:
         """Returns path to processed audio file.
         COPY: extract_track from container
         DENORM: extract_track -> denormalize (with delay)
@@ -468,13 +459,13 @@ class Executor:
             out_path = temp_dir / f"audio_{track_idx}{ext}"
             _, on_progress = self._make_progress_callback(total_s=job.duration_s or None)
             rc = self._audio_extractor.extract_track(
-                source_path, track_idx, out_path, instr.codec_name,
+                source_path,
+                track_idx,
+                out_path,
                 on_progress=on_progress,
             )
             if rc != 0:
-                raise RuntimeError(
-                    f"Audio extract (COPY) failed with rc={rc} for stream {track_idx}"
-                )
+                raise RuntimeError(f"Audio extract (COPY) failed with rc={rc} for stream {track_idx}")
             return out_path
 
         if instr.action == AudioAction.DENORM:
@@ -484,50 +475,49 @@ class Executor:
             extracted = temp_dir / f"audio_{track_idx}_raw{ext}"
             _, on_progress = self._make_progress_callback(total_s=job.duration_s or None)
             rc = self._audio_extractor.extract_track(
-                source_path, track_idx, extracted, instr.codec_name,
+                source_path,
+                track_idx,
+                extracted,
                 on_progress=on_progress,
             )
             if rc != 0:
-                raise RuntimeError(
-                    f"Audio extract (DENORM) failed with rc={rc} for stream {track_idx}"
-                )
+                raise RuntimeError(f"Audio extract (DENORM) failed with rc={rc} for stream {track_idx}")
             logger.info("Denormalizing with eac3to")
             if self._progress is not None:
                 self._progress.add_tool_line(f"[furnace] Denormalizing audio stream {track_idx} with eac3to")
             denormed = temp_dir / f"audio_{track_idx}_denorm{ext}"
             _, on_progress = self._make_progress_callback(total_s=None)
             rc = self._audio_decoder.denormalize(
-                extracted, denormed, instr.delay_ms, on_progress=on_progress,
+                extracted,
+                denormed,
+                instr.delay_ms,
+                on_progress=on_progress,
             )
             if rc != 0:
-                raise RuntimeError(
-                    f"Audio denormalize failed with rc={rc} for stream {track_idx}"
-                )
+                raise RuntimeError(f"Audio denormalize failed with rc={rc} for stream {track_idx}")
             return denormed
 
         if instr.action == AudioAction.DECODE_ENCODE:
             if _codec_supported_by_eac3to(instr.codec_name):
                 logger.info("Extracting audio stream %d", track_idx)
                 if self._progress is not None:
-                    self._progress.add_tool_line(
-                        f"[furnace] Extracting audio stream {track_idx}"
-                    )
+                    self._progress.add_tool_line(f"[furnace] Extracting audio stream {track_idx}")
                 extracted = temp_dir / f"audio_{track_idx}_raw{ext}"
                 _, on_progress = self._make_progress_callback(
                     total_s=job.duration_s or None,
                 )
                 rc = self._audio_extractor.extract_track(
-                    source_path, track_idx, extracted, instr.codec_name,
+                    source_path,
+                    track_idx,
+                    extracted,
                     on_progress=on_progress,
                 )
                 if rc != 0:
-                    raise RuntimeError(
-                        f"Audio extract (DECODE_ENCODE) failed with rc={rc} "
-                        f"for stream {track_idx}"
-                    )
+                    raise RuntimeError(f"Audio extract (DECODE_ENCODE) failed with rc={rc} for stream {track_idx}")
             else:
                 logger.info(
-                    "Pre-decoding audio stream %d with ffmpeg to WAV", track_idx,
+                    "Pre-decoding audio stream %d with ffmpeg to WAV",
+                    track_idx,
                 )
                 if self._progress is not None:
                     self._progress.add_tool_line(
@@ -539,45 +529,41 @@ class Executor:
                     total_s=job.duration_s or None,
                 )
                 rc = self._audio_extractor.ffmpeg_to_wav(
-                    source_path, track_idx, extracted,
+                    source_path,
+                    track_idx,
+                    extracted,
                     on_progress=on_progress,
                 )
                 if rc != 0:
-                    raise RuntimeError(
-                        f"ffmpeg pre-decode failed with rc={rc} for stream {track_idx}"
-                    )
+                    raise RuntimeError(f"ffmpeg pre-decode failed with rc={rc} for stream {track_idx}")
 
             logger.info("Decoding lossless with eac3to")
             if self._progress is not None:
-                self._progress.add_tool_line(
-                    f"[furnace] Decoding lossless audio stream {track_idx} with eac3to"
-                )
+                self._progress.add_tool_line(f"[furnace] Decoding lossless audio stream {track_idx} with eac3to")
             wav_path = temp_dir / f"audio_{track_idx}_decoded.wav"
             _, on_progress = self._make_progress_callback(total_s=None)
             rc = self._audio_decoder.decode_lossless(
-                extracted, wav_path, instr.delay_ms,
+                extracted,
+                wav_path,
+                instr.delay_ms,
                 on_progress=on_progress,
                 downmix=instr.downmix,
             )
             if rc != 0:
-                raise RuntimeError(
-                    f"Audio decode_lossless failed with rc={rc} for stream {track_idx}"
-                )
+                raise RuntimeError(f"Audio decode_lossless failed with rc={rc} for stream {track_idx}")
 
             logger.info("Encoding AAC with qaac64")
             if self._progress is not None:
-                self._progress.add_tool_line(
-                    f"[furnace] Encoding AAC for stream {track_idx} with qaac64"
-                )
+                self._progress.add_tool_line(f"[furnace] Encoding AAC for stream {track_idx} with qaac64")
             m4a_path = temp_dir / f"audio_{track_idx}.m4a"
             _, on_progress = self._make_progress_callback(total_s=None)
             rc = self._aac_encoder.encode_aac(
-                wav_path, m4a_path, on_progress=on_progress,
+                wav_path,
+                m4a_path,
+                on_progress=on_progress,
             )
             if rc != 0:
-                raise RuntimeError(
-                    f"AAC encode failed with rc={rc} for stream {track_idx}"
-                )
+                raise RuntimeError(f"AAC encode failed with rc={rc} for stream {track_idx}")
             return m4a_path
 
         if instr.action == AudioAction.FFMPEG_ENCODE:
@@ -587,12 +573,13 @@ class Executor:
             wav_path = temp_dir / f"audio_{track_idx}_ffmpeg.wav"
             _, on_progress = self._make_progress_callback(total_s=job.duration_s or None)
             rc = self._audio_extractor.ffmpeg_to_wav(
-                source_path, track_idx, wav_path, on_progress=on_progress,
+                source_path,
+                track_idx,
+                wav_path,
+                on_progress=on_progress,
             )
             if rc != 0:
-                raise RuntimeError(
-                    f"ffmpeg_to_wav failed with rc={rc} for stream {track_idx}"
-                )
+                raise RuntimeError(f"ffmpeg_to_wav failed with rc={rc} for stream {track_idx}")
             logger.info("  Encoding AAC with qaac64")
             if self._progress is not None:
                 self._progress.add_tool_line(f"[furnace] Encoding AAC for stream {track_idx} with qaac64")
@@ -600,16 +587,12 @@ class Executor:
             _, on_progress = self._make_progress_callback(total_s=None)
             rc = self._aac_encoder.encode_aac(wav_path, m4a_path, on_progress=on_progress)
             if rc != 0:
-                raise RuntimeError(
-                    f"AAC encode (FFMPEG_ENCODE) failed with rc={rc} for stream {track_idx}"
-                )
+                raise RuntimeError(f"AAC encode (FFMPEG_ENCODE) failed with rc={rc} for stream {track_idx}")
             return m4a_path
 
         raise ValueError(f"Unknown AudioAction: {instr.action}")
 
-    def _process_subtitle_track(
-        self, instr: SubtitleInstruction, temp_dir: Path, job: Job
-    ) -> Path:
+    def _process_subtitle_track(self, instr: SubtitleInstruction, temp_dir: Path, job: Job) -> Path:
         """COPY: extract from container (ffmpeg).
         COPY_RECODE: extract + charset detection + recode to UTF-8.
         """
@@ -626,13 +609,13 @@ class Executor:
             out_path = temp_dir / f"sub_{track_idx}{ext}"
             _, on_progress = self._make_progress_callback(total_s=job.duration_s or None)
             rc = self._audio_extractor.extract_track(
-                source_path, track_idx, out_path, instr.codec_name,
+                source_path,
+                track_idx,
+                out_path,
                 on_progress=on_progress,
             )
             if rc != 0:
-                raise RuntimeError(
-                    f"Subtitle extract (COPY) failed with rc={rc} for stream {track_idx}"
-                )
+                raise RuntimeError(f"Subtitle extract (COPY) failed with rc={rc} for stream {track_idx}")
             return out_path
 
         if instr.action == SubtitleAction.COPY_RECODE:
@@ -644,13 +627,13 @@ class Executor:
                 extracted = temp_dir / f"sub_{track_idx}_raw{ext}"
                 _, on_progress = self._make_progress_callback(total_s=job.duration_s or None)
                 rc = self._audio_extractor.extract_track(
-                    source_path, track_idx, extracted, instr.codec_name,
+                    source_path,
+                    track_idx,
+                    extracted,
                     on_progress=on_progress,
                 )
                 if rc != 0:
-                    raise RuntimeError(
-                        f"Subtitle extract (COPY_RECODE) failed with rc={rc} for stream {track_idx}"
-                    )
+                    raise RuntimeError(f"Subtitle extract (COPY_RECODE) failed with rc={rc} for stream {track_idx}")
 
             out_path = temp_dir / f"sub_{track_idx}_utf8{ext}"
 
@@ -664,10 +647,12 @@ class Executor:
                     content = extracted.read_bytes()
                     text = content.decode(source_encoding)
                     out_path.write_text(text, encoding="utf-8")
-                except Exception as exc:
+                except (OSError, ValueError, LookupError) as exc:
                     logger.warning(
                         "Recode failed for stream %d (%s->utf-8): %s; copying as-is",
-                        track_idx, source_encoding, exc,
+                        track_idx,
+                        source_encoding,
+                        exc,
                     )
                     shutil.copy2(str(extracted), str(out_path))
 
@@ -677,8 +662,6 @@ class Executor:
 
     def _extract_chapters_file(self, source: Path, job_dir: Path) -> Path | None:
         """Extract chapters from source MKV via ffprobe, fix mojibake, write OGM file."""
-        from ..core.chapters import chapters_have_mojibake, write_ogm_chapters
-
         try:
             probe = self._prober.probe(source)
         except RuntimeError:
@@ -698,16 +681,9 @@ class Executor:
         logger.debug("Graceful shutdown requested")
         self._shutdown_event.set()
         try:
-            import os as _os
-
-            import psutil
-            parent = psutil.Process(_os.getpid())
+            parent = psutil.Process(os.getpid())
             for child in parent.children(recursive=True):
-                try:
+                with contextlib.suppress(psutil.NoSuchProcess):
                     child.kill()
-                except psutil.NoSuchProcess:
-                    pass
-        except ImportError:
-            logger.warning("psutil not available; cannot kill child processes")
-        except Exception as exc:
-            logger.error("Error during graceful shutdown: %s", exc)
+        except (OSError, psutil.Error):
+            logger.exception("Error during graceful shutdown")

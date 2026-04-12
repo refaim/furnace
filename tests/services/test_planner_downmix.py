@@ -10,8 +10,11 @@ from furnace.core.models import (
     AudioAction,
     AudioCodecId,
     DownmixMode,
+    HdrMetadata,
+    Movie,
     Track,
     TrackType,
+    VideoInfo,
 )
 from furnace.services.planner import PlannerService
 
@@ -39,55 +42,55 @@ def _audio_track(
 
 
 class TestBuildAudioInstructionValidation:
-    def test_downmix_on_stereo_track_raises(self):
+    def test_downmix_on_stereo_track_raises(self) -> None:
         track = _audio_track(codec_name="aac", codec_id=AudioCodecId.AAC_LC, channels=2)
         planner = PlannerService(prober=MagicMock(), previewer=None)
         with pytest.raises(ValueError, match="Downmix not applicable"):
             planner._build_audio_instruction(track, is_default=True, downmix=DownmixMode.STEREO)
 
-    def test_downmix_on_mono_track_raises(self):
+    def test_downmix_on_mono_track_raises(self) -> None:
         track = _audio_track(codec_name="aac", codec_id=AudioCodecId.AAC_LC, channels=1)
         planner = PlannerService(prober=MagicMock(), previewer=None)
         with pytest.raises(ValueError, match="Downmix not applicable"):
             planner._build_audio_instruction(track, is_default=True, downmix=DownmixMode.STEREO)
 
-    def test_downmix_on_none_channels_raises(self):
+    def test_downmix_on_none_channels_raises(self) -> None:
         track = _audio_track(channels=None)
         planner = PlannerService(prober=MagicMock(), previewer=None)
         with pytest.raises(ValueError, match="Downmix not applicable"):
             planner._build_audio_instruction(track, is_default=True, downmix=DownmixMode.STEREO)
 
-    def test_down6_on_6ch_raises(self):
+    def test_down6_on_6ch_raises(self) -> None:
         track = _audio_track(channels=6)
         planner = PlannerService(prober=MagicMock(), previewer=None)
         with pytest.raises(ValueError, match="DOWN6 not applicable"):
             planner._build_audio_instruction(track, is_default=True, downmix=DownmixMode.DOWN6)
 
-    def test_down6_on_5ch_raises(self):
+    def test_down6_on_5ch_raises(self) -> None:
         track = _audio_track(channels=5)
         planner = PlannerService(prober=MagicMock(), previewer=None)
         with pytest.raises(ValueError, match="DOWN6 not applicable"):
             planner._build_audio_instruction(track, is_default=True, downmix=DownmixMode.DOWN6)
 
-    def test_down6_on_7ch_ok(self):
+    def test_down6_on_7ch_ok(self) -> None:
         track = _audio_track(channels=7)
         planner = PlannerService(prober=MagicMock(), previewer=None)
         instr = planner._build_audio_instruction(track, is_default=True, downmix=DownmixMode.DOWN6)
         assert instr.downmix == DownmixMode.DOWN6
 
-    def test_down6_on_8ch_ok(self):
+    def test_down6_on_8ch_ok(self) -> None:
         track = _audio_track(channels=8)
         planner = PlannerService(prober=MagicMock(), previewer=None)
         instr = planner._build_audio_instruction(track, is_default=True, downmix=DownmixMode.DOWN6)
         assert instr.downmix == DownmixMode.DOWN6
 
-    def test_stereo_on_6ch_ok(self):
+    def test_stereo_on_6ch_ok(self) -> None:
         track = _audio_track(channels=6)
         planner = PlannerService(prober=MagicMock(), previewer=None)
         instr = planner._build_audio_instruction(track, is_default=True, downmix=DownmixMode.STEREO)
         assert instr.downmix == DownmixMode.STEREO
 
-    def test_no_downmix_on_2ch_ok(self):
+    def test_no_downmix_on_2ch_ok(self) -> None:
         track = _audio_track(codec_name="aac", codec_id=AudioCodecId.AAC_LC, channels=2)
         planner = PlannerService(prober=MagicMock(), previewer=None)
         instr = planner._build_audio_instruction(track, is_default=True, downmix=None)
@@ -97,26 +100,26 @@ class TestBuildAudioInstructionValidation:
 class TestBuildAudioInstructionForcing:
     """Downmix must force AudioAction.DECODE_ENCODE regardless of source codec."""
 
-    def test_force_on_ac3_track_overrides_denorm(self):
+    def test_force_on_ac3_track_overrides_denorm(self) -> None:
         track = _audio_track(codec_name="ac3", codec_id=AudioCodecId.AC3, channels=6)
         planner = PlannerService(prober=MagicMock(), previewer=None)
         instr = planner._build_audio_instruction(track, is_default=True, downmix=DownmixMode.STEREO)
         assert instr.action == AudioAction.DECODE_ENCODE
         assert instr.downmix == DownmixMode.STEREO
 
-    def test_force_on_truehd_track_is_decode_encode(self):
+    def test_force_on_truehd_track_is_decode_encode(self) -> None:
         track = _audio_track(codec_name="truehd", codec_id=AudioCodecId.TRUEHD, channels=8)
         planner = PlannerService(prober=MagicMock(), previewer=None)
         instr = planner._build_audio_instruction(track, is_default=True, downmix=DownmixMode.DOWN6)
         assert instr.action == AudioAction.DECODE_ENCODE
 
-    def test_force_on_opus_track_overrides_ffmpeg_encode(self):
+    def test_force_on_opus_track_overrides_ffmpeg_encode(self) -> None:
         track = _audio_track(codec_name="opus", codec_id=AudioCodecId.OPUS, channels=6)
         planner = PlannerService(prober=MagicMock(), previewer=None)
         instr = planner._build_audio_instruction(track, is_default=True, downmix=DownmixMode.STEREO)
         assert instr.action == AudioAction.DECODE_ENCODE
 
-    def test_no_downmix_preserves_default_action(self):
+    def test_no_downmix_preserves_default_action(self) -> None:
         """Without downmix, AC3 stays on DENORM (baseline)."""
         track = _audio_track(codec_name="ac3", codec_id=AudioCodecId.AC3, channels=6)
         planner = PlannerService(prober=MagicMock(), previewer=None)
@@ -127,13 +130,7 @@ class TestBuildAudioInstructionForcing:
 class TestCreatePlanDownmixOverrides:
     """create_plan must accept downmix_overrides and thread them into AudioInstruction."""
 
-    def test_downmix_overrides_applied_to_matching_track(self, tmp_path):
-        from furnace.core.models import (
-            HdrMetadata,
-            Movie,
-            VideoInfo,
-        )
-
+    def test_downmix_overrides_applied_to_matching_track(self, tmp_path: Path) -> None:
         main = tmp_path / "movie.mkv"
         main.write_bytes(b"")
 
@@ -193,7 +190,7 @@ class TestCreatePlanDownmixOverrides:
         assert audio[0].downmix == DownmixMode.STEREO
         assert audio[0].action == AudioAction.DECODE_ENCODE
 
-    def test_closure_mutation_after_call_is_observed(self, tmp_path):
+    def test_closure_mutation_after_call_is_observed(self, tmp_path: Path) -> None:
         """Regression: the dict passed to create_plan must be the same object
         the planner reads from, so a track_selector callback that mutates an
         outer dict before/during planner execution sees its updates honored.
@@ -203,8 +200,6 @@ class TestCreatePlanDownmixOverrides:
         the reference link to the caller's dict and silently dropping any
         downmix overrides that the closure adds during track selection.
         """
-        from furnace.core.models import HdrMetadata, Movie, VideoInfo
-
         main = tmp_path / "movie.mkv"
         main.write_bytes(b"")
 
@@ -244,7 +239,7 @@ class TestCreatePlanDownmixOverrides:
         # The caller's outer dict — initially empty, mutated by the callback.
         downmix_overrides: dict[tuple[Path, int], DownmixMode] = {}
 
-        def selector(_movie, candidates, track_type):
+        def selector(_movie: Movie, candidates: list[Track], track_type: TrackType) -> list[Track]:
             if track_type == TrackType.AUDIO:
                 # Pick the first multichannel candidate and tag it for downmix.
                 picked = candidates[0]
@@ -274,9 +269,7 @@ class TestCreatePlanDownmixOverrides:
         assert audio[0].downmix == DownmixMode.STEREO
         assert audio[0].action == AudioAction.DECODE_ENCODE
 
-    def test_empty_downmix_overrides_leaves_tracks_untouched(self, tmp_path):
-        from furnace.core.models import HdrMetadata, Movie, VideoInfo
-
+    def test_empty_downmix_overrides_leaves_tracks_untouched(self, tmp_path: Path) -> None:
         main = tmp_path / "movie.mkv"
         main.write_bytes(b"")
 

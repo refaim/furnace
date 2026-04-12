@@ -16,8 +16,10 @@ Layout:
     +---------------+----------------------------------------------+
     +-- ████████░░░░░░ 42.5% | 3:20 / ~4:40 | 1.2x ---------------+
 """
+
 from __future__ import annotations
 
+import contextlib
 import os
 import threading
 import time
@@ -39,6 +41,7 @@ from furnace.core.models import (
     SubtitleInstruction,
 )
 from furnace.core.progress import TrackerSnapshot
+from furnace.core.quality import correct_sar
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -204,8 +207,6 @@ def _build_target_text(job: Job) -> str:
     """Build target info block from Job data."""
     lines: list[str] = []
 
-    from furnace.core.quality import correct_sar
-
     vp = job.video_params
     cur_w = vp.crop.w if vp.crop else vp.source_width
     cur_h = vp.crop.h if vp.crop else vp.source_height
@@ -228,6 +229,7 @@ def _build_target_text(job: Job) -> str:
 # ---------------------------------------------------------------------------
 # Widgets
 # ---------------------------------------------------------------------------
+
 
 class HeaderWidget(Static):
     """Top bar: [X/N] filename."""
@@ -308,6 +310,7 @@ class ProgressWidget(Static):
 # RunApp
 # ---------------------------------------------------------------------------
 
+
 class RunApp(App[None]):
     """Textual app for the furnace run (encoding) phase.
 
@@ -340,6 +343,7 @@ class RunApp(App[None]):
         total_jobs: int,
         shutdown_event: threading.Event,
         executor_fn: Callable[..., None],
+        *,
         vmaf_enabled: bool = False,
     ) -> None:
         super().__init__()
@@ -398,10 +402,8 @@ class RunApp(App[None]):
         # Kill child process tree and force exit
         parent = psutil.Process(os.getpid())
         for child in parent.children(recursive=True):
-            try:
+            with contextlib.suppress(psutil.NoSuchProcess):
                 child.kill()
-            except psutil.NoSuchProcess:
-                pass
         os._exit(0)
 
     # ------------------------------------------------------------------
@@ -410,10 +412,8 @@ class RunApp(App[None]):
 
     def _safe_call(self, fn: Callable[..., object], *args: object) -> None:
         """Call from thread, silently ignore if app already exited."""
-        try:
+        with contextlib.suppress(Exception):
             self.call_from_thread(fn, *args)
-        except Exception:  # noqa: S110
-            pass
 
     def start_job(self, job: Job, job_index: int) -> None:
         """New job started — update all widgets."""
@@ -548,10 +548,7 @@ class RunApp(App[None]):
 
         elapsed = time.monotonic() - self._start_time
         eta_s = self._snapshot.eta_s
-        if eta_s is not None:
-            time_part = f"{_fmt_time(elapsed)} / ~{_fmt_time(eta_s)}"
-        else:
-            time_part = _fmt_time(elapsed)
+        time_part = f"{_fmt_time(elapsed)} / ~{_fmt_time(eta_s)}" if eta_s is not None else _fmt_time(elapsed)
 
         speed_part = ""
         if self._snapshot.speed is not None:

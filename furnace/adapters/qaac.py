@@ -62,13 +62,17 @@ class QaacAdapter:
         """qaac64 --tvbr 91 --quality 2 --rate keep --no-delay --threading input -o output"""
         cmd = [
             str(self._qaac),
-            "--tvbr", "91",
-            "--quality", "2",
-            "--rate", "keep",
+            "--tvbr",
+            "91",
+            "--quality",
+            "2",
+            "--rate",
+            "keep",
             "--no-delay",
             "--threading",
             str(input_wav),
-            "-o", str(output_m4a),
+            "-o",
+            str(output_m4a),
         ]
 
         def _on_progress_line(line: str) -> bool:

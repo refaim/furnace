@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -10,11 +11,21 @@ from textual.containers import Container
 from textual.screen import Screen
 from textual.widgets import Footer, Header, Input, ListItem, ListView, Static
 
-from furnace.core.models import CropRect, DiscTitle, DownmixMode, Movie, Track, TrackType
+from furnace.core.models import (
+    STEREO_CHANNELS,
+    SURROUND_5_1_CHANNELS,
+    CropRect,
+    DiscTitle,
+    DownmixMode,
+    Movie,
+    Track,
+    TrackType,
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _fmt_size(n: int) -> str:
     """File size in MB."""
@@ -33,6 +44,7 @@ def _fmt_duration(s: float) -> str:
 
 def _fmt_audio_track(
     track: Track,
+    *,
     selected: bool,
     downmix: DownmixMode | None = None,
 ) -> str:
@@ -60,7 +72,7 @@ def _fmt_audio_track(
     return f"\\[{mark}]  {'  '.join(parts)}"
 
 
-def _fmt_subtitle_track(track: Track, selected: bool) -> str:
+def _fmt_subtitle_track(track: Track, *, selected: bool) -> str:
     mark = "x" if selected else " "
     lang = (track.language or "und").ljust(4)
     codec = track.codec_name.upper()
@@ -75,6 +87,7 @@ def _fmt_subtitle_track(track: Track, selected: bool) -> str:
 # TrackSelection result
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class TrackSelection:
     """Result from TrackSelectorScreen.
@@ -83,6 +96,7 @@ class TrackSelection:
     `downmix` — per-track downmix override keyed by (source_file, stream_index).
                 Always empty for subtitle screens.
     """
+
     tracks: list[Track]
     downmix: dict[tuple[Path, int], DownmixMode]
 
@@ -90,6 +104,7 @@ class TrackSelection:
 # ---------------------------------------------------------------------------
 # TrackSelectorScreen
 # ---------------------------------------------------------------------------
+
 
 class TrackSelectorScreen(Screen[TrackSelection]):
     """Screen for selecting audio or subtitle tracks.
@@ -150,7 +165,7 @@ class TrackSelectorScreen(Screen[TrackSelection]):
             )
 
         items: list[ListItem] = []
-        for i, track in enumerate(self._tracks):
+        for i, _track in enumerate(self._tracks):
             label = self._render_line(i)
             items.append(ListItem(Static(label, id=f"track-label-{i}"), id=f"track-item-{i}"))
 
@@ -166,8 +181,8 @@ class TrackSelectorScreen(Screen[TrackSelection]):
         track = self._tracks[index]
         selected = self._selected[index]
         if self._track_type == TrackType.AUDIO:
-            return _fmt_audio_track(track, selected, self._downmix[index])
-        return _fmt_subtitle_track(track, selected)
+            return _fmt_audio_track(track, selected=selected, downmix=self._downmix[index])
+        return _fmt_subtitle_track(track, selected=selected)
 
     def _refresh_item(self, index: int) -> None:
         label_widget = self.query_one(f"#track-label-{index}", Static)
@@ -202,10 +217,10 @@ class TrackSelectorScreen(Screen[TrackSelection]):
         if not self._tracks or self._track_type != TrackType.AUDIO:
             return
         track = self._tracks[self._cursor]
-        if track.channels is None or track.channels <= 2:
+        if track.channels is None or track.channels <= STEREO_CHANNELS:
             return
         new_mode = DownmixMode(mode)
-        if new_mode == DownmixMode.DOWN6 and track.channels <= 6:
+        if new_mode == DownmixMode.DOWN6 and track.channels <= SURROUND_5_1_CHANNELS:
             return
         if self._downmix[self._cursor] == new_mode:
             self._downmix[self._cursor] = None
@@ -214,11 +229,9 @@ class TrackSelectorScreen(Screen[TrackSelection]):
         self._refresh_item(self._cursor)
 
     def action_done(self) -> None:
-        selected_tracks = [
-            t for t, sel in zip(self._tracks, self._selected) if sel
-        ]
+        selected_tracks = [t for t, sel in zip(self._tracks, self._selected, strict=True) if sel]
         downmix_map: dict[tuple[Path, int], DownmixMode] = {}
-        for i, (track, mode) in enumerate(zip(self._tracks, self._downmix)):
+        for i, (track, mode) in enumerate(zip(self._tracks, self._downmix, strict=True)):
             if mode is not None and self._selected[i]:
                 downmix_map[(Path(str(track.source_file)), track.index)] = mode
         self.dismiss(TrackSelection(tracks=selected_tracks, downmix=downmix_map))
@@ -231,10 +244,8 @@ class TrackSelectorScreen(Screen[TrackSelection]):
         if event.item is not None:
             item_id = event.item.id or ""
             if item_id.startswith("track-item-"):
-                try:
+                with contextlib.suppress(ValueError):
                     self._cursor = int(item_id.removeprefix("track-item-"))
-                except ValueError:
-                    pass
 
     def on_click(self, event: object) -> None:
         """Handle click on the Done label."""
@@ -245,6 +256,7 @@ class TrackSelectorScreen(Screen[TrackSelection]):
 # ---------------------------------------------------------------------------
 # PlaylistSelectorScreen
 # ---------------------------------------------------------------------------
+
 
 class PlaylistSelectorScreen(Screen[list[DiscTitle]]):
     """Screen for selecting disc playlists to demux.
@@ -265,9 +277,7 @@ class PlaylistSelectorScreen(Screen[list[DiscTitle]]):
         super().__init__()
         self._disc_label = disc_label
         self._playlists = playlists
-        self._selected: list[bool] = [
-            p.duration_s >= self.MIN_DURATION_S for p in playlists
-        ]
+        self._selected: list[bool] = [p.duration_s >= self.MIN_DURATION_S for p in playlists]
         self._cursor: int = 0
 
     def compose(self) -> ComposeResult:
@@ -312,26 +322,26 @@ class PlaylistSelectorScreen(Screen[list[DiscTitle]]):
         self._refresh_item(self._cursor)
 
     def action_done(self) -> None:
-        result = [p for p, sel in zip(self._playlists, self._selected) if sel]
+        result = [p for p, sel in zip(self._playlists, self._selected, strict=True) if sel]
         self.dismiss(result)
 
     def on_list_view_highlighted(self, event: ListView.Highlighted) -> None:
         if event.item is not None:
             item_id = event.item.id or ""
             if item_id.startswith("pl-item-"):
-                try:
+                with contextlib.suppress(ValueError):
                     self._cursor = int(item_id.removeprefix("pl-item-"))
-                except ValueError:
-                    pass
 
 
 # ---------------------------------------------------------------------------
 # FileSelection result
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class FileSelection:
     """Result from FileSelectorScreen."""
+
     selected: list[Path]
     sar_override: set[Path]  # files with SAR override (64:45)
 
@@ -339,6 +349,7 @@ class FileSelection:
 # ---------------------------------------------------------------------------
 # FileSelectorScreen
 # ---------------------------------------------------------------------------
+
 
 class FileSelectorScreen(Screen[FileSelection]):
     """Screen for selecting demuxed MKV files to process.
@@ -358,7 +369,7 @@ class FileSelectorScreen(Screen[FileSelection]):
     def __init__(
         self,
         files: list[tuple[Path, float, int]],  # (path, duration_s, size_bytes)
-        dvd_files: set[Path] | None = None,    # which files are from DVD (SAR toggle available)
+        dvd_files: set[Path] | None = None,  # which files are from DVD (SAR toggle available)
         preview_cb: Callable[[Path, str | None], None] | None = None,  # (path, aspect_override)
     ) -> None:
         super().__init__()
@@ -431,26 +442,22 @@ class FileSelectorScreen(Screen[FileSelection]):
         self._preview_cb(path, aspect)
 
     def action_done(self) -> None:
-        selected = [f[0] for f, sel in zip(self._files, self._selected) if sel]
-        sar_set = {
-            f[0] for f, sel, sar in zip(self._files, self._selected, self._sar_override)
-            if sel and sar
-        }
+        selected = [f[0] for f, sel in zip(self._files, self._selected, strict=True) if sel]
+        sar_set = {f[0] for f, sel, sar in zip(self._files, self._selected, self._sar_override, strict=True) if sel and sar}
         self.dismiss(FileSelection(selected=selected, sar_override=sar_set))
 
     def on_list_view_highlighted(self, event: ListView.Highlighted) -> None:
         if event.item is not None:
             item_id = event.item.id or ""
             if item_id.startswith("file-item-"):
-                try:
+                with contextlib.suppress(ValueError):
                     self._cursor = int(item_id.removeprefix("file-item-"))
-                except ValueError:
-                    pass
 
 
 # ---------------------------------------------------------------------------
 # CropConfirmScreen
 # ---------------------------------------------------------------------------
+
 
 class CropConfirmScreen(Screen[CropRect | None]):
     """Dialog for confirming detected crop values.
@@ -519,7 +526,7 @@ class CropConfirmScreen(Screen[CropRect | None]):
         error_widget = self.query_one("#crop-error", Static)
         raw = inp.value.strip()
         parts = raw.split(":")
-        if len(parts) != 4:
+        if len(parts) != len(["w", "h", "x", "y"]):
             error_widget.update("[red]Enter exactly 4 values: w:h:x:y[/red]")
             return
         try:
@@ -541,6 +548,7 @@ class CropConfirmScreen(Screen[CropRect | None]):
 # ---------------------------------------------------------------------------
 # LanguageSelectorScreen
 # ---------------------------------------------------------------------------
+
 
 class LanguageSelectorScreen(Screen[str]):
     """Screen for choosing a language for an 'und' track.
@@ -623,15 +631,14 @@ class LanguageSelectorScreen(Screen[str]):
         if event.item is not None:
             item_id = event.item.id or ""
             if item_id.startswith("lang-item-"):
-                try:
+                with contextlib.suppress(ValueError):
                     self._cursor = int(item_id.removeprefix("lang-item-"))
-                except ValueError:
-                    pass
 
 
 # ---------------------------------------------------------------------------
 # FurnacePlanApp
 # ---------------------------------------------------------------------------
+
 
 class _PlanResult:
     """Intermediate container for one movie's selections."""

@@ -3,6 +3,7 @@
 Implements the Encoder protocol using NVEncC for HEVC encoding with NVDEC
 hardware decode, HDR/DV passthrough, and built-in quality metrics.
 """
+
 from __future__ import annotations
 
 import logging
@@ -12,23 +13,24 @@ import subprocess
 from collections.abc import Callable
 from pathlib import Path
 
-from ..core.models import (
-    CropRect,
-    EncodeResult,
-    VideoParams,
-)
-from ..core.progress import ProgressSample
-from ..core.quality import align_dimensions, correct_sar
+from furnace.core.models import CropRect, EncodeResult, VideoParams
+from furnace.core.progress import ProgressSample
+from furnace.core.quality import align_dimensions, correct_sar
+
 from ._subprocess import OutputCallback, run_tool
 
 logger = logging.getLogger(__name__)
+
+# 1440p pixel area (2560x1440). At or above this we pick the 4K-tuned VMAF model.
+_VMAF_4K_MIN_PIXEL_AREA = 2560 * 1440
 
 _NVENCC_PCT_RE = re.compile(r"\[(\d+\.?\d*)%\]")
 _NVENCC_FPS_RE = re.compile(r"(\d+\.?\d*)\s*fps,")
 
 
 def _parse_nvencc_progress_line(
-    line: str, src_fps: float | None = None,
+    line: str,
+    src_fps: float | None = None,
 ) -> ProgressSample | None:
     """Convert one NVEncC progress line into a sample.
 
@@ -88,7 +90,13 @@ def _convert_crop(crop: CropRect, source_width: int, source_height: int) -> tupl
 
 # Codecs supported by NVDEC hardware decoder
 _NVDEC_CODECS: set[str] = {
-    "h264", "hevc", "mpeg4", "vp8", "vp9", "vc1", "av1",
+    "h264",
+    "hevc",
+    "mpeg4",
+    "vp8",
+    "vp9",
+    "vc1",
+    "av1",
 }
 # mpeg1video and mpeg2video are deliberately NOT in this set: NVDEC's
 # MPEG1/2 path is unreliable on interlaced DVD sources (encoder stops
@@ -128,12 +136,15 @@ class NVEncCAdapter:
         try:
             result = subprocess.run(
                 [str(self._nvencc), "--version"],
-                capture_output=True, text=True, timeout=10,
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=True,
             )
             # NVEncC outputs: "NVEncC (x64) X.YY (rZZZZ)" on first line
             m = re.search(r"(\d+\.\d+)", result.stdout)
             self._version_cached: str = m.group(1) if m else ""
-        except Exception:
+        except (OSError, subprocess.SubprocessError):
             self._version_cached = ""
         return self._version_cached
 
@@ -198,10 +209,7 @@ class NVEncCAdapter:
 
         # Hardware decode: NVDEC for supported codecs, sw decode otherwise.
         # Also fall back to avsw when left crop > 0 (NVEncC limitation).
-        use_hwdec = (
-            vp.source_codec in _NVDEC_CODECS
-            and (vp.crop is None or vp.crop.x == 0)
-        )
+        use_hwdec = vp.source_codec in _NVDEC_CODECS and (vp.crop is None or vp.crop.x == 0)
         cmd.append("--avhw" if use_hwdec else "--avsw")
 
         # Codec, profile, bit depth, tier
@@ -210,13 +218,20 @@ class NVEncCAdapter:
 
         # Quality / rate control
         cmd += [
-            "--preset", "P5",
-            "--tune", "uhq",
-            "--qvbr", str(vp.cq),
-            "--aq", "--aq-temporal",
-            "--lookahead", "32",
-            "--lookahead-level", "3",
-            "--multipass", "2pass-quarter",
+            "--preset",
+            "P5",
+            "--tune",
+            "uhq",
+            "--qvbr",
+            str(vp.cq),
+            "--aq",
+            "--aq-temporal",
+            "--lookahead",
+            "32",
+            "--lookahead-level",
+            "3",
+            "--multipass",
+            "2pass-quarter",
         ]
 
         # GOP structure
@@ -226,7 +241,9 @@ class NVEncCAdapter:
         # --- Crop ---
         if vp.crop is not None:
             left, top, right, bottom = _convert_crop(
-                vp.crop, vp.source_width, vp.source_height,
+                vp.crop,
+                vp.source_width,
+                vp.source_height,
             )
             cmd += ["--crop", f"{left},{top},{right},{bottom}"]
             # Align final dimensions to mod-8 for HEVC CU
@@ -283,7 +300,7 @@ class NVEncCAdapter:
             n_threads = max(1, (os.cpu_count() or 4) - 2)
             # Select VMAF model by resolution
             pixel_area = vp.crop.w * vp.crop.h if vp.crop is not None else vp.source_width * vp.source_height
-            model = "vmaf_4k_v0.6.1" if pixel_area >= 3_686_400 else "vmaf_v0.6.1"
+            model = "vmaf_4k_v0.6.1" if pixel_area >= _VMAF_4K_MIN_PIXEL_AREA else "vmaf_v0.6.1"
             cmd.append("--ssim")
             cmd += ["--vmaf", f"model={model},threads={n_threads},subsample=8"]
 
@@ -302,25 +319,25 @@ class NVEncCAdapter:
         input_path: Path,
         output_path: Path,
         video_params: VideoParams,
-        source_size: int,
+        *,
         on_progress: Callable[[ProgressSample], None] | None = None,
         vmaf_enabled: bool = False,
         rpu_path: Path | None = None,
     ) -> EncodeResult:
         """Encode video via NVEncC. Parses stderr for progress via the unified parser."""
         cmd = self._build_encode_cmd(
-            input_path, output_path, video_params,
-            vmaf_enabled=vmaf_enabled, rpu_path=rpu_path,
+            input_path,
+            output_path,
+            video_params,
+            vmaf_enabled=vmaf_enabled,
+            rpu_path=rpu_path,
         )
         str_cmd = [str(c) for c in cmd]
         logger.debug("nvencc cmd: %s", " ".join(str_cmd))
 
         encoder_settings = self._build_encoder_settings(video_params)
 
-        src_fps = (
-            video_params.fps_num / video_params.fps_den
-            if video_params.fps_den else 0.0
-        )
+        src_fps = video_params.fps_num / video_params.fps_den if video_params.fps_den else 0.0
         ssim_score: float | None = None
         vmaf_score: float | None = None
         ssim_re = re.compile(r"All:\s*(\d+\.\d+)")
@@ -361,4 +378,3 @@ class NVEncCAdapter:
             ssim_score=ssim_score,
             vmaf_score=vmaf_score,
         )
-

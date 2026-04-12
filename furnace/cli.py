@@ -1,12 +1,56 @@
 from __future__ import annotations
 
+import json
 import logging
+import os
+import shutil
 import threading
-import time
 from collections.abc import Callable
 from pathlib import Path
 
 import typer
+from rich.console import Console
+from textual.app import App, ComposeResult
+from textual.widgets import Header
+
+from .adapters.dovi_tool import DoviToolAdapter
+from .adapters.eac3to import Eac3toAdapter
+from .adapters.ffmpeg import FFmpegAdapter
+from .adapters.makemkv import MakemkvAdapter
+from .adapters.mkclean import MkcleanAdapter
+from .adapters.mkvmerge import MkvmergeAdapter
+from .adapters.mkvpropedit import MkvpropeditAdapter
+from .adapters.mpv import MpvAdapter
+from .adapters.nvencc import NVEncCAdapter
+from .adapters.qaac import QaacAdapter
+from .config import load_config
+from .core.models import (
+    DiscSource,
+    DiscTitle,
+    DiscType,
+    DownmixMode,
+    JobStatus,
+    Movie,
+    ScanResult,
+    Track,
+    TrackType,
+)
+from .plan import load_plan, save_plan
+from .services.analyzer import Analyzer
+from .services.disc_demuxer import DiscDemuxer
+from .services.executor import Executor
+from .services.planner import PlannerService
+from .services.scanner import Scanner
+from .ui.progress import ReportPrinter
+from .ui.run_tui import RunApp
+from .ui.tui import (
+    FileSelection,
+    FileSelectorScreen,
+    LanguageSelectorScreen,
+    PlaylistSelectorScreen,
+    TrackSelection,
+    TrackSelectorScreen,
+)
 
 app = typer.Typer()
 
@@ -22,9 +66,7 @@ def _setup_logging(log_dir: Path, *, console: bool = True) -> None:
     # File: everything (DEBUG+)
     log_path = log_dir / "furnace.log"
     file_handler = logging.FileHandler(log_path, encoding="utf-8")
-    file_handler.setFormatter(
-        logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s")
-    )
+    file_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
     root.addHandler(file_handler)
 
     if not console:
@@ -37,35 +79,13 @@ def _setup_logging(log_dir: Path, *, console: bool = True) -> None:
     root.addHandler(console_handler)
 
 
-def _start_esc_watcher(shutdown_event: threading.Event) -> None:
-    """Watch for ESC key press and set shutdown_event when detected.
-
-    Uses msvcrt on Windows. On non-Windows platforms this function is a no-op.
-    """
-    import sys
-    if sys.platform != "win32":
-        return
-
-    import msvcrt
-
-    def _watch() -> None:
-        while not shutdown_event.is_set():
-            if msvcrt.kbhit():
-                ch = msvcrt.getwch()
-                if ch == "\x1b":  # ESC
-                    shutdown_event.set()
-                    return
-            time.sleep(0.05)
-
-    t = threading.Thread(target=_watch, daemon=True)
-    t.start()
-
-
 @app.command()
 def plan(
     source: Path = typer.Argument(..., help="Video file or directory"),
     output: Path = typer.Option(..., "-o", help="Output directory"),
-    audio_lang: str = typer.Option(..., "--audio-lang", "-al", help="Audio languages, comma-separated (e.g. jpn or rus,eng)"),
+    audio_lang: str = typer.Option(
+        ..., "--audio-lang", "-al", help="Audio languages, comma-separated (e.g. jpn or rus,eng)"
+    ),
     sub_lang: str = typer.Option(..., "--sub-lang", "-sl", help="Subtitle languages, comma-separated (e.g. rus,eng)"),
     names: Path | None = typer.Option(None, "--names", help="Rename map file"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Show plan without saving"),
@@ -77,20 +97,6 @@ def plan(
     audio_lang_list = [x.strip() for x in audio_lang.split(",") if x.strip()]
     sub_lang_list = [x.strip() for x in sub_lang.split(",") if x.strip()]
 
-    # Lazy imports to avoid circular imports
-    from .adapters.eac3to import Eac3toAdapter
-    from .adapters.ffmpeg import FFmpegAdapter
-    from .adapters.makemkv import MakemkvAdapter
-    from .adapters.mpv import MpvAdapter
-    from .config import load_config
-    from .core.models import DiscTitle, DiscSource, DiscType, DownmixMode, Movie, ScanResult, Track, TrackType
-    from .plan import save_plan
-    from .services.analyzer import Analyzer
-    from .services.disc_demuxer import DiscDemuxer
-    from .services.planner import PlannerService
-    from .services.scanner import Scanner
-    from .ui.tui import FileSelection, FileSelectorScreen, LanguageSelectorScreen, PlaylistSelectorScreen, TrackSelection, TrackSelectorScreen
-
     # 1. Load config
     cfg = load_config(config)
 
@@ -100,7 +106,13 @@ def plan(
 
     logger.debug(
         "plan command started: source=%s output=%s audio_lang=%s sub_lang=%s names=%s dry_run=%s vmaf=%s",
-        source, output, audio_lang, sub_lang, names, dry_run, vmaf,
+        source,
+        output,
+        audio_lang,
+        sub_lang,
+        names,
+        dry_run,
+        vmaf,
     )
 
     # 3. Create adapters (only those needed for planning)
@@ -123,9 +135,6 @@ def plan(
     sar_override_paths: set[Path] = set()
 
     if detected_discs and not dry_run:
-        from textual.app import App, ComposeResult
-        from textual.widgets import Header
-
         typer.echo(f"[furnace] Found {len(detected_discs)} disc(s)")
 
         # For each disc, list titles and let user pick
@@ -153,6 +162,7 @@ def plan(
 
                 class _PlaylistApp(App[list[DiscTitle]]):
                     TITLE = "Furnace"
+
                     def compose(self) -> ComposeResult:
                         yield Header()
 
@@ -208,6 +218,7 @@ def plan(
 
                 class _FileApp(App[FileSelection]):
                     TITLE = "Furnace"
+
                     def compose(self) -> ComposeResult:
                         yield Header()
 
@@ -234,7 +245,6 @@ def plan(
     # 5. Load names map if provided
     names_map: dict[str, str] | None = None
     if names is not None:
-        import json
         with names.open("r", encoding="utf-8") as f:
             names_map = json.load(f)
 
@@ -244,11 +254,13 @@ def plan(
 
     # Add demuxed MKVs as extra ScanResult entries
     for mkv_path in demuxed_paths:
-        scan_results.append(ScanResult(
-            main_file=mkv_path,
-            satellite_files=[],
-            output_path=output / mkv_path.stem / (mkv_path.stem + ".mkv"),
-        ))
+        scan_results.append(
+            ScanResult(
+                main_file=mkv_path,
+                satellite_files=[],
+                output_path=output / mkv_path.stem / (mkv_path.stem + ".mkv"),
+            )
+        )
 
     # 7. Analyzer.analyze() -> list[tuple[Movie, Path]]
     analyzer = Analyzer(prober=ffmpeg_adapter)
@@ -261,24 +273,26 @@ def plan(
     # 8. PlannerService.create_plan() with TUI track selector
     def _make_preview_track_cb(movie: Movie) -> Callable[[Track], None]:
         """Create a preview callback with closure over movie and mpv_adapter."""
+
         def _preview_track(track: Track) -> None:
             if track.track_type == TrackType.AUDIO:
                 mpv_adapter.preview_audio(movie.main_file, track.source_file, track.index)
             else:
                 mpv_adapter.preview_subtitle(movie.main_file, track.source_file, track.index)
+
         return _preview_track
 
     def _select_tracks_tui(
-        movie: Movie, candidates: list[Track], track_type: TrackType,
+        movie: Movie,
+        candidates: list[Track],
+        track_type: TrackType,
     ) -> TrackSelection:
         """Run Textual TrackSelectorScreen synchronously for user to pick tracks."""
-        from textual.app import App, ComposeResult
-        from textual.widgets import Header
-
         selection: TrackSelection = TrackSelection(tracks=[], downmix={})
 
         class _SelectorApp(App[TrackSelection]):
             TITLE = "Furnace"
+
             def compose(self) -> ComposeResult:
                 yield Header()
 
@@ -304,7 +318,9 @@ def plan(
     downmix_overrides: dict[tuple[Path, int], DownmixMode] = {}
 
     def _select_tracks_tui_for_planner(
-        movie: Movie, candidates: list[Track], track_type: TrackType,
+        movie: Movie,
+        candidates: list[Track],
+        track_type: TrackType,
     ) -> list[Track]:
         result = _select_tracks_tui(movie, candidates, track_type)
         if track_type == TrackType.AUDIO:
@@ -313,13 +329,11 @@ def plan(
 
     def _resolve_und_language_tui(movie: Movie, track: Track, lang_list: list[str]) -> str:
         """Run Textual LanguageSelectorScreen synchronously for user to pick a language."""
-        from textual.app import App, ComposeResult
-        from textual.widgets import Header
-
         chosen: str = lang_list[0]  # fallback
 
         class _LangApp(App[str]):
             TITLE = "Furnace"
+
             def compose(self) -> ComposeResult:
                 yield Header()
 
@@ -382,19 +396,6 @@ def run(
     config: Path | None = typer.Option(None, "--config", help="Path to config file"),
 ) -> None:
     """Read plan and encode all pending jobs."""
-    # Lazy imports to avoid circular imports
-    from .adapters.eac3to import Eac3toAdapter
-    from .adapters.ffmpeg import FFmpegAdapter
-    from .adapters.mkclean import MkcleanAdapter
-    from .adapters.mkvmerge import MkvmergeAdapter
-    from .adapters.mkvpropedit import MkvpropeditAdapter
-    from .adapters.qaac import QaacAdapter
-    from .config import load_config
-    from .plan import load_plan
-    from .services.executor import Executor
-    from .ui.progress import ReportPrinter
-    from .ui.run_tui import RunApp
-
     # 1. Load config
     cfg = load_config(config)
 
@@ -408,10 +409,7 @@ def run(
 
     logger.debug("run command started: plan_file=%s", plan_file)
 
-    pending_count = sum(
-        1 for j in plan_obj.jobs
-        if j.status.value in ("pending", "error")
-    )
+    pending_count = sum(1 for j in plan_obj.jobs if j.status.value in ("pending", "error"))
 
     # 4. ESC handling: RunApp binds ESC via Textual; shutdown_event shared with executor
     shutdown_event = threading.Event()
@@ -420,9 +418,6 @@ def run(
     # 5. Define executor factory — RunApp calls this in a worker thread,
     #    passing itself as the progress object.
     def _run_executor(progress: RunApp) -> None:
-        from .adapters.dovi_tool import DoviToolAdapter
-        from .adapters.nvencc import NVEncCAdapter
-
         tool_output = progress.add_tool_line
 
         ffmpeg_adapter = FFmpegAdapter(cfg.ffmpeg, cfg.ffprobe, on_output=tool_output)
@@ -467,26 +462,22 @@ def run(
     # If user requested shutdown (ESC/Ctrl+Q), exit immediately
     # to avoid waiting for worker thread cleanup
     if shutdown_event.is_set():
-        import os
         os._exit(0)
 
     # 7. Reload plan from disk (executor updates JSON after each job)
     plan_obj = load_plan(plan_file)
 
     # 8. ReportPrinter.print_report() — after TUI exits, console is free
-    from rich.console import Console
     console = Console()
     printer = ReportPrinter()
     printer.print_report(plan_obj, console)
 
     # Cleanup demux directory after successful run
     if plan_obj.demux_dir:
-        from .core.models import JobStatus
         demux_path = Path(plan_obj.demux_dir)
         if demux_path.exists():
             all_done = all(j.status == JobStatus.DONE for j in plan_obj.jobs)
             if all_done:
-                import shutil
                 shutil.rmtree(demux_path, ignore_errors=True)
                 logger.info("Cleaned up demux directory: %s", demux_path)
 

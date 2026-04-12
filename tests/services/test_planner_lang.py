@@ -43,45 +43,45 @@ def _sub_track(language: str, index: int = 0, is_forced: bool = False) -> Track:
 
 
 class TestSortAndSetDefault:
-    def test_sorts_by_lang_filter_order(self):
+    def test_sorts_by_lang_filter_order(self) -> None:
         tracks = [_audio_track("eng", index=0), _audio_track("rus", index=1), _audio_track("jpn", index=2)]
         planner = PlannerService(prober=MagicMock(), previewer=None)
         result = planner._sort_and_set_default(tracks, ["jpn", "rus", "eng"])
         assert [t.language for t in result] == ["jpn", "rus", "eng"]
 
-    def test_first_track_is_default(self):
+    def test_first_track_is_default(self) -> None:
         tracks = [_audio_track("eng", index=0), _audio_track("rus", index=1)]
         planner = PlannerService(prober=MagicMock(), previewer=None)
         result = planner._sort_and_set_default(tracks, ["rus", "eng"])
         assert result[0].is_default is True
         assert result[1].is_default is False
 
-    def test_empty_list(self):
+    def test_empty_list(self) -> None:
         planner = PlannerService(prober=MagicMock(), previewer=None)
         result = planner._sort_and_set_default([], ["rus"])
         assert result == []
 
 
 class TestAudioLangFilter:
-    def test_filters_by_audio_lang(self):
+    def test_filters_by_audio_lang(self) -> None:
         tracks = [_audio_track("jpn"), _audio_track("eng"), _audio_track("rus")]
         planner = PlannerService(prober=MagicMock(), previewer=None)
         result = planner._filter_audio_tracks_by_lang(tracks, ["jpn"])
         assert [t.language for t in result] == ["jpn"]
 
-    def test_und_always_included(self):
+    def test_und_always_included(self) -> None:
         tracks = [_audio_track("jpn"), _audio_track("und")]
         planner = PlannerService(prober=MagicMock(), previewer=None)
         result = planner._filter_audio_tracks_by_lang(tracks, ["jpn"])
         assert [t.language for t in result] == ["jpn", "und"]
 
-    def test_multiple_langs(self):
+    def test_multiple_langs(self) -> None:
         tracks = [_audio_track("jpn"), _audio_track("eng"), _audio_track("rus")]
         planner = PlannerService(prober=MagicMock(), previewer=None)
         result = planner._filter_audio_tracks_by_lang(tracks, ["jpn", "eng"])
         assert [t.language for t in result] == ["jpn", "eng"]
 
-    def test_order_follows_lang_filter(self):
+    def test_order_follows_lang_filter(self) -> None:
         """Tracks are sorted by lang_filter order, not source order."""
         tracks = [_audio_track("eng"), _audio_track("jpn"), _audio_track("rus")]
         planner = PlannerService(prober=MagicMock(), previewer=None)
@@ -90,31 +90,31 @@ class TestAudioLangFilter:
 
 
 class TestSubLangFilter:
-    def test_filters_by_sub_lang(self):
+    def test_filters_by_sub_lang(self) -> None:
         tracks = [_sub_track("rus"), _sub_track("eng"), _sub_track("jpn")]
         planner = PlannerService(prober=MagicMock(), previewer=None)
         result = planner._filter_sub_tracks_by_lang(tracks, ["rus", "eng"])
         assert [t.language for t in result] == ["rus", "eng"]
 
-    def test_forced_subs_discarded(self):
+    def test_forced_subs_discarded(self) -> None:
         tracks = [_sub_track("rus"), _sub_track("eng", is_forced=True)]
         planner = PlannerService(prober=MagicMock(), previewer=None)
         result = planner._filter_sub_tracks_by_lang(tracks, ["rus", "eng"])
         assert [t.language for t in result] == ["rus"]
 
-    def test_und_always_included(self):
+    def test_und_always_included(self) -> None:
         tracks = [_sub_track("rus"), _sub_track("und")]
         planner = PlannerService(prober=MagicMock(), previewer=None)
         result = planner._filter_sub_tracks_by_lang(tracks, ["rus"])
         assert [t.language for t in result] == ["rus", "und"]
 
-    def test_forced_und_discarded(self):
+    def test_forced_und_discarded(self) -> None:
         tracks = [_sub_track("rus"), _sub_track("und", is_forced=True)]
         planner = PlannerService(prober=MagicMock(), previewer=None)
         result = planner._filter_sub_tracks_by_lang(tracks, ["rus"])
         assert [t.language for t in result] == ["rus"]
 
-    def test_order_follows_lang_filter(self):
+    def test_order_follows_lang_filter(self) -> None:
         """Subs sorted by lang_filter order, not source order."""
         tracks = [_sub_track("eng"), _sub_track("rus"), _sub_track("jpn")]
         planner = PlannerService(prober=MagicMock(), previewer=None)
@@ -123,41 +123,41 @@ class TestSubLangFilter:
 
 
 class TestResolveUndLanguages:
-    def _dummy_movie(self) -> MagicMock:
+    def dummy_movie(self) -> MagicMock:
         return MagicMock()
 
-    def test_no_und_tracks_unchanged(self):
+    def test_no_und_tracks_unchanged(self) -> None:
         tracks = [_audio_track("jpn", index=0), _audio_track("eng", index=1)]
         planner = PlannerService(prober=MagicMock(), previewer=None)
         cb = MagicMock()
-        movie = self._dummy_movie()
+        movie = self.dummy_movie()
         result = planner._resolve_und_languages(movie, tracks, ["jpn", "eng"], cb)
         cb.assert_not_called()
         assert [t.language for t in result] == ["jpn", "eng"]
 
-    def test_single_lang_auto_assigns(self):
+    def test_single_lang_auto_assigns(self) -> None:
         tracks = [_audio_track("jpn", index=0), _audio_track("und", index=1)]
         planner = PlannerService(prober=MagicMock(), previewer=None)
         cb = MagicMock()
-        movie = self._dummy_movie()
+        movie = self.dummy_movie()
         result = planner._resolve_und_languages(movie, tracks, ["jpn"], cb)
         cb.assert_not_called()
         assert [t.language for t in result] == ["jpn", "jpn"]
 
-    def test_multiple_langs_calls_callback(self):
+    def test_multiple_langs_calls_callback(self) -> None:
         tracks = [_audio_track("jpn", index=0), _audio_track("und", index=1)]
         planner = PlannerService(prober=MagicMock(), previewer=None)
         cb = MagicMock(return_value="eng")
-        movie = self._dummy_movie()
+        movie = self.dummy_movie()
         result = planner._resolve_und_languages(movie, tracks, ["jpn", "eng"], cb)
         cb.assert_called_once_with(movie, tracks[1], ["jpn", "eng"])
         assert [t.language for t in result] == ["jpn", "eng"]
 
-    def test_multiple_und_tracks_each_gets_callback(self):
+    def test_multiple_und_tracks_each_gets_callback(self) -> None:
         tracks = [_audio_track("und", index=0), _audio_track("und", index=1)]
         planner = PlannerService(prober=MagicMock(), previewer=None)
         cb = MagicMock(side_effect=["rus", "eng"])
-        movie = self._dummy_movie()
+        movie = self.dummy_movie()
         result = planner._resolve_und_languages(movie, tracks, ["rus", "eng"], cb)
         assert cb.call_count == 2
         assert [t.language for t in result] == ["rus", "eng"]

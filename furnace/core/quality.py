@@ -4,13 +4,13 @@ import math
 
 from .models import CropRect
 
-# CQ anchors по спецификации Furnace (отличаются от Crucible)
-# Примечание: CQ anchors намеренно отличаются от Crucible.
-# Crucible использовал CRF для x264/x265 (software), Furnace использует CQ для NVENC (hardware).
-# NVENC CQ шкала не эквивалентна CRF -- значения подобраны для hevc_nvenc с preset p5 + UHQ tune.
+# CQ anchors per the Furnace spec. Deliberately different from Crucible:
+# Crucible used CRF for x264/x265 (software); Furnace uses CQ for NVENC (hardware).
+# The NVENC CQ scale is not equivalent to CRF -- these values are tuned for
+# hevc_nvenc with preset p5 + UHQ tune.
 CQ_ANCHORS: list[tuple[int, int]] = [
-    (409_920, 22),    # SD    854x480
-    (921_600, 24),    # 720p  1280x720
+    (409_920, 22),  # SD    854x480
+    (921_600, 24),  # 720p  1280x720
     (2_073_600, 25),  # 1080p 1920x1080
     (3_686_400, 28),  # 1440p 2560x1440
     (8_294_400, 31),  # 4K    3840x2160
@@ -18,7 +18,7 @@ CQ_ANCHORS: list[tuple[int, int]] = [
 
 
 def interpolate_cq(pixel_area: int) -> int:
-    """Линейная интерполяция CQ по площади пикселей."""
+    """Linear interpolation of CQ by pixel area."""
     if pixel_area <= CQ_ANCHORS[0][0]:
         return CQ_ANCHORS[0][1]
     if pixel_area >= CQ_ANCHORS[-1][0]:
@@ -33,7 +33,7 @@ def interpolate_cq(pixel_area: int) -> int:
 
 
 def calculate_gop(fps_num: int, fps_den: int) -> int:
-    """GOP = ceil(fps) * 5 (5-секундный интервал ключевых кадров)."""
+    """GOP = ceil(fps) * 5 (5-second keyframe interval)."""
     return math.ceil(fps_num / fps_den) * 5
 
 
@@ -52,7 +52,6 @@ def align_dimensions(w: int, h: int, x: int = 0, y: int = 0) -> CropRect:
     )
 
 
-
 def correct_sar(width: int, height: int, sar_num: int, sar_den: int) -> tuple[int, int]:
     """Correct non-square pixel aspect ratio by scaling up the smaller dimension.
 
@@ -63,5 +62,3 @@ def correct_sar(width: int, height: int, sar_num: int, sar_den: int) -> tuple[in
     if sar_num > sar_den:
         return round(width * sar_num / sar_den), height
     return width, round(height * sar_den / sar_num)
-
-

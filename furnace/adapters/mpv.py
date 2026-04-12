@@ -22,7 +22,7 @@ class MpvAdapter:
             f"--aid={stream_index}",
         ]
         logger.info("mpv preview_audio cmd: %s", " ".join(cmd))
-        subprocess.run(cmd)
+        subprocess.run(cmd, check=False)
 
     def preview_subtitle(self, video_path: Path, sub_path: Path, stream_index: int) -> None:
         """mpv video --sub-file=sub --sid=index. Blocks until mpv closes."""
@@ -33,7 +33,7 @@ class MpvAdapter:
             f"--sid={stream_index}",
         ]
         logger.info("mpv preview_subtitle cmd: %s", " ".join(cmd))
-        subprocess.run(cmd)
+        subprocess.run(cmd, check=False)
 
     def preview_file(self, path: Path, *, aspect_override: str | None = None) -> None:
         """mpv file. Blocks until mpv closes."""
@@ -41,4 +41,4 @@ class MpvAdapter:
         if aspect_override:
             cmd.append(f"--video-aspect-override={aspect_override}")
         logger.info("mpv preview_file cmd: %s", " ".join(cmd))
-        subprocess.run(cmd)
+        subprocess.run(cmd, check=False)

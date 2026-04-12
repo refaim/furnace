@@ -3,12 +3,17 @@ from __future__ import annotations
 import datetime
 import logging
 import uuid
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from collections.abc import Callable
-
-from ..core.models import (
+from furnace import VERSION as FURNACE_VERSION
+from furnace.core.detect import detect_video_system, is_dvd_resolution, resolve_color_metadata
+from furnace.core.models import (
+    STEREO_CHANNELS,
+    SURROUND_5_1_CHANNELS,
+    AudioAction,
+    AudioCodecId,
     AudioInstruction,
     CropRect,
     DownmixMode,
@@ -17,23 +22,21 @@ from ..core.models import (
     JobStatus,
     Movie,
     Plan,
+    SubtitleAction,
+    SubtitleCodecId,
     SubtitleInstruction,
     Track,
     TrackType,
     VideoInfo,
     VideoParams,
 )
-from ..core.ports import Previewer, Prober
-from ..core.quality import (
-    calculate_gop,
-    interpolate_cq,
-)
-from ..core.detect import detect_video_system, is_dvd_resolution, resolve_color_metadata
-from ..core.rules import get_audio_action, get_subtitle_action
-
-from furnace import VERSION as FURNACE_VERSION
+from furnace.core.ports import Previewer, Prober
+from furnace.core.quality import calculate_gop, interpolate_cq
+from furnace.core.rules import get_audio_action, get_subtitle_action
 
 logger = logging.getLogger(__name__)
+
+_DV_PROFILE_FEL = 7  # Dolby Vision FEL (Full Enhancement Layer) — needs P7 -> P8.1 conversion
 
 # ITU-R BT.601 PAL 4:3 sample aspect ratio. Applied as a SAR override to DVD
 # sources that ffprobe reports as square-pixel 720x480/720x576 — the correct
@@ -67,9 +70,9 @@ class PlannerService:
         movies: list[tuple[Movie, Path]],
         audio_lang_filter: list[str],
         sub_lang_filter: list[str],
+        *,
         vmaf_enabled: bool,
         dry_run: bool,
-        *,
         sar_overrides: set[Path] | None = None,
         downmix_overrides: dict[tuple[Path, int], DownmixMode] | None = None,
     ) -> Plan:
@@ -96,14 +99,15 @@ class PlannerService:
         effective_overrides: dict[tuple[Path, int], DownmixMode] = (
             downmix_overrides if downmix_overrides is not None else {}
         )
-        effective_sar_overrides: set[Path] = (
-            sar_overrides if sar_overrides is not None else set()
-        )
+        effective_sar_overrides: set[Path] = sar_overrides if sar_overrides is not None else set()
 
         for movie, output_path in movies:
             job = self._build_job(
-                movie, output_path, audio_lang_filter, sub_lang_filter,
-                vmaf_enabled, dry_run,
+                movie,
+                output_path,
+                audio_lang_filter,
+                sub_lang_filter,
+                dry_run=dry_run,
                 sar_overrides=effective_sar_overrides,
                 downmix_overrides=effective_overrides,
             )
@@ -127,9 +131,8 @@ class PlannerService:
         output_path: Path,
         audio_lang_filter: list[str],
         sub_lang_filter: list[str],
-        vmaf_enabled: bool,
-        dry_run: bool,
         *,
+        dry_run: bool,
         sar_overrides: set[Path],
         downmix_overrides: dict[tuple[Path, int], DownmixMode],
     ) -> Job | None:
@@ -140,7 +143,8 @@ class PlannerService:
             try:
                 is_dvd = is_dvd_resolution(movie.video.width, movie.video.height)
                 raw_crop = self._prober.detect_crop(
-                    movie.main_file, movie.video.duration_s,
+                    movie.main_file,
+                    movie.video.duration_s,
                     interlaced=movie.video.interlaced,
                     is_dvd=is_dvd,
                 )
@@ -150,24 +154,31 @@ class PlannerService:
                     if crop.w == movie.video.width and crop.h == movie.video.height:
                         logger.info(
                             "%s: no black bars detected (crop equals full frame %dx%d)",
-                            movie.main_file.name, movie.video.width, movie.video.height,
+                            movie.main_file.name,
+                            movie.video.width,
+                            movie.video.height,
                         )
                         crop = None
                     else:
                         logger.info(
                             "%s: crop detected %d:%d:%d:%d (source %dx%d)",
                             movie.main_file.name,
-                            crop.w, crop.h, crop.x, crop.y,
-                            movie.video.width, movie.video.height,
+                            crop.w,
+                            crop.h,
+                            crop.x,
+                            crop.y,
+                            movie.video.width,
+                            movie.video.height,
                         )
                 else:
                     logger.warning("%s: cropdetect unable to determine crop", movie.main_file.name)
-            except Exception as exc:
+            except (OSError, RuntimeError, ValueError) as exc:
                 logger.warning("Crop detection failed for %s: %s", movie.main_file.name, exc)
 
         # Build video params
         video_params = self._build_video_params(
-            movie.video, crop,
+            movie.video,
+            crop,
             source_file=movie.main_file,
             sar_overrides=sar_overrides,
         )
@@ -217,7 +228,7 @@ class PlannerService:
             is_default = i == 0
             track_key = (Path(track.source_file), track.index)
             track_downmix = downmix_overrides.get(track_key)
-            audio_instr = self._build_audio_instruction(track, is_default, track_downmix)
+            audio_instr = self._build_audio_instruction(track, is_default=is_default, downmix=track_downmix)
             audio_instructions.append(audio_instr)
 
         # Resolve und languages for selected subs
@@ -229,7 +240,7 @@ class PlannerService:
         sub_instructions: list[SubtitleInstruction] = []
         for i, track in enumerate(selected_subs):
             is_default = i == 0
-            sub_instr = self._build_subtitle_instruction(track, is_default)
+            sub_instr = self._build_subtitle_instruction(track, is_default=is_default)
             sub_instructions.append(sub_instr)
 
         # Attachments as dicts
@@ -249,7 +260,7 @@ class PlannerService:
         # Source files list
         source_files = [str(movie.main_file)] + [str(p) for p in movie.satellite_files]
 
-        job = Job(
+        return Job(
             id=str(uuid.uuid4()),
             source_files=source_files,
             output_file=str(output_path),
@@ -266,23 +277,23 @@ class PlannerService:
             output_size=None,
             duration_s=movie.video.duration_s,
         )
-        return job
 
     def _filter_audio_tracks_by_lang(
-        self, tracks: list[Track], lang_filter: list[str],
+        self,
+        tracks: list[Track],
+        lang_filter: list[str],
     ) -> list[Track]:
         """Filter audio tracks: keep matching languages + 'und', sort by lang_filter order."""
         filtered = [t for t in tracks if t.language in lang_filter or t.language == "und"]
         return self._sort_and_set_default(filtered, lang_filter)
 
     def _filter_sub_tracks_by_lang(
-        self, tracks: list[Track], lang_filter: list[str],
+        self,
+        tracks: list[Track],
+        lang_filter: list[str],
     ) -> list[Track]:
         """Filter subtitle tracks: keep matching languages + 'und', discard forced, sort by lang_filter order."""
-        filtered = [
-            t for t in tracks
-            if not t.is_forced and (t.language in lang_filter or t.language == "und")
-        ]
+        filtered = [t for t in tracks if not t.is_forced and (t.language in lang_filter or t.language == "und")]
         return self._sort_and_set_default(filtered, lang_filter)
 
     def _sort_and_set_default(
@@ -324,7 +335,9 @@ class PlannerService:
         return tracks
 
     def _auto_select_from_candidates(
-        self, candidates: list[Track], track_type: TrackType,
+        self,
+        candidates: list[Track],
+        track_type: TrackType,
     ) -> list[Track] | None:
         """If exactly one track per language -> auto-select.
         For AUDIO only: additionally force TUI if any candidate has >2 channels
@@ -342,10 +355,10 @@ class PlannerService:
             if len(group) > 1:
                 return None
 
-        # X-A: for audio only, any candidate with >2 channels forces the TUI
+        # X-A: for audio only, any candidate with more than stereo forces the TUI
         if track_type == TrackType.AUDIO:
             for track in candidates:
-                if track.channels is not None and track.channels > 2:
+                if track.channels is not None and track.channels > STEREO_CHANNELS:
                     return None
 
         return candidates
@@ -360,10 +373,7 @@ class PlannerService:
     ) -> VideoParams:
         """CQ interpolation, GOP calc, colorspace determination, deinterlace detection."""
         # Use cropped area for CQ if crop is applied
-        if crop is not None:
-            pixel_area = crop.w * crop.h
-        else:
-            pixel_area = video.pixel_area
+        pixel_area = crop.w * crop.h if crop is not None else video.pixel_area
 
         cq = interpolate_cq(pixel_area)
         gop = calculate_gop(video.fps_num, video.fps_den)
@@ -387,10 +397,7 @@ class PlannerService:
         # DV mode
         dv_mode: DvMode | None = None
         if video.hdr.is_dolby_vision:
-            if video.hdr.dv_profile == 7:
-                dv_mode = DvMode.TO_8_1
-            else:
-                dv_mode = DvMode.COPY
+            dv_mode = DvMode.TO_8_1 if video.hdr.dv_profile == _DV_PROFILE_FEL else DvMode.COPY
 
         # HDR metadata passthrough
         hdr = video.hdr if (video.hdr.mastering_display or video.hdr.content_light) else None
@@ -428,20 +435,19 @@ class PlannerService:
     def _build_audio_instruction(
         self,
         track: Track,
+        *,
         is_default: bool,
         downmix: DownmixMode | None = None,
     ) -> AudioInstruction:
         """Route through rules.get_audio_action(), unless downmix forces
         DECODE_ENCODE. Validates downmix applicability."""
-        from ..core.models import AudioAction, AudioCodecId
-
         if downmix is not None:
-            if track.channels is None or track.channels <= 2:
+            if track.channels is None or track.channels <= STEREO_CHANNELS:
                 raise ValueError(
                     f"Downmix not applicable: track has {track.channels} channels "
                     f"({track.source_file} index {track.index})"
                 )
-            if downmix == DownmixMode.DOWN6 and track.channels <= 6:
+            if downmix == DownmixMode.DOWN6 and track.channels <= SURROUND_5_1_CHANNELS:
                 raise ValueError(
                     f"DOWN6 not applicable: track has {track.channels} channels "
                     f"({track.source_file} index {track.index})"
@@ -469,10 +475,8 @@ class PlannerService:
             downmix=downmix,
         )
 
-    def _build_subtitle_instruction(self, track: Track, is_default: bool) -> SubtitleInstruction:
+    def _build_subtitle_instruction(self, track: Track, *, is_default: bool) -> SubtitleInstruction:
         """Route through rules.get_subtitle_action()."""
-        from ..core.models import SubtitleAction, SubtitleCodecId
-
         if track.codec_id is not None and not isinstance(track.codec_id, SubtitleCodecId):
             action = SubtitleAction.COPY
         elif track.codec_id is not None:

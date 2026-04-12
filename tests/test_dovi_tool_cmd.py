@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import tempfile
 from pathlib import Path
 
 from furnace.adapters.dovi_tool import DoviToolAdapter
@@ -26,7 +27,8 @@ class TestDoviToolCommand:
 
     def test_output_flag(self) -> None:
         adapter = DoviToolAdapter(Path("dovi_tool.exe"))
-        cmd = adapter._build_extract_cmd(Path("input.mkv"), Path("/tmp/RPU.bin"), DvMode.COPY)
+        rpu_path = Path(tempfile.gettempdir()) / "RPU.bin"
+        cmd = adapter._build_extract_cmd(Path("input.mkv"), rpu_path, DvMode.COPY)
         str_cmd = [str(c) for c in cmd]
         o_idx = str_cmd.index("-o")
-        assert str_cmd[o_idx + 1] == "/tmp/RPU.bin"
+        assert str_cmd[o_idx + 1] == str(rpu_path)

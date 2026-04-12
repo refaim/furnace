@@ -6,6 +6,7 @@ progress only with carriage returns (nvencc) and tools that use newlines
 (ffmpeg, eac3to, qaac, mkvmerge, mkclean) are both handled through the same
 path. Adapters bind their progress parsers via `on_progress_line`.
 """
+
 from __future__ import annotations
 
 import logging
@@ -107,13 +108,17 @@ def run_tool(
             except OSError as exc:
                 logger.warning("run_tool reader died with %s", exc)
 
-        assert process.stdout is not None
-        assert process.stderr is not None
+        if process.stdout is None or process.stderr is None:
+            raise RuntimeError("subprocess.Popen did not create stdout/stderr pipes")
         stdout_thread = threading.Thread(
-            target=_read_stream, args=(process.stdout,), daemon=True,
+            target=_read_stream,
+            args=(process.stdout,),
+            daemon=True,
         )
         stderr_thread = threading.Thread(
-            target=_read_stream, args=(process.stderr,), daemon=True,
+            target=_read_stream,
+            args=(process.stderr,),
+            daemon=True,
         )
         stdout_thread.start()
         stderr_thread.start()
@@ -123,7 +128,8 @@ def run_tool(
         stderr_thread.join(timeout=5)
         if stdout_thread.is_alive() or stderr_thread.is_alive():
             logger.warning(
-                "run_tool: reader thread did not finish in 5s for: %s", str_cmd[0],
+                "run_tool: reader thread did not finish in 5s for: %s",
+                str_cmd[0],
             )
 
         if log_file is not None:

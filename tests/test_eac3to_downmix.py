@@ -1,6 +1,7 @@
 """Tests for Eac3toAdapter.decode_lossless downmix flag emission."""
 from __future__ import annotations
 
+import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
@@ -26,48 +27,48 @@ def _run_and_capture(downmix: DownmixMode | None, delay_ms: int = 0) -> list[str
     with patch("furnace.adapters.eac3to.run_tool", side_effect=fake_run_tool):
         adapter.decode_lossless(
             Path("/src/audio.thd"),
-            Path("/tmp/out.wav"),
+            Path(tempfile.gettempdir()) / "out.wav",
             delay_ms,
             on_progress=None,
             downmix=downmix,
         )
     cmd = captured["cmd"]
     assert isinstance(cmd, list)
-    return cmd  # type: ignore[return-value]
+    return cmd
 
 
 class TestDecodeLosslessDownmixFlags:
-    def test_no_downmix_emits_no_downmix_flags(self):
+    def test_no_downmix_emits_no_downmix_flags(self) -> None:
         """Regression guard: calls without downmix must not emit downmix flags."""
         cmd = _run_and_capture(downmix=None)
         assert "-downStereo" not in cmd
         assert "-mixlfe" not in cmd
         assert "-down6" not in cmd
 
-    def test_stereo_mode_emits_downStereo(self):
+    def test_stereo_mode_emits_down_stereo(self) -> None:
         cmd = _run_and_capture(downmix=DownmixMode.STEREO)
         assert "-downStereo" in cmd
         assert "-mixlfe" not in cmd
         assert "-down6" not in cmd
 
-    def test_down6_mode_emits_down6(self):
+    def test_down6_mode_emits_down6(self) -> None:
         cmd = _run_and_capture(downmix=DownmixMode.DOWN6)
         assert "-down6" in cmd
         assert "-downStereo" not in cmd
         assert "-mixlfe" not in cmd
 
-    def test_removeDialnorm_still_present_with_downmix(self):
+    def test_remove_dialnorm_still_present_with_downmix(self) -> None:
         """Downmix flags augment, not replace, -removeDialnorm."""
         cmd = _run_and_capture(downmix=DownmixMode.STEREO)
         assert "-removeDialnorm" in cmd
 
-    def test_delay_still_applied_with_downmix(self):
+    def test_delay_still_applied_with_downmix(self) -> None:
         """Delay arg is independent of downmix."""
         cmd = _run_and_capture(downmix=DownmixMode.STEREO, delay_ms=50)
         assert "-downStereo" in cmd
         assert any(arg == "+50ms" for arg in cmd)
 
-    def test_negative_delay_with_downmix(self):
+    def test_negative_delay_with_downmix(self) -> None:
         cmd = _run_and_capture(downmix=DownmixMode.DOWN6, delay_ms=-30)
         assert "-down6" in cmd
         assert any(arg == "-30ms" for arg in cmd)

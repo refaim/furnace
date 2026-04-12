@@ -61,7 +61,7 @@ def _audio(index: int, language: str, channels: int | None, codec: str = "truehd
 
 
 class TestXATrigger:
-    def test_single_multichannel_track_invokes_track_selector(self, tmp_path):
+    def test_single_multichannel_track_invokes_track_selector(self, tmp_path: Path) -> None:
         """A 7.1 track with no language ambiguity must still show the TUI."""
         movie = _make_movie_with_audio(tmp_path, [_audio(1, "eng", 8)])
         prober = MagicMock()
@@ -84,7 +84,7 @@ class TestXATrigger:
         ]
         assert len(audio_calls) == 1
 
-    def test_single_stereo_track_does_not_invoke_selector(self, tmp_path):
+    def test_single_stereo_track_does_not_invoke_selector(self, tmp_path: Path) -> None:
         """A 2.0 track auto-selects as before (no TUI)."""
         movie = _make_movie_with_audio(tmp_path, [_audio(1, "eng", 2, codec="aac")])
         prober = MagicMock()
@@ -103,7 +103,7 @@ class TestXATrigger:
         audio_calls = [c for c in selector.call_args_list if c[0][2] == TrackType.AUDIO]
         assert audio_calls == []
 
-    def test_multichannel_with_channels_none_does_not_trigger(self, tmp_path):
+    def test_multichannel_with_channels_none_does_not_trigger(self, tmp_path: Path) -> None:
         """A track with unknown channels should not force TUI via X-A."""
         movie = _make_movie_with_audio(tmp_path, [_audio(1, "eng", None, codec="aac")])
         prober = MagicMock()
@@ -122,7 +122,7 @@ class TestXATrigger:
         audio_calls = [c for c in selector.call_args_list if c[0][2] == TrackType.AUDIO]
         assert audio_calls == []
 
-    def test_headless_mode_not_affected(self, tmp_path):
+    def test_headless_mode_not_affected(self, tmp_path: Path) -> None:
         """Without a track_selector callback (headless), X-A must not crash."""
         movie = _make_movie_with_audio(tmp_path, [_audio(1, "eng", 8)])
         prober = MagicMock()

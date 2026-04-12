@@ -8,8 +8,10 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from ..core.models import CropRect
-from ..core.progress import ProgressSample
+from furnace.core.detect import cluster_crop_values
+from furnace.core.models import CropRect
+from furnace.core.progress import ProgressSample
+
 from ._subprocess import OutputCallback, run_tool
 
 logger = logging.getLogger(__name__)
@@ -43,8 +45,11 @@ class FFmpegAdapter:
     """Implements Prober + AudioExtractor."""
 
     def __init__(
-        self, ffmpeg_path: Path, ffprobe_path: Path,
-        on_output: OutputCallback = None, log_dir: Path | None = None,
+        self,
+        ffmpeg_path: Path,
+        ffprobe_path: Path,
+        on_output: OutputCallback = None,
+        log_dir: Path | None = None,
     ) -> None:
         self._ffmpeg = ffmpeg_path
         self._ffprobe = ffprobe_path
@@ -62,11 +67,14 @@ class FFmpegAdapter:
         try:
             result = subprocess.run(
                 [str(self._ffmpeg), "-version"],
-                capture_output=True, text=True, timeout=5,
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=True,
             )
             m = re.match(r"ffmpeg version (\S+)", result.stdout)
             self._ffmpeg_version_cached: str = m.group(1) if m else ""
-        except Exception:
+        except (OSError, subprocess.SubprocessError):
             self._ffmpeg_version_cached = ""
         return self._ffmpeg_version_cached
 
@@ -78,15 +86,17 @@ class FFmpegAdapter:
         """ffprobe -v quiet -print_format json -show_format -show_streams -show_chapters path"""
         cmd = [
             str(self._ffprobe),
-            "-v", "quiet",
-            "-print_format", "json",
+            "-v",
+            "quiet",
+            "-print_format",
+            "json",
             "-show_format",
             "-show_streams",
             "-show_chapters",
             str(path),
         ]
         logger.debug("probe cmd: %s", cmd)
-        result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+        result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", check=False)
         if result.returncode != 0:
             logger.error("ffprobe failed (rc=%d): %s", result.returncode, result.stderr)
             raise RuntimeError(f"ffprobe failed with return code {result.returncode}: {result.stderr}")
@@ -94,17 +104,40 @@ class FFmpegAdapter:
         return data
 
     _CROP_SAMPLE_POINTS: tuple[float, ...] = (
-        0.05, 0.10, 0.20, 0.30, 0.40, 0.50, 0.60, 0.70, 0.80, 0.90,
+        0.05,
+        0.10,
+        0.20,
+        0.30,
+        0.40,
+        0.50,
+        0.60,
+        0.70,
+        0.80,
+        0.90,
     )
     _CROP_SAMPLE_POINTS_DVD: tuple[float, ...] = (
-        0.05, 0.10, 0.15, 0.20, 0.25, 0.30, 0.35,
-        0.45, 0.50, 0.55, 0.60, 0.65, 0.75, 0.85, 0.90,
+        0.05,
+        0.10,
+        0.15,
+        0.20,
+        0.25,
+        0.30,
+        0.35,
+        0.45,
+        0.50,
+        0.55,
+        0.60,
+        0.65,
+        0.75,
+        0.85,
+        0.90,
     )
 
     def detect_crop(
         self,
         path: Path,
         duration_s: float,
+        *,
         interlaced: bool = False,
         is_dvd: bool = False,
     ) -> CropRect | None:
@@ -113,8 +146,6 @@ class FFmpegAdapter:
         Returns the median crop of the dominant cluster only if the cluster
         contains >50 % of samples.  Returns None otherwise.
         """
-        from ..core.detect import cluster_crop_values
-
         points = self._CROP_SAMPLE_POINTS_DVD if is_dvd else self._CROP_SAMPLE_POINTS
         vf = "yadif,cropdetect=24:16:0" if interlaced else "cropdetect=24:16:0"
 
@@ -125,15 +156,20 @@ class FFmpegAdapter:
             cmd = [
                 str(self._ffmpeg),
                 "-hide_banner",
-                "-ss", f"{seek:.2f}",
-                "-i", str(path),
-                "-t", "2",
-                "-vf", vf,
-                "-f", "null",
+                "-ss",
+                f"{seek:.2f}",
+                "-i",
+                str(path),
+                "-t",
+                "2",
+                "-vf",
+                vf,
+                "-f",
+                "null",
                 "-",
             ]
             logger.debug("detect_crop cmd: %s", cmd)
-            result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+            result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", check=False)
             last_crop: str | None = None
             for line in result.stderr.splitlines():
                 m = re.search(r"crop=(\d+:\d+:\d+:\d+)", line)
@@ -141,11 +177,15 @@ class FFmpegAdapter:
                     last_crop = m.group(1)
             if last_crop is not None:
                 parts = last_crop.split(":")
-                if len(parts) == 4:
-                    crop_values.append(CropRect(
-                        w=int(parts[0]), h=int(parts[1]),
-                        x=int(parts[2]), y=int(parts[3]),
-                    ))
+                if len(parts) == len(["w", "h", "x", "y"]):
+                    crop_values.append(
+                        CropRect(
+                            w=int(parts[0]),
+                            h=int(parts[1]),
+                            x=int(parts[2]),
+                            y=int(parts[3]),
+                        )
+                    )
 
         if not crop_values:
             return None
@@ -154,8 +194,12 @@ class FFmpegAdapter:
         if cluster_size <= len(crop_values) // 2:
             logger.info(
                 "Crop not reliable: cluster %d:%d:%d:%d has %d/%d samples",
-                median_crop.w, median_crop.h, median_crop.x, median_crop.y,
-                cluster_size, len(crop_values),
+                median_crop.w,
+                median_crop.h,
+                median_crop.x,
+                median_crop.y,
+                cluster_size,
+                len(crop_values),
             )
             return None
 
@@ -188,15 +232,20 @@ class FFmpegAdapter:
             cmd = [
                 str(self._ffmpeg),
                 "-hide_banner",
-                "-ss", f"{seek:.2f}",
-                "-i", str(path),
-                "-vf", "idet",
-                "-frames:v", "1000",
-                "-f", "null",
+                "-ss",
+                f"{seek:.2f}",
+                "-i",
+                str(path),
+                "-vf",
+                "idet",
+                "-frames:v",
+                "1000",
+                "-f",
+                "null",
                 "-",
             ]
             logger.debug("run_idet cmd: %s", cmd)
-            result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+            result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", check=False)
 
             for line in result.stderr.splitlines():
                 m = re.search(
@@ -221,15 +270,19 @@ class FFmpegAdapter:
         """
         cmd = [
             str(self._ffprobe),
-            "-v", "quiet",
-            "-print_format", "json",
-            "-select_streams", "v:0",
+            "-v",
+            "quiet",
+            "-print_format",
+            "json",
+            "-select_streams",
+            "v:0",
             "-show_frames",
-            "-read_intervals", "%+#1",
+            "-read_intervals",
+            "%+#1",
             str(path),
         ]
         logger.debug("probe_hdr_side_data cmd: %s", cmd)
-        result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+        result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", check=False)
         if result.returncode != 0:
             logger.warning("probe_hdr_side_data failed (rc=%d), returning []", result.returncode)
             return []
@@ -249,7 +302,6 @@ class FFmpegAdapter:
         input_path: Path,
         stream_index: int,
         output_path: Path,
-        codec: str,
         on_progress: Callable[[ProgressSample], None] | None = None,
     ) -> int:
         """ffmpeg -i input -map 0:{index} -c copy -progress pipe:1 output"""
@@ -260,12 +312,19 @@ class FFmpegAdapter:
         # of the loglevel.
         cmd = [
             str(self._ffmpeg),
-            "-hide_banner", "-loglevel", "fatal",
-            "-i", str(input_path),
-            "-map", f"0:{stream_index}",
-            "-c", "copy",
-            "-progress", "pipe:1",
-            "-y", str(output_path),
+            "-hide_banner",
+            "-loglevel",
+            "fatal",
+            "-i",
+            str(input_path),
+            "-map",
+            f"0:{stream_index}",
+            "-c",
+            "copy",
+            "-progress",
+            "pipe:1",
+            "-y",
+            str(output_path),
         ]
         log_path = self._log_dir / f"ffmpeg_extract_s{stream_index}.log" if self._log_dir else None
 
@@ -304,13 +363,21 @@ class FFmpegAdapter:
         """ffmpeg -i input -map 0:{index} -f wav -rf64 auto -progress pipe:1 output.wav"""
         cmd = [
             str(self._ffmpeg),
-            "-hide_banner", "-loglevel", "warning",
-            "-i", str(input_path),
-            "-map", f"0:{stream_index}",
-            "-f", "wav",
-            "-rf64", "auto",
-            "-progress", "pipe:1",
-            "-y", str(output_wav),
+            "-hide_banner",
+            "-loglevel",
+            "warning",
+            "-i",
+            str(input_path),
+            "-map",
+            f"0:{stream_index}",
+            "-f",
+            "wav",
+            "-rf64",
+            "auto",
+            "-progress",
+            "pipe:1",
+            "-y",
+            str(output_wav),
         ]
         log_path = self._log_dir / f"ffmpeg_to_wav_s{stream_index}.log" if self._log_dir else None
 

@@ -53,10 +53,12 @@ def _is_eac3to_progress_line(line: str) -> bool:
 @dataclass(frozen=True)
 class Eac3toTrack:
     """A track parsed from eac3to title listing."""
+
     number: int
     description: str
-    language: str | None   # e.g. "rus", "eng", None for video/chapters
-    extension: str         # e.g. ".mkv", ".dts", ".ac3", ".txt"
+    language: str | None  # e.g. "rus", "eng", None for video/chapters
+    extension: str  # e.g. ".mkv", ".dts", ".ac3", ".txt"
+
 
 # Map eac3to codec descriptions to file extensions (raw copy, no re-encode)
 _CODEC_EXT_MAP: dict[str, str] = {
@@ -100,9 +102,9 @@ def _ext_for_track(description: str) -> str:
 def _parse_duration(s: str) -> float:
     """Parse 'H:MM:SS' or 'M:SS' into total seconds."""
     parts = s.split(":")
-    if len(parts) == 3:
+    if len(parts) == len(["H", "MM", "SS"]):
         return int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2])
-    if len(parts) == 2:
+    if len(parts) == len(["M", "SS"]):
         return int(parts[0]) * 60 + int(parts[1])
     return 0.0
 
@@ -177,8 +179,7 @@ class Eac3toAdapter:
         on_progress: Callable[[ProgressSample], None] | None = None,
     ) -> int:
         rc, _output = self._run(
-            [str(input_path), str(output_path), "-removeDialnorm",
-             *self._delay_arg(delay_ms)],
+            [str(input_path), str(output_path), "-removeDialnorm", *self._delay_arg(delay_ms)],
             "denorm",
             on_progress=on_progress,
         )
@@ -200,8 +201,7 @@ class Eac3toAdapter:
             downmix_args.append("-down6")
 
         rc, _output = self._run(
-            [str(input_path), str(output_path), "-removeDialnorm",
-             *self._delay_arg(delay_ms), *downmix_args],
+            [str(input_path), str(output_path), "-removeDialnorm", *self._delay_arg(delay_ms), *downmix_args],
             "decode",
             on_progress=on_progress,
         )
@@ -214,9 +214,7 @@ class Eac3toAdapter:
         cmd = [str(self._eac3to), str(disc_path)]
         rc, output = run_tool(cmd, on_output=self._on_output, log_path=self._log_path("list_titles"))
         if rc != 0:
-            raise RuntimeError(
-                f"eac3to listing failed for {disc_path} (rc={rc})"
-            )
+            raise RuntimeError(f"eac3to listing failed for {disc_path} (rc={rc})")
         return self._parse_playlist_output(output)
 
     def demux_title(
@@ -241,9 +239,7 @@ class Eac3toAdapter:
             cwd=output_dir,
         )
         if rc != 0:
-            raise RuntimeError(
-                f"eac3to demux failed for {disc_path} title {title_num} (rc={rc})"
-            )
+            raise RuntimeError(f"eac3to demux failed for {disc_path} title {title_num} (rc={rc})")
         return sorted(p for p in output_dir.iterdir() if p.is_file())
 
     # -- Parsing ---------------------------------------------------------------
@@ -255,8 +251,8 @@ class Eac3toAdapter:
         Example line: "3: DTS-HD Master Audio, [rus], 5.1 channels, 16 bits, 48kHz"
         """
         results: list[Eac3toTrack] = []
-        for line in output.splitlines():
-            line = line.strip()
+        for raw_line in output.splitlines():
+            line = raw_line.strip()
             m = _TRACK_RE.match(line)
             if not m:
                 continue
@@ -265,20 +261,22 @@ class Eac3toAdapter:
             lang_match = _LANG_RE.search(description)
             language = lang_match.group(1) if lang_match else None
             ext = _ext_for_track(description)
-            results.append(Eac3toTrack(
-                number=track_num,
-                description=description,
-                language=language,
-                extension=ext,
-            ))
+            results.append(
+                Eac3toTrack(
+                    number=track_num,
+                    description=description,
+                    language=language,
+                    extension=ext,
+                )
+            )
         return results
 
     @staticmethod
     def _parse_playlist_output(output: str) -> list[DiscTitle]:
         """Parse eac3to listing output into DiscTitle objects."""
         results: list[DiscTitle] = []
-        for line in output.splitlines():
-            line = line.strip()
+        for raw_line in output.splitlines():
+            line = raw_line.strip()
             m = _PLAYLIST_RE.match(line)
             if not m:
                 continue
@@ -286,9 +284,11 @@ class Eac3toAdapter:
             label = m.group(2).strip()
             duration_str = m.group(3)
             duration_s = _parse_duration(duration_str)
-            results.append(DiscTitle(
-                number=number,
-                duration_s=duration_s,
-                raw_label=f"{number}) {label}, {duration_str}",
-            ))
+            results.append(
+                DiscTitle(
+                    number=number,
+                    duration_s=duration_s,
+                    raw_label=f"{number}) {label}, {duration_str}",
+                )
+            )
         return results

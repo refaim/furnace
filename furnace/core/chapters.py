@@ -42,10 +42,7 @@ def _seconds_to_timestamp(seconds: float) -> str:
 
 def chapters_have_mojibake(chapters: list[dict[str, Any]]) -> bool:
     """Check if any ffprobe chapter title contains mojibake."""
-    return any(
-        is_mojibake(ch.get("tags", {}).get("title", ""))
-        for ch in chapters
-    )
+    return any(is_mojibake(ch.get("tags", {}).get("title", "")) for ch in chapters)
 
 
 def write_ogm_chapters(chapters: list[dict[str, Any]], path: Path) -> None:

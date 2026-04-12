@@ -6,10 +6,10 @@ import shutil
 from collections.abc import Callable
 from pathlib import Path
 
-from ..adapters._subprocess import run_tool
-
-from ..core.models import DiscTitle, DiscSource, DiscType
-from ..core.ports import DiscDemuxerPort
+from furnace.adapters._subprocess import run_tool
+from furnace.core.chapters import fix_chapters_file
+from furnace.core.models import DiscSource, DiscTitle, DiscType
+from furnace.core.ports import DiscDemuxerPort
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +19,22 @@ _DISC_DIR_NAMES: dict[str, DiscType] = {
 }
 
 # Extensions that mkvmerge can mux as video/audio/subtitle tracks
-_MKV_TRACK_EXTS = {".mkv", ".m2v", ".h264", ".h265", ".dts", ".dtsma", ".dtshr", ".ac3", ".eac3", ".thd", ".flac", ".wav", ".m4a", ".sup"}
+_MKV_TRACK_EXTS = {
+    ".mkv",
+    ".m2v",
+    ".h264",
+    ".h265",
+    ".dts",
+    ".dtsma",
+    ".dtshr",
+    ".ac3",
+    ".eac3",
+    ".thd",
+    ".flac",
+    ".wav",
+    ".m4a",
+    ".sup",
+}
 _CHAPTERS_EXT = ".txt"
 
 
@@ -104,7 +119,8 @@ class DiscDemuxer:
 
                 logger.info(
                     "Demuxing title %d from %s",
-                    title.number, disc.path,
+                    title.number,
+                    disc.path,
                 )
 
                 # Each title gets its own subdir to isolate adapter output
@@ -114,13 +130,15 @@ class DiscDemuxer:
                 title_dir.mkdir()
 
                 created_files = port.demux_title(
-                    disc.path, title.number, title_dir,
+                    disc.path,
+                    title.number,
+                    title_dir,
                 )
 
                 # If multiple files (BD/eac3to), mux into single MKV
                 final_mkv = demux_dir / f"{disc_label}_title_{title.number}.mkv"
                 if self._needs_muxing(created_files):
-                    self._mux_to_mkv(title_dir, created_files, final_mkv, on_output)
+                    self._mux_to_mkv(created_files, final_mkv, on_output)
                 else:
                     # Single MKV (DVD/MakeMKV) — just move it
                     src_mkv = next(f for f in created_files if f.suffix.lower() == ".mkv")
@@ -142,7 +160,9 @@ class DiscDemuxer:
         return len(mkv_files) != 1 or len(non_mkv) > 0
 
     def _mux_to_mkv(
-        self, title_dir: Path, files: list[Path], output_mkv: Path,
+        self,
+        files: list[Path],
+        output_mkv: Path,
         on_output: Callable[[str], None] | None = None,
     ) -> None:
         """Mux separate track files into a single MKV via mkvmerge."""
@@ -170,7 +190,6 @@ class DiscDemuxer:
 
         # Add chapters (fix mojibake if needed)
         if chapters_file is not None:
-            from ..core.chapters import fix_chapters_file
             if fix_chapters_file(chapters_file):
                 logger.info("Fixed mojibake in chapters file %s", chapters_file.name)
             cmd += ["--chapters", str(chapters_file)]
@@ -179,18 +198,13 @@ class DiscDemuxer:
         logger.debug("mkvmerge cmd: %s", " ".join(cmd))
         rc, output = run_tool(cmd, on_output=on_output)
         if rc not in (0, 1):  # mkvmerge returns 1 for warnings
-            raise RuntimeError(
-                f"mkvmerge failed (rc={rc}): {output[-500:]}"
-            )
+            raise RuntimeError(f"mkvmerge failed (rc={rc}): {output[-500:]}")
 
     @staticmethod
     def _find_done_files(demux_dir: Path, disc_label: str, title_num: int) -> list[Path]:
         """Find MKV files for an already-demuxed title."""
         prefix = f"{disc_label}_title_{title_num}"
-        return sorted(
-            p for p in demux_dir.glob(f"{prefix}*.mkv")
-            if p.is_file()
-        )
+        return sorted(p for p in demux_dir.glob(f"{prefix}*.mkv") if p.is_file())
 
     @staticmethod
     def _clean_partial(demux_dir: Path, disc_label: str, title_num: int) -> None:

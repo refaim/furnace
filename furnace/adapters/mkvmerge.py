@@ -6,11 +6,14 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from ._subprocess import OutputCallback, run_tool
 from furnace.core.progress import ProgressSample
+
+from ._subprocess import OutputCallback, run_tool
 
 logger = logging.getLogger(__name__)
 
+# mkvmerge exit codes: 0=ok, 1=warnings, 2+=errors
+MKVMERGE_ERROR_RC = 2
 
 _MKVMERGE_PROGRESS_RE = re.compile(r"^Progress:\s*(\d+)%\s*$")
 
@@ -30,8 +33,8 @@ def _parse_mkvmerge_progress_line(line: str) -> ProgressSample | None:
 
 
 _COLOR_RANGE_MAP: dict[str, str] = {
-    "tv": "1",       # broadcast / limited (16-235)
-    "pc": "2",       # full (0-255)
+    "tv": "1",  # broadcast / limited (16-235)
+    "pc": "2",  # full (0-255)
 }
 
 _COLOR_PRIMARIES_MAP: dict[str, str] = {
@@ -47,8 +50,8 @@ _COLOR_TRANSFER_MAP: dict[str, str] = {
     "smpte170m": "6",
     "smpte240m": "7",
     "linear": "8",
-    "smpte2084": "16",    # HDR10 / PQ
-    "arib-std-b67": "18", # HLG
+    "smpte2084": "16",  # HDR10 / PQ
+    "arib-std-b67": "18",  # HLG
 }
 
 
@@ -71,7 +74,6 @@ class MkvmergeAdapter:
         attachments: list[tuple[Path, str, str]],
         chapters_source: Path | None,
         output_path: Path,
-        furnace_version: str,
         video_meta: dict[str, Any] | None = None,
         on_progress: Callable[[ProgressSample], None] | None = None,
     ) -> int:
@@ -86,8 +88,13 @@ class MkvmergeAdapter:
         MkvpropeditAdapter after muxing.
         """
         cmd = self._build_mux_cmd(
-            video_path, audio_files, subtitle_files, attachments,
-            chapters_source, output_path, furnace_version, video_meta,
+            video_path,
+            audio_files,
+            subtitle_files,
+            attachments,
+            chapters_source,
+            output_path,
+            video_meta,
         )
         log_path = self._log_dir / "mkvmerge.log" if self._log_dir else None
 
@@ -105,7 +112,7 @@ class MkvmergeAdapter:
             on_progress_line=_on_progress_line,
             log_path=log_path,
         )
-        if rc >= 2:
+        if rc >= MKVMERGE_ERROR_RC:
             logger.error("mkvmerge mux failed (rc=%d): %s", rc, stderr[-500:])
         elif rc == 1:
             logger.warning("mkvmerge mux completed with warnings (rc=1)")
@@ -119,26 +126,30 @@ class MkvmergeAdapter:
         attachments: list[tuple[Path, str, str]],
         chapters_source: Path | None,
         output_path: Path,
-        furnace_version: str,
         video_meta: dict[str, Any] | None = None,
     ) -> list[str]:
         cmd: list[str] = [
             str(self._mkvmerge),
-            "--output", str(output_path),
+            "--output",
+            str(output_path),
             # Strip all existing tags and statistics
             "--no-track-tags",
             "--no-global-tags",
             "--disable-track-statistics-tags",
             # Clean title (remove source junk like "Ripped by...")
-            "--title", "",
+            "--title",
+            "",
             # Normalize language codes (fre→fra, chi→zho)
-            "--normalize-language-ietf", "canonical",
+            "--normalize-language-ietf",
+            "canonical",
         ]
 
         # Video track: track 0 of video_path
         video_flags: list[str] = [
-            "--track-name", "0:",          # remove track name
-            "--language", "0:und",          # undetermined language for video
+            "--track-name",
+            "0:",  # remove track name
+            "--language",
+            "0:und",  # undetermined language for video
         ]
 
         # Color and HDR metadata at container level (duplicates VUI from stream)
@@ -210,9 +221,12 @@ class MkvmergeAdapter:
         # Attachments
         for att_path, att_filename, att_mime in attachments:
             cmd += [
-                "--attachment-name", att_filename,
-                "--attachment-mime-type", att_mime,
-                "--attach-file", str(att_path),
+                "--attachment-name",
+                att_filename,
+                "--attachment-mime-type",
+                att_mime,
+                "--attach-file",
+                str(att_path),
             ]
 
         # Chapters (always OGM .txt file, prepared by executor)

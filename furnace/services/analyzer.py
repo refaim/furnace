@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import contextlib
 import logging
 from pathlib import Path
 from typing import Any
 
-from ..core.detect import (
+from charset_normalizer import from_path as _from_path
+
+from furnace.core.detect import (
     check_unsupported_codecs,
     detect_forced_subtitles,
     detect_hdr,
@@ -12,17 +15,11 @@ from ..core.detect import (
     should_deinterlace,
     should_skip_file,
 )
-from ..core.models import (
-    Attachment,
-    Movie,
-    ScanResult,
-    SubtitleCodecId,
-    Track,
-    TrackType,
-    VideoInfo,
-)
-from ..core.ports import Prober
-from ..core.rules import parse_audio_codec, parse_subtitle_codec
+from furnace.core.models import Attachment, Movie, ScanResult, SubtitleCodecId, Track, TrackType, VideoInfo
+from furnace.core.ports import Prober
+from furnace.core.rules import parse_audio_codec, parse_subtitle_codec
+
+_ISO_639_3_LENGTH = 3  # ISO 639-3 language codes are exactly three letters
 
 logger = logging.getLogger(__name__)
 
@@ -52,8 +49,8 @@ class Analyzer:
         # Probe the main file
         try:
             probe_data = self._prober.probe(main_file)
-        except Exception as exc:
-            logger.error("Failed to probe %s: %s", main_file, exc)
+        except (OSError, RuntimeError, ValueError):
+            logger.exception("Failed to probe %s", main_file)
             return None
 
         streams = probe_data.get("streams", [])
@@ -69,8 +66,8 @@ class Analyzer:
         video_stream = video_streams[0]
         try:
             video_info = self._parse_video_info(video_stream, format_data, main_file)
-        except Exception as exc:
-            logger.error("Failed to parse video info for %s: %s", main_file, exc)
+        except (KeyError, ValueError, IndexError, TypeError):
+            logger.exception("Failed to parse video info for %s", main_file)
             return None
 
         # HDR10+ not supported — raise error
@@ -126,7 +123,7 @@ class Analyzer:
             try:
                 idet_ratio = self._prober.run_idet(main_file, video_info.duration_s)
                 logger.debug("%s: idet ratio %.3f", main_file.name, idet_ratio)
-            except Exception as exc:
+            except (OSError, RuntimeError, ValueError) as exc:
                 logger.warning("idet failed for %s: %s", main_file.name, exc)
         video_info.interlaced = should_deinterlace(field_order_raw, fps, idet_ratio)
         if video_info.interlaced:
@@ -171,15 +168,11 @@ class Analyzer:
         # Duration: from stream, fallback to format
         duration_s = 0.0
         if "duration" in stream:
-            try:
+            with contextlib.suppress(ValueError, TypeError):
                 duration_s = float(stream["duration"])
-            except (ValueError, TypeError):
-                pass
         if duration_s == 0.0 and "duration" in format_data:
-            try:
+            with contextlib.suppress(ValueError, TypeError):
                 duration_s = float(format_data["duration"])
-            except (ValueError, TypeError):
-                pass
 
         # Interlace — set to False here, real detection via idet in analyze()
         interlaced = False
@@ -194,15 +187,11 @@ class Analyzer:
         # Bitrate: from stream, fallback to format
         bitrate = 0
         if "bit_rate" in stream:
-            try:
+            with contextlib.suppress(ValueError, TypeError):
                 bitrate = int(stream["bit_rate"])
-            except (ValueError, TypeError):
-                pass
         if bitrate == 0 and "bit_rate" in format_data:
-            try:
+            with contextlib.suppress(ValueError, TypeError):
                 bitrate = int(format_data["bit_rate"])
-            except (ValueError, TypeError):
-                pass
 
         # HDR metadata — merge stream-level (DOVI configuration record) and
         # frame-level (Mastering display / Content light / DV RPU) side data.
@@ -281,10 +270,8 @@ class Analyzer:
             bitrate: int | None = None
             raw_bitrate = stream.get("bit_rate") or tags.get("BPS") or tags.get("BPS-eng")
             if raw_bitrate is not None:
-                try:
+                with contextlib.suppress(ValueError, TypeError):
                     bitrate = int(raw_bitrate)
-                except (ValueError, TypeError):
-                    pass
 
             delay_ms = self._detect_audio_delay(stream)
 
@@ -328,10 +315,8 @@ class Analyzer:
             num_frames: int | None = None
             raw_frames = tags.get("NUMBER_OF_FRAMES") or tags.get("NUMBER_OF_FRAMES-eng")
             if raw_frames is not None:
-                try:
+                with contextlib.suppress(ValueError, TypeError):
                     num_frames = int(raw_frames)
-                except (ValueError, TypeError):
-                    pass
 
             num_captions: int | None = None
 
@@ -369,10 +354,10 @@ class Analyzer:
         # stem may have video stem as prefix; look for language code after dot
         language = "und"
         parts = stem.split(".")
-        if len(parts) >= 2:
+        if len(parts) >= len(["stem", "lang"]):
             # last part or second-to-last may be language
             for part in reversed(parts[1:]):
-                if len(part) == 3 and part.isalpha():
+                if len(part) == _ISO_639_3_LENGTH and part.isalpha():
                     language = part.lower()
                     break
 
@@ -404,7 +389,7 @@ class Analyzer:
         """Parse an external audio satellite file."""
         try:
             probe_data = self._prober.probe(path)
-        except Exception as exc:
+        except (OSError, RuntimeError, ValueError) as exc:
             logger.warning("Failed to probe satellite audio %s: %s", path, exc)
             return None
 
@@ -430,11 +415,13 @@ class Analyzer:
             filename = tags.get("filename", "")
             mime_type = tags.get("mimetype", "") or tags.get("mime_type", "")
             if filename:
-                attachments.append(Attachment(
-                    filename=filename,
-                    mime_type=mime_type,
-                    source_file=path,
-                ))
+                attachments.append(
+                    Attachment(
+                        filename=filename,
+                        mime_type=mime_type,
+                        source_file=path,
+                    )
+                )
         return attachments
 
     def _detect_audio_delay(self, stream: dict[str, Any]) -> int:
@@ -454,12 +441,12 @@ class Analyzer:
     def _detect_text_encoding(self, path: Path) -> str | None:
         """Detect encoding of a text subtitle file using charset_normalizer."""
         try:
-            from charset_normalizer import from_path
-            result = from_path(path)
+            result = _from_path(path)
             best = result.best()
+        except (OSError, ValueError) as exc:
+            logger.debug("Encoding detection failed for %s: %s", path, exc)
+            return None
+        else:
             if best is None:
                 return None
             return best.encoding
-        except Exception as exc:
-            logger.debug("Encoding detection failed for %s: %s", path, exc)
-            return None

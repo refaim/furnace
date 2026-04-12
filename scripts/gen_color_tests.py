@@ -208,7 +208,7 @@ def print_pytest(cases):
     lines.append("    CASES,")
     lines.append(")")
     lines.append("def test_resolve_color_metadata(matrix_raw, transfer_raw, primaries_raw, system, has_hdr, expected):")
-    lines.append("    result = resolve_color_metadata(matrix_raw, transfer_raw, primaries_raw, system, has_hdr)")
+    lines.append("    result = resolve_color_metadata(matrix_raw, transfer_raw, primaries_raw, system, has_hdr=has_hdr)")
     lines.append("    assert result == expected, (")
     lines.append('        f"Input: mx={matrix_raw}, tr={transfer_raw}, pri={primaries_raw}, sys={system}, hdr={has_hdr}\\n"')
     lines.append('        f"Expected: {expected}\\n"')

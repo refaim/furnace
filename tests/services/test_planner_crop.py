@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from furnace.core.detect import is_dvd_resolution
 from furnace.core.models import (
-    CropRect, HdrMetadata, VideoInfo,
+    HdrMetadata,
+    VideoInfo,
 )
 
 
@@ -32,12 +34,10 @@ def _make_hd_video() -> VideoInfo:
 class TestCropDetectDvdFlags:
     def test_dvd_interlaced_is_dvd(self) -> None:
         """DVD interlaced source -> is_dvd_resolution returns True."""
-        from furnace.core.detect import is_dvd_resolution
         video = _make_dvd_video(interlaced=True)
         assert is_dvd_resolution(video.width, video.height) is True
 
     def test_hd_source_not_dvd(self) -> None:
         """HD source -> is_dvd_resolution returns False."""
-        from furnace.core.detect import is_dvd_resolution
         video = _make_hd_video()
         assert is_dvd_resolution(video.width, video.height) is False
