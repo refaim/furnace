@@ -1,11 +1,8 @@
 SOURCES := furnace tests
 
-.PHONY: check lint typecheck test install-hooks
+.PHONY: check lint typecheck test
 
 check: lint typecheck test
-
-install-hooks:
-	git config core.hooksPath .githooks
 
 lint:
 	uv run ruff check $(SOURCES)
