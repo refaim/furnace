@@ -10,13 +10,12 @@ from furnace.core.models import (
     AudioAction,
     AudioCodecId,
     DownmixMode,
-    HdrMetadata,
     Movie,
     Track,
     TrackType,
-    VideoInfo,
 )
 from furnace.services.planner import PlannerService
+from tests.conftest import make_movie, make_track, make_video_info
 
 
 def _audio_track(
@@ -26,16 +25,12 @@ def _audio_track(
     language: str = "eng",
     channels: int | None = 8,
 ) -> Track:
-    return Track(
+    return make_track(
         index=index,
         track_type=TrackType.AUDIO,
         codec_name=codec_name,
         codec_id=codec_id,
         language=language,
-        title="",
-        is_default=False,
-        is_forced=False,
-        source_file=Path("/src/movie.mkv"),
         channels=channels,
         bitrate=4_500_000,
     )
@@ -134,39 +129,16 @@ class TestCreatePlanDownmixOverrides:
         main = tmp_path / "movie.mkv"
         main.write_bytes(b"")
 
-        video = VideoInfo(
-            index=0,
-            codec_name="hevc",
-            width=1920, height=1080,
-            pixel_area=1920 * 1080,
-            fps_num=24, fps_den=1,
-            duration_s=5400.0,
-            interlaced=False,
-            color_matrix_raw="bt709",
-            color_range="tv",
-            color_transfer="bt709",
-            color_primaries="bt709",
-            pix_fmt="yuv420p10le",
-            hdr=HdrMetadata(
-                mastering_display=None, content_light=None,
-                is_dolby_vision=False, is_hdr10_plus=False,
-            ),
-            source_file=main,
-            bitrate=10_000_000,
-            sar_num=1, sar_den=1,
-        )
         track = _audio_track(index=1, channels=8, language="eng")
         track.source_file = main
-        audio_tracks = [track]
-        movie = Movie(
+        movie = make_movie(
             main_file=main,
-            satellite_files=[],
+            video=make_video_info(
+                codec_name="hevc", pix_fmt="yuv420p10le",
+                source_file=main, bitrate=10_000_000,
+            ),
+            audio_tracks=[track],
             file_size=1_000_000,
-            video=video,
-            audio_tracks=audio_tracks,
-            subtitle_tracks=[],
-            attachments=[],
-            has_chapters=False,
         )
         output_path = tmp_path / "out.mkv"
 
@@ -203,37 +175,19 @@ class TestCreatePlanDownmixOverrides:
         main = tmp_path / "movie.mkv"
         main.write_bytes(b"")
 
-        video = VideoInfo(
-            index=0,
-            codec_name="hevc",
-            width=1920, height=1080,
-            pixel_area=1920 * 1080,
-            fps_num=24, fps_den=1,
-            duration_s=5400.0,
-            interlaced=False,
-            color_matrix_raw="bt709",
-            color_range="tv",
-            color_transfer="bt709",
-            color_primaries="bt709",
-            pix_fmt="yuv420p10le",
-            hdr=HdrMetadata(
-                mastering_display=None, content_light=None,
-                is_dolby_vision=False, is_hdr10_plus=False,
-            ),
-            source_file=main,
-            bitrate=10_000_000,
-            sar_num=1, sar_den=1,
-        )
         # Two audio tracks on the same language so the planner is forced
         # to invoke the track_selector callback (lang ambiguity path).
         t1 = _audio_track(index=1, channels=8, language="eng")
         t1.source_file = main
         t2 = _audio_track(index=2, channels=6, language="eng")
         t2.source_file = main
-        movie = Movie(
-            main_file=main, satellite_files=[], file_size=0, video=video,
-            audio_tracks=[t1, t2], subtitle_tracks=[], attachments=[],
-            has_chapters=False,
+        movie = make_movie(
+            main_file=main,
+            video=make_video_info(
+                codec_name="hevc", pix_fmt="yuv420p10le",
+                source_file=main, bitrate=10_000_000,
+            ),
+            audio_tracks=[t1, t2],
         )
 
         # The caller's outer dict — initially empty, mutated by the callback.
@@ -273,34 +227,15 @@ class TestCreatePlanDownmixOverrides:
         main = tmp_path / "movie.mkv"
         main.write_bytes(b"")
 
-        video = VideoInfo(
-            index=0,
-            codec_name="hevc",
-            width=1920, height=1080,
-            pixel_area=1920 * 1080,
-            fps_num=24, fps_den=1,
-            duration_s=5400.0,
-            interlaced=False,
-            color_matrix_raw="bt709",
-            color_range="tv",
-            color_transfer="bt709",
-            color_primaries="bt709",
-            pix_fmt="yuv420p10le",
-            hdr=HdrMetadata(
-                mastering_display=None, content_light=None,
-                is_dolby_vision=False, is_hdr10_plus=False,
-            ),
-            source_file=main,
-            bitrate=10_000_000,
-            sar_num=1, sar_den=1,
-        )
         track = _audio_track(index=1, channels=2, codec_name="aac", codec_id=AudioCodecId.AAC_LC)
         track.source_file = main
-        audio_tracks = [track]
-        movie = Movie(
-            main_file=main, satellite_files=[], file_size=0, video=video,
-            audio_tracks=audio_tracks, subtitle_tracks=[], attachments=[],
-            has_chapters=False,
+        movie = make_movie(
+            main_file=main,
+            video=make_video_info(
+                codec_name="hevc", pix_fmt="yuv420p10le",
+                source_file=main, bitrate=10_000_000,
+            ),
+            audio_tracks=[track],
         )
 
         prober = MagicMock()

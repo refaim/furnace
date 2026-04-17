@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import os
 from pathlib import Path
 
 import pytest
 
 from furnace.core.models import (
     AudioAction,
-    AudioInstruction,
     CropRect,
     DownmixMode,
     DvBlCompatibility,
@@ -16,135 +16,16 @@ from furnace.core.models import (
     HdrMetadata,
     Job,
     JobStatus,
-    Plan,
     SubtitleAction,
-    SubtitleInstruction,
-    VideoParams,
 )
-from furnace.plan import atomic_write, load_plan, save_plan, update_job_status
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-def make_video_params(
-    cq: int = 25,
-    crop: CropRect | None = None,
-    deinterlace: bool = False,
-    color_matrix: str = "bt709",
-    color_range: str = "tv",
-    color_transfer: str = "bt709",
-    color_primaries: str = "bt709",
-    hdr: HdrMetadata | None = None,
-    gop: int = 120,
-    fps_num: int = 24,
-    fps_den: int = 1,
-    source_width: int = 1920,
-    source_height: int = 1080,
-) -> VideoParams:
-    return VideoParams(
-        cq=cq,
-        crop=crop,
-        deinterlace=deinterlace,
-        color_matrix=color_matrix,
-        color_range=color_range,
-        color_transfer=color_transfer,
-        color_primaries=color_primaries,
-        hdr=hdr,
-        gop=gop,
-        fps_num=fps_num,
-        fps_den=fps_den,
-        source_width=source_width,
-        source_height=source_height,
-    )
-
-
-def make_audio_instruction(
-    source_file: str = "/src/movie.mkv",
-    stream_index: int = 1,
-    language: str = "eng",
-    action: AudioAction = AudioAction.COPY,
-    delay_ms: int = 0,
-    is_default: bool = True,
-    codec_name: str = "aac",
-    channels: int | None = 2,
-    bitrate: int | None = 192000,
-    downmix: DownmixMode | None = None,
-) -> AudioInstruction:
-    return AudioInstruction(
-        source_file=source_file,
-        stream_index=stream_index,
-        language=language,
-        action=action,
-        delay_ms=delay_ms,
-        is_default=is_default,
-        codec_name=codec_name,
-        channels=channels,
-        bitrate=bitrate,
-        downmix=downmix,
-    )
-
-
-def make_subtitle_instruction(
-    source_file: str = "/src/movie.mkv",
-    stream_index: int = 2,
-    language: str = "eng",
-    action: SubtitleAction = SubtitleAction.COPY,
-    is_default: bool = False,
-    is_forced: bool = False,
-    codec_name: str = "hdmv_pgs_subtitle",
-    source_encoding: str | None = None,
-) -> SubtitleInstruction:
-    return SubtitleInstruction(
-        source_file=source_file,
-        stream_index=stream_index,
-        language=language,
-        action=action,
-        is_default=is_default,
-        is_forced=is_forced,
-        codec_name=codec_name,
-        source_encoding=source_encoding,
-    )
-
-
-def make_job(
-    job_id: str = "test-job-001",
-    output_file: str = "/out/movie.mkv",
-    status: JobStatus = JobStatus.PENDING,
-    source_files: list[str] | None = None,
-    audio: list[AudioInstruction] | None = None,
-    subtitles: list[SubtitleInstruction] | None = None,
-) -> Job:
-    return Job(
-        id=job_id,
-        source_files=["/src/movie.mkv"] if source_files is None else source_files,
-        output_file=output_file,
-        video_params=make_video_params(),
-        audio=[make_audio_instruction()] if audio is None else audio,
-        subtitles=[make_subtitle_instruction()] if subtitles is None else subtitles,
-        attachments=[],
-        copy_chapters=True,
-        chapters_source=None,
-        status=status,
-        error=None,
-        vmaf_score=None,
-        source_size=1_000_000,
-        output_size=None,
-    )
-
-
-def make_plan(jobs: list[Job] | None = None, demux_dir: str | None = None) -> Plan:
-    return Plan(
-        version="2",
-        furnace_version="0.1.0",
-        created_at="2026-04-01T00:00:00",
-        source="/src",
-        destination="/out",
-        vmaf_enabled=False,
-        demux_dir=demux_dir,
-        jobs=[make_job()] if jobs is None else jobs,
-    )
-
+from furnace.plan import _PlanEncoder, atomic_write, load_plan, save_plan, update_job_status
+from tests.conftest import (
+    make_audio_instruction,
+    make_job,
+    make_plan,
+    make_subtitle_instruction,
+    make_video_params,
+)
 
 # ---------------------------------------------------------------------------
 # test_plan_roundtrip
@@ -473,6 +354,17 @@ class TestUpdateJobStatus:
         raw = json.loads(plan_path.read_text(encoding="utf-8"))
         assert raw["jobs"][0]["vmaf_score"] == pytest.approx(95.4)
 
+    def test_update_with_ssim_score(self, tmp_path: Path) -> None:
+        """ssim_score is persisted when provided."""
+        plan = make_plan(jobs=[make_job(job_id="j-ssim")])
+        plan_path = tmp_path / "plan.json"
+        save_plan(plan, plan_path)
+
+        update_job_status(plan_path, "j-ssim", JobStatus.DONE, ssim_score=0.987)
+
+        raw = json.loads(plan_path.read_text(encoding="utf-8"))
+        assert raw["jobs"][0]["ssim_score"] == pytest.approx(0.987)
+
     def test_update_with_output_size(self, tmp_path: Path) -> None:
         """output_size is persisted when provided."""
         plan = make_plan(jobs=[make_job(job_id="j4")])
@@ -683,3 +575,46 @@ class TestJobDurationS:
         loaded = load_plan(plan_path)
 
         assert loaded.jobs[0].duration_s == 0.0
+
+
+# ---------------------------------------------------------------------------
+# test_plan_encoder
+# ---------------------------------------------------------------------------
+
+class TestPlanEncoder:
+    def test_encodes_path(self) -> None:
+        """_PlanEncoder encodes a bare Path to its string representation."""
+        result = json.dumps({"p": Path("/test/movie.mkv")}, cls=_PlanEncoder)
+        assert "/test/movie.mkv" in result
+
+    def test_unknown_type_raises_type_error(self) -> None:
+        """_PlanEncoder falls through to super().default() for unknown types."""
+        with pytest.raises(TypeError):
+            json.dumps({"obj": object()}, cls=_PlanEncoder)
+
+
+# ---------------------------------------------------------------------------
+# test_atomic_write_failure
+# ---------------------------------------------------------------------------
+
+class TestAtomicWriteFailure:
+    def test_cleanup_on_write_failure(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """If os.fdopen raises, the temp file is cleaned up and no target is created."""
+        target = tmp_path / "output.json"
+
+        def _failing_fdopen(fd: int, *args: object, **kwargs: object) -> object:
+            # Close the fd so it doesn't leak, then raise
+            os.close(fd)
+            raise OSError("disk full")
+
+        monkeypatch.setattr(os, "fdopen", _failing_fdopen)
+
+        with pytest.raises(OSError, match="disk full"):
+            atomic_write(target, "data")
+
+        # Target must not exist
+        assert not target.exists()
+        # No .tmp files should remain
+        assert list(tmp_path.glob("*.tmp")) == []

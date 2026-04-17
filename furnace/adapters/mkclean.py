@@ -31,11 +31,8 @@ def _parse_mkclean_progress_line(line: str) -> ProgressSample | None:
     m = _MKCLEAN_PROGRESS_RE.match(line.strip())
     if not m:
         return None
-    try:
-        stage = int(m.group(1))
-        stage_pct = int(m.group(2))
-    except ValueError:
-        return None
+    stage = int(m.group(1))
+    stage_pct = int(m.group(2))
     if not 1 <= stage <= MKCLEAN_STAGE_COUNT:
         return None
     fraction = ((stage - 1) + stage_pct / 100.0) / MKCLEAN_STAGE_COUNT

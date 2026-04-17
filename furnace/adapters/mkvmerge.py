@@ -26,10 +26,7 @@ def _parse_mkvmerge_progress_line(line: str) -> ProgressSample | None:
     m = _MKVMERGE_PROGRESS_RE.match(line.strip())
     if not m:
         return None
-    try:
-        return ProgressSample(fraction=int(m.group(1)) / 100.0)
-    except ValueError:
-        return None
+    return ProgressSample(fraction=int(m.group(1)) / 100.0)
 
 
 _COLOR_RANGE_MAP: dict[str, str] = {

@@ -35,8 +35,6 @@ class _PlanEncoder(json.JSONEncoder):
             return str(obj)
         if isinstance(obj, __import__("enum").Enum):
             return obj.value
-        if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
-            return dataclasses.asdict(obj)
         return super().default(obj)
 
 

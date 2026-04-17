@@ -8,6 +8,7 @@ from rich.console import Console
 from rich.table import Table
 
 from furnace.core.models import JobStatus, Plan
+from furnace.ui.fmt import fmt_size
 
 # VMAF (0-100) label thresholds for the post-run summary table.
 _VMAF_EXCELLENT = 95
@@ -18,13 +19,6 @@ _VMAF_FAIR = 70
 _SSIM_EXCELLENT = 0.99
 _SSIM_GOOD = 0.95
 _SSIM_FAIR = 0.90
-
-
-def _fmt_size(n: int | None) -> str:
-    if n is None or n == 0:
-        return "?"
-    mb = n / (1024 * 1024)
-    return f"{mb:,.0f} MB"
 
 
 class ReportPrinter:
@@ -57,13 +51,13 @@ class ReportPrinter:
             size_table = Table.grid(padding=(0, 2))
             size_table.add_column(style="bold")
             size_table.add_column()
-            size_table.add_row("Total source size:", _fmt_size(total_source))
+            size_table.add_row("Total source size:", fmt_size(total_source))
             if total_output:
-                size_table.add_row("Total output size:", _fmt_size(total_output))
+                size_table.add_row("Total output size:", fmt_size(total_output))
                 saved = total_source - total_output
                 pct = saved / total_source * 100
                 sign = "-" if saved >= 0 else "+"
-                savings_str = f"{_fmt_size(abs(saved))} ({sign}{abs(pct):.1f}%)"
+                savings_str = f"{fmt_size(abs(saved))} ({sign}{abs(pct):.1f}%)"
                 size_table.add_row("Space saved:", savings_str)
             console.print(size_table)
             console.print()
@@ -73,8 +67,8 @@ class ReportPrinter:
             console.print("[bold]Files:[/bold]")
             for job in done_jobs:
                 name = Path(job.source_files[0]).name if job.source_files else Path(job.output_file).name
-                src = _fmt_size(job.source_size)
-                out = _fmt_size(job.output_size)
+                src = fmt_size(job.source_size)
+                out = fmt_size(job.output_size)
                 quality_str = ""
                 if job.vmaf_score is not None:
                     v = job.vmaf_score

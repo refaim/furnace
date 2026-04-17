@@ -111,8 +111,7 @@ class PlannerService:
                 sar_overrides=effective_sar_overrides,
                 downmix_overrides=effective_overrides,
             )
-            if job is not None:
-                jobs.append(job)
+            jobs.append(job)
 
         now = datetime.datetime.now(datetime.UTC).isoformat()
         return Plan(
@@ -135,7 +134,7 @@ class PlannerService:
         dry_run: bool,
         sar_overrides: set[Path],
         downmix_overrides: dict[tuple[Path, int], DownmixMode],
-    ) -> Job | None:
+    ) -> Job:
         """Build a single Job for a Movie."""
         # Detect crop
         crop: CropRect | None = None

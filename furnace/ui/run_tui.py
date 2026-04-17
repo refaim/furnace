@@ -42,6 +42,7 @@ from furnace.core.models import (
 )
 from furnace.core.progress import TrackerSnapshot
 from furnace.core.quality import correct_sar
+from furnace.ui.fmt import fmt_size
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -57,11 +58,6 @@ def _fmt_time(seconds: float) -> str:
     if h:
         return f"{h}:{m:02d}:{s:02d}"
     return f"{m}:{s:02d}"
-
-
-def _fmt_size(n: int) -> str:
-    mb = n / (1024 * 1024)
-    return f"{mb:,.0f} MB"
 
 
 def _fmt_bitrate(bps: int | None) -> str:
@@ -80,25 +76,25 @@ def _channel_layout_short(layout: str | None) -> str:
     return layout.split("(")[0]
 
 
+_CH_LAYOUT_MAP = {1: "1.0", 2: "2.0", 6: "5.1", 8: "7.1"}
+
+_AUDIO_STEP_TEMPLATES: dict[AudioAction, str] = {
+    AudioAction.COPY: "Copy audio{num} ({codec}{ch})",
+    AudioAction.DENORM: "Denorm audio{num} ({codec}{ch})",
+    AudioAction.DECODE_ENCODE: "Recode audio{num} ({codec} -> AAC)",
+    AudioAction.FFMPEG_ENCODE: "Recode audio{num} ({codec} -> AAC)",
+}
+
+
 def _audio_step_label(instr: AudioInstruction, index: int, total: int) -> str:
     """Build a human-readable step label for an audio track."""
     codec = instr.codec_name.upper()
     ch = ""
     if instr.channels:
-        ch_map = {1: "1.0", 2: "2.0", 6: "5.1", 8: "7.1"}
-        ch = " " + ch_map.get(instr.channels, f"{instr.channels}ch")
+        ch = " " + _CH_LAYOUT_MAP.get(instr.channels, f"{instr.channels}ch")
 
     num = f" {index + 1}" if total > 1 else ""
-
-    if instr.action == AudioAction.COPY:
-        return f"Copy audio{num} ({codec}{ch})"
-    if instr.action == AudioAction.DENORM:
-        return f"Denorm audio{num} ({codec}{ch})"
-    if instr.action == AudioAction.DECODE_ENCODE:
-        return f"Recode audio{num} ({codec} -> AAC)"
-    if instr.action == AudioAction.FFMPEG_ENCODE:
-        return f"Recode audio{num} ({codec} -> AAC)"
-    return f"Audio{num} ({codec})"
+    return _AUDIO_STEP_TEMPLATES[instr.action].format(num=num, codec=codec, ch=ch)
 
 
 def _sub_step_label(instr: SubtitleInstruction, index: int, total: int) -> str:
@@ -157,12 +153,9 @@ def _build_source_text(job: Job) -> str:
         lines.append(f"{prefix} {codec} {sub_instr.language}")
 
     if job.source_size > 0:
-        lines.append(f"Size:  {_fmt_size(job.source_size)}")
+        lines.append(f"Size:  {fmt_size(job.source_size)}")
 
     return "\n".join(lines)
-
-
-_CH_LAYOUT_MAP = {1: "1.0", 2: "2.0", 6: "5.1", 8: "7.1"}
 
 
 def _target_channels(instr: AudioInstruction) -> int | None:
@@ -182,18 +175,20 @@ def _target_channel_layout(instr: AudioInstruction) -> str:
     return _CH_LAYOUT_MAP.get(ch, f"{ch}ch")
 
 
+_AUDIO_TARGET_PARTS: dict[AudioAction, Callable[[str], tuple[str, str]]] = {
+    AudioAction.COPY: lambda src: (src, "(copy)"),
+    AudioAction.DENORM: lambda src: (src, "(denorm)"),
+    AudioAction.DECODE_ENCODE: lambda src: ("AAC", f"(from {src})"),
+    AudioAction.FFMPEG_ENCODE: lambda src: ("AAC", f"(from {src})"),
+}
+
+
 def _audio_target_label(instr: AudioInstruction) -> str:
     """Describe what this audio track becomes."""
     src_codec = instr.codec_name.upper()
     layout = _target_channel_layout(instr)
-
-    if instr.action == AudioAction.COPY:
-        return " ".join(p for p in [src_codec, layout, "(copy)"] if p)
-    if instr.action == AudioAction.DENORM:
-        return " ".join(p for p in [src_codec, layout, "(denorm)"] if p)
-    if instr.action in (AudioAction.DECODE_ENCODE, AudioAction.FFMPEG_ENCODE):
-        return " ".join(p for p in ["AAC", layout, f"(from {src_codec})"] if p)
-    return src_codec
+    head, tag = _AUDIO_TARGET_PARTS[instr.action](src_codec)
+    return " ".join(p for p in [head, layout, tag] if p)
 
 
 def _sub_target_label(instr: SubtitleInstruction) -> str:
@@ -504,7 +499,7 @@ class RunApp(App[None]):
     def _do_update_output_size(self, size_bytes: int) -> None:
         self._output_size = size_bytes
         target_w = self.query_one("#target", TargetWidget)
-        size_str = _fmt_size(size_bytes) if size_bytes > 0 else "..."
+        size_str = fmt_size(size_bytes) if size_bytes > 0 else "..."
         target_w.update(f"{self._target_base_text}\nSize:  {size_str}")
 
     def _do_finish_job(self, job: Job) -> None:

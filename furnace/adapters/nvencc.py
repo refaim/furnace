@@ -41,18 +41,12 @@ def _parse_nvencc_progress_line(
     m_pct = _NVENCC_PCT_RE.search(line)
     if not m_pct:
         return None
-    try:
-        fraction = float(m_pct.group(1)) / 100.0
-    except ValueError:
-        return None
+    fraction = float(m_pct.group(1)) / 100.0
     speed: float | None = None
     if src_fps and src_fps > 0:
         m_fps = _NVENCC_FPS_RE.search(line)
         if m_fps:
-            try:
-                speed = float(m_fps.group(1)) / src_fps
-            except ValueError:
-                speed = None
+            speed = float(m_fps.group(1)) / src_fps
     return ProgressSample(fraction=fraction, speed=speed)
 
 

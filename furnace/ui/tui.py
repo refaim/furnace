@@ -21,16 +21,25 @@ from furnace.core.models import (
     Track,
     TrackType,
 )
+from furnace.ui.fmt import fmt_size
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
 
-def _fmt_size(n: int) -> str:
-    """File size in MB."""
-    mb = n / (1024 * 1024)
-    return f"{mb:,.0f} MB"
+def build_downmix_map(
+    tracks: list[Track],
+    selected: list[bool],
+    downmix_list: list[DownmixMode | None],
+) -> dict[tuple[Path, int], DownmixMode]:
+    """Build downmix override map from selector state."""
+    result: dict[tuple[Path, int], DownmixMode] = {}
+    for i, track in enumerate(tracks):
+        mode = downmix_list[i]
+        if selected[i] and mode is not None:
+            result[(track.source_file, track.index)] = mode
+    return result
 
 
 def _fmt_duration(s: float) -> str:
@@ -146,7 +155,7 @@ class TrackSelectorScreen(Screen[TrackSelection]):
     def compose(self) -> ComposeResult:
         v = self._movie.video
         duration = _fmt_duration(v.duration_s)
-        size = _fmt_size(self._movie.file_size)
+        size = fmt_size(self._movie.file_size)
         codec = v.codec_name.upper()
         resolution = f"{v.width}x{v.height}"
         kind = "Audio" if self._track_type == TrackType.AUDIO else "Subtitles"
@@ -230,10 +239,7 @@ class TrackSelectorScreen(Screen[TrackSelection]):
 
     def action_done(self) -> None:
         selected_tracks = [t for t, sel in zip(self._tracks, self._selected, strict=True) if sel]
-        downmix_map: dict[tuple[Path, int], DownmixMode] = {}
-        for i, (track, mode) in enumerate(zip(self._tracks, self._downmix, strict=True)):
-            if mode is not None and self._selected[i]:
-                downmix_map[(Path(str(track.source_file)), track.index)] = mode
+        downmix_map = build_downmix_map(self._tracks, self._selected, self._downmix)
         self.dismiss(TrackSelection(tracks=selected_tracks, downmix=downmix_map))
 
     # ------------------------------------------------------------------
@@ -401,7 +407,7 @@ class FileSelectorScreen(Screen[FileSelection]):
         path, duration_s, size_bytes = self._files[index]
         mark = "x" if self._selected[index] else " "
         duration = _fmt_duration(duration_s)
-        size = _fmt_size(size_bytes)
+        size = fmt_size(size_bytes)
         sar_tag = "  SAR" if self._sar_override[index] else ""
         return f"\\[{mark}]  {path.name}  |  {duration}  {size}{sar_tag}"
 
@@ -443,7 +449,11 @@ class FileSelectorScreen(Screen[FileSelection]):
 
     def action_done(self) -> None:
         selected = [f[0] for f, sel in zip(self._files, self._selected, strict=True) if sel]
-        sar_set = {f[0] for f, sel, sar in zip(self._files, self._selected, self._sar_override, strict=True) if sel and sar}
+        sar_set = {
+            f[0]
+            for f, sel, sar in zip(self._files, self._selected, self._sar_override, strict=True)
+            if sel and sar
+        }
         self.dismiss(FileSelection(selected=selected, sar_override=sar_set))
 
     def on_list_view_highlighted(self, event: ListView.Highlighted) -> None:
@@ -452,6 +462,35 @@ class FileSelectorScreen(Screen[FileSelection]):
             if item_id.startswith("file-item-"):
                 with contextlib.suppress(ValueError):
                     self._cursor = int(item_id.removeprefix("file-item-"))
+
+
+# ---------------------------------------------------------------------------
+# Crop value parsing (pure function)
+# ---------------------------------------------------------------------------
+
+
+_CROP_FIELDS = 4
+
+
+def parse_crop_value(text: str, source_w: int, source_h: int) -> CropRect:
+    """Parse ``'w:h:x:y'`` crop string, validate, return CropRect.
+
+    Raises ValueError on any validation failure.
+    """
+    parts = text.strip().split(":")
+    if len(parts) != _CROP_FIELDS:
+        raise ValueError("Expected w:h:x:y")
+    try:
+        w, h, x, y = (int(p) for p in parts)
+    except ValueError:
+        raise ValueError("All values must be integers")  # noqa: B904
+    if w <= 0 or h <= 0:
+        raise ValueError("Width and height must be positive")
+    if x < 0 or y < 0:
+        raise ValueError("Offsets must be non-negative")
+    if x + w > source_w or y + h > source_h:
+        raise ValueError("Crop exceeds source dimensions")
+    return CropRect(w=w, h=h, x=x, y=y)
 
 
 # ---------------------------------------------------------------------------
@@ -499,8 +538,13 @@ class CropConfirmScreen(Screen[CropRect | None]):
             id="crop-dialog",
         )
         yield Footer()
-        # Hide input initially
-        self.query_one("#crop-input", Input).display = False
+
+    def on_mount(self) -> None:
+        # Hide input initially — must run after compose so the widget exists.
+        inp = self.query_one("#crop-input", Input)
+        inp.display = False
+        inp.can_focus = False
+        self.set_focus(None)
 
     def action_accept(self) -> None:
         if self._edit_mode:
@@ -516,29 +560,22 @@ class CropConfirmScreen(Screen[CropRect | None]):
         if not self._edit_mode:
             self._edit_mode = True
             inp.display = True
+            inp.can_focus = True
             inp.focus()
             self.query_one("#crop-actions", Static).update("(A)ccept/Confirm   (R)eject   editing...")
         else:
             self._confirm_edit()
 
     def _confirm_edit(self) -> None:
-        inp = self.query_one("#crop-input", Input)
+        text = self.query_one("#crop-input", Input).value
         error_widget = self.query_one("#crop-error", Static)
-        raw = inp.value.strip()
-        parts = raw.split(":")
-        if len(parts) != len(["w", "h", "x", "y"]):
-            error_widget.update("[red]Enter exactly 4 values: w:h:x:y[/red]")
-            return
         try:
-            w, h, x, y = (int(p) for p in parts)
-        except ValueError:
-            error_widget.update("[red]All values must be integers[/red]")
-            return
-        if w <= 0 or h <= 0 or x < 0 or y < 0:
-            error_widget.update("[red]w and h must be positive; x and y must be >= 0[/red]")
+            crop = parse_crop_value(text, self._source_width, self._source_height)
+        except ValueError as exc:
+            error_widget.update(f"[red]{exc}[/red]")
             return
         error_widget.update("")
-        self.dismiss(CropRect(w=w, h=h, x=x, y=y))
+        self.dismiss(crop)
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         if event.input.id == "crop-input" and self._edit_mode:
@@ -686,7 +723,7 @@ class FurnacePlanApp(App[list[_PlanResult]]):
         height: auto;
         border: dashed $primary;
         padding: 1 2;
-        margin: 2 auto;
+        margin: 2;
     }
     #crop-title {
         text-style: bold;

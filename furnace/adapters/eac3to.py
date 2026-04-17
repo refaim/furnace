@@ -34,10 +34,7 @@ def _parse_eac3to_progress_line(line: str) -> ProgressSample | None:
     m = _EAC3TO_PROGRESS_RE.match(line.strip())
     if not m:
         return None
-    try:
-        pct = int(m.group(1))
-    except ValueError:
-        return None
+    pct = int(m.group(1))
     return ProgressSample(fraction=pct / 100.0)
 
 

@@ -112,7 +112,10 @@ CASES = [
     ("smpte170m", "bt470m", None, VideoSystem.NTSC, False, ResolvedColor("smpte170m", "bt470m", "smpte170m")),
     ("smpte170m", "smpte170m", "bt709", VideoSystem.PAL, False, ResolvedColor("smpte170m", "smpte170m", "bt709")),
     ("smpte170m", "smpte170m", "bt470bg", VideoSystem.PAL, False, ResolvedColor("smpte170m", "smpte170m", "bt470bg")),
-    ("smpte170m", "smpte170m", "smpte170m", VideoSystem.PAL, False, ResolvedColor("smpte170m", "smpte170m", "smpte170m")),
+    (
+        "smpte170m", "smpte170m", "smpte170m", VideoSystem.PAL, False,
+        ResolvedColor("smpte170m", "smpte170m", "smpte170m"),
+    ),
     ("smpte170m", "smpte170m", "bt470m", VideoSystem.PAL, False, ResolvedColor("smpte170m", "smpte170m", "bt470m")),
     ("smpte170m", "smpte170m", None, VideoSystem.PAL, False, ResolvedColor("smpte170m", "smpte170m", "bt470bg")),
     ("smpte170m", "smpte170m", None, VideoSystem.NTSC, False, ResolvedColor("smpte170m", "smpte170m", "smpte170m")),

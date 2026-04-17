@@ -6,56 +6,36 @@ from unittest.mock import MagicMock
 
 from furnace.core.models import (
     AudioCodecId,
-    HdrMetadata,
     Movie,
     Track,
     TrackType,
-    VideoInfo,
 )
 from furnace.services.planner import PlannerService
+from tests.conftest import make_movie, make_track, make_video_info
 
 
 def _make_movie_with_audio(tmp_path: Path, audio: list[Track]) -> Movie:
     main = tmp_path / "movie.mkv"
     main.write_bytes(b"")
-    video = VideoInfo(
-        index=0,
-        codec_name="hevc",
-        width=1920, height=1080,
-        pixel_area=1920 * 1080,
-        fps_num=24, fps_den=1,
-        duration_s=5400.0,
-        interlaced=False,
-        color_matrix_raw="bt709",
-        color_range="tv",
-        color_transfer="bt709",
-        color_primaries="bt709",
-        pix_fmt="yuv420p10le",
-        hdr=HdrMetadata(
-            mastering_display=None, content_light=None,
-            is_dolby_vision=False, is_hdr10_plus=False,
+    return make_movie(
+        main_file=main,
+        video=make_video_info(
+            codec_name="hevc", pix_fmt="yuv420p10le",
+            source_file=main, bitrate=10_000_000,
         ),
-        source_file=main,
-        bitrate=10_000_000,
-        sar_num=1, sar_den=1,
-    )
-    return Movie(
-        main_file=main, satellite_files=[], file_size=0, video=video,
-        audio_tracks=audio, subtitle_tracks=[], attachments=[],
-        has_chapters=False,
+        audio_tracks=audio,
     )
 
 
 def _audio(index: int, language: str, channels: int | None, codec: str = "truehd") -> Track:
-    codec_id_map = {
+    codec_id_map: dict[str, AudioCodecId] = {
         "truehd": AudioCodecId.TRUEHD,
         "aac": AudioCodecId.AAC_LC,
         "ac3": AudioCodecId.AC3,
     }
-    return Track(
+    return make_track(
         index=index, track_type=TrackType.AUDIO, codec_name=codec,
-        codec_id=codec_id_map[codec], language=language, title="",
-        is_default=False, is_forced=False, source_file=Path("/src/movie.mkv"),
+        codec_id=codec_id_map[codec], language=language,
         channels=channels, bitrate=4_500_000,
     )
 
@@ -141,3 +121,31 @@ class TestXATrigger:
         assert len(plan.jobs) == 1
         assert len(plan.jobs[0].audio) == 1
         assert plan.jobs[0].audio[0].downmix is None
+
+    def test_all_stereo_tracks_auto_select_no_tui(self, tmp_path: Path) -> None:
+        """When ALL audio tracks are stereo across different langs, the for-loop
+        exits without returning None (line 359->364), so no TUI is invoked."""
+        movie = _make_movie_with_audio(
+            tmp_path,
+            [
+                _audio(1, "eng", 2, codec="aac"),
+                _audio(2, "rus", 2, codec="aac"),
+            ],
+        )
+        prober = MagicMock()
+        prober.detect_crop.return_value = None
+        selector = MagicMock(return_value=[])
+        planner = PlannerService(prober=prober, previewer=None, track_selector=selector)
+
+        plan = planner.create_plan(
+            [(movie, tmp_path / "out.mkv")],
+            audio_lang_filter=["eng", "rus"],
+            sub_lang_filter=["eng"],
+            vmaf_enabled=False,
+            dry_run=False,
+        )
+
+        audio_calls = [c for c in selector.call_args_list if c[0][2] == TrackType.AUDIO]
+        assert audio_calls == []
+        assert len(plan.jobs) == 1
+        assert len(plan.jobs[0].audio) == 2

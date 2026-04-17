@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import bisect
 import math
 
 from .models import CropRect
@@ -23,13 +24,12 @@ def interpolate_cq(pixel_area: int) -> int:
         return CQ_ANCHORS[0][1]
     if pixel_area >= CQ_ANCHORS[-1][0]:
         return CQ_ANCHORS[-1][1]
-    for i in range(len(CQ_ANCHORS) - 1):
-        x0, y0 = CQ_ANCHORS[i]
-        x1, y1 = CQ_ANCHORS[i + 1]
-        if x0 <= pixel_area <= x1:
-            t = (pixel_area - x0) / (x1 - x0)
-            return round(y0 + t * (y1 - y0))
-    return CQ_ANCHORS[-1][1]
+    xs = [a[0] for a in CQ_ANCHORS]
+    i = bisect.bisect_left(xs, pixel_area)
+    x0, y0 = CQ_ANCHORS[i - 1]
+    x1, y1 = CQ_ANCHORS[i]
+    t = (pixel_area - x0) / (x1 - x0)
+    return round(y0 + t * (y1 - y0))
 
 
 def calculate_gop(fps_num: int, fps_den: int) -> int:

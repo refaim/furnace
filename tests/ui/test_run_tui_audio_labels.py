@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from furnace.core.models import AudioAction, AudioInstruction, DownmixMode
 from furnace.ui.run_tui import _audio_target_label
+from tests.conftest import make_audio_instruction
 
 
 def _instr(
@@ -17,13 +18,8 @@ def _instr(
     channels: int | None = 6,
     downmix: DownmixMode | None = None,
 ) -> AudioInstruction:
-    return AudioInstruction(
-        source_file="/src/movie.mkv",
-        stream_index=1,
-        language="eng",
+    return make_audio_instruction(
         action=action,
-        delay_ms=0,
-        is_default=True,
         codec_name=codec_name,
         channels=channels,
         bitrate=448_000,

@@ -73,8 +73,6 @@ def run_tool(
         lock = threading.Lock()
 
         def _emit(line: str) -> None:
-            if not line:
-                return
             # Give the progress parser first dibs. If it consumes the line
             # (returns True), the line does NOT go to log / on_output —
             # progress spam stays out of the diagnostic channel.

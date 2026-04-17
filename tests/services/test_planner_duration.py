@@ -3,53 +3,19 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import MagicMock
 
-from furnace.core.models import (
-    AudioCodecId,
-    HdrMetadata,
-    Movie,
-    Track,
-    TrackType,
-    VideoInfo,
-)
+from furnace.core.models import Movie
 from furnace.services.planner import PlannerService
+from tests.conftest import make_movie, make_track, make_video_info
 
 
-def _make_video(duration_s: float = 1234.5) -> VideoInfo:
-    return VideoInfo(
-        index=0, codec_name="h264", width=1920, height=1080,
-        pixel_area=1920 * 1080, fps_num=24000, fps_den=1001,
-        duration_s=duration_s, interlaced=False, color_matrix_raw="bt709",
-        color_range="tv", color_transfer="bt709", color_primaries="bt709",
-        pix_fmt="yuv420p", hdr=HdrMetadata(), source_file=Path("/src/movie.mkv"),
-        bitrate=20_000_000,
-    )
-
-
-def _make_audio_track() -> Track:
-    return Track(
-        index=0,
-        track_type=TrackType.AUDIO,
-        codec_name="aac",
-        codec_id=AudioCodecId.AAC_LC,
-        language="eng",
-        title="",
-        is_default=True,
-        is_forced=False,
-        source_file=Path("/src/movie.mkv"),
-        channels=2,
-        bitrate=192000,
-    )
-
-
-def _make_movie(duration_s: float = 1234.5) -> Movie:
-    return Movie(
-        main_file=Path("/src/movie.mkv"),
-        satellite_files=[],
-        video=_make_video(duration_s=duration_s),
-        audio_tracks=[_make_audio_track()],
-        subtitle_tracks=[],
-        attachments=[],
-        has_chapters=False,
+def _make_movie_dur(duration_s: float = 1234.5) -> Movie:
+    return make_movie(
+        video=make_video_info(
+            fps_num=24000, fps_den=1001,
+            duration_s=duration_s,
+            bitrate=20_000_000,
+        ),
+        audio_tracks=[make_track(is_default=True, bitrate=192000)],
         file_size=1_000_000_000,
     )
 
@@ -57,7 +23,7 @@ def _make_movie(duration_s: float = 1234.5) -> Movie:
 class TestJobDurationS:
     def test_duration_s_populated_from_movie_video(self) -> None:
         """Job.duration_s must be set from movie.video.duration_s."""
-        movie = _make_movie(duration_s=1234.5)
+        movie = _make_movie_dur(duration_s=1234.5)
         output_path = Path("/out/movie.mkv")
 
         prober = MagicMock()
@@ -77,7 +43,7 @@ class TestJobDurationS:
 
     def test_duration_s_zero_when_video_duration_zero(self) -> None:
         """Job.duration_s == 0.0 when source video duration is unknown."""
-        movie = _make_movie(duration_s=0.0)
+        movie = _make_movie_dur(duration_s=0.0)
         output_path = Path("/out/movie.mkv")
 
         prober = MagicMock()

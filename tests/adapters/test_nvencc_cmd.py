@@ -1,10 +1,14 @@
 """Tests for NVEncCAdapter._build_encode_cmd and _build_encoder_settings."""
 from __future__ import annotations
 
+import dataclasses
 from pathlib import Path
+from typing import Any
+from unittest.mock import MagicMock, patch
 
-from furnace.adapters.nvencc import NVEncCAdapter
+from furnace.adapters.nvencc import NVEncCAdapter, _parse_content_light
 from furnace.core.models import CropRect, DvMode, HdrMetadata, VideoParams
+from furnace.core.progress import ProgressSample
 
 
 def _make_vp(
@@ -447,3 +451,362 @@ class TestNVEncCOutputFormat:
     def test_output_flag_is_dash_o(self) -> None:
         cmd = _cmd(_make_vp())
         assert "-o" in cmd
+
+
+class TestNVEncCSarInSettings:
+    """SAR appears in the encoder_settings string."""
+
+    def test_sar_in_settings(self) -> None:
+        adapter = _adapter()
+        vp = _make_vp(sar_num=64, sar_den=45)
+        settings = adapter._build_encoder_settings(vp)
+        assert "sar=" in settings
+
+    def test_no_sar_when_square_in_settings(self) -> None:
+        adapter = _adapter()
+        vp = _make_vp(sar_num=1, sar_den=1)
+        settings = adapter._build_encoder_settings(vp)
+        assert "sar=" not in settings
+
+
+class TestNVEncCDvCropParam:
+    """DV crop=true in --dolby-vision-rpu-prm when crop is applied."""
+
+    def test_dv_crop_param(self) -> None:
+        vp = _make_vp(
+            dv_mode=DvMode.COPY,
+            crop=CropRect(w=3560, h=2160, x=140, y=0),
+        )
+        cmd = _cmd(vp, rpu_path=Path("rpu.bin"))
+        idx = cmd.index("--dolby-vision-rpu-prm")
+        assert cmd[idx + 1] == "crop=true"
+
+    def test_dv_no_crop_param_when_no_crop(self) -> None:
+        vp = _make_vp(dv_mode=DvMode.COPY, crop=None)
+        cmd = _cmd(vp, rpu_path=Path("rpu.bin"))
+        assert "--dolby-vision-rpu-prm" not in cmd
+
+
+class TestNVEncCColorRangeFalsy:
+    """color_range='unknown' should produce no --colorrange flag."""
+
+    def test_unknown_color_range_no_flag(self) -> None:
+        vp = dataclasses.replace(_make_vp(), color_range="unknown")
+        cmd = _cmd(vp)
+        assert "--colorrange" not in cmd
+
+
+class TestNVEncCContentLightParseFailure:
+    """Invalid content_light string should not produce --max-cll."""
+
+    def test_garbage_content_light(self) -> None:
+        hdr = HdrMetadata(content_light="garbage")
+        vp = _make_vp(hdr=hdr)
+        cmd = _cmd(vp)
+        assert "--max-cll" not in cmd
+
+
+class TestParseContentLight:
+    """_parse_content_light pure function."""
+
+    def test_valid_input(self) -> None:
+        result = _parse_content_light("MaxCLL=1000,MaxFALL=400")
+        assert result == ("1000", "400")
+
+    def test_valid_with_spaces(self) -> None:
+        result = _parse_content_light("MaxCLL=1000, MaxFALL=400")
+        assert result == ("1000", "400")
+
+    def test_invalid_input(self) -> None:
+        result = _parse_content_light("not valid")
+        assert result is None
+
+
+class TestNVEncCGetVersion:
+    """_get_version caching and error handling."""
+
+    def test_version_parsed(self) -> None:
+        adapter = _adapter()
+        mock_result = MagicMock()
+        mock_result.stdout = "NVEncC (x64) 7.72 (r2856)"
+        with patch("furnace.adapters.nvencc.subprocess.run", return_value=mock_result):
+            version = adapter._get_version()
+        assert version == "7.72"
+
+    def test_version_cached(self) -> None:
+        adapter = _adapter()
+        mock_result = MagicMock()
+        mock_result.stdout = "NVEncC (x64) 7.72 (r2856)"
+        with patch("furnace.adapters.nvencc.subprocess.run", return_value=mock_result) as mock_run:
+            v1 = adapter._get_version()
+            v2 = adapter._get_version()
+        assert v1 == v2
+        mock_run.assert_called_once()
+
+    def test_version_oserror_returns_empty(self) -> None:
+        adapter = _adapter()
+        with patch("furnace.adapters.nvencc.subprocess.run", side_effect=OSError("not found")):
+            version = adapter._get_version()
+        assert version == ""
+
+
+class TestNVEncCSetLogDir:
+    def test_set_log_dir(self, tmp_path: Path) -> None:
+        adapter = _adapter()
+        adapter.set_log_dir(tmp_path)
+        assert adapter._log_dir == tmp_path
+
+
+class TestNVEncCEncode:
+    """encode() execution with mocked run_tool."""
+
+    def test_encode_returns_result(self) -> None:
+        adapter = _adapter()
+        vp = _make_vp()
+
+        def fake_run_tool(
+            cmd: Any,
+            on_output: Any = None,
+            on_progress_line: Any = None,
+            log_path: Any = None,
+            cwd: Any = None,
+        ) -> tuple[int, str]:
+            return 0, ""
+
+        with patch("furnace.adapters.nvencc.subprocess.run") as mock_sub:
+            mock_sub.return_value.stdout = "NVEncC (x64) 7.72 (r2856)"
+            with patch("furnace.adapters.nvencc.run_tool", side_effect=fake_run_tool):
+                result = adapter.encode(Path("input.mkv"), Path("output.hevc"), vp)
+        assert result.return_code == 0
+        assert "hevc_nvenc" in result.encoder_settings
+
+    def test_encode_ssim_parsing(self) -> None:
+        adapter = _adapter()
+        vp = _make_vp()
+
+        def fake_run_tool(
+            cmd: Any,
+            on_output: Any = None,
+            on_progress_line: Any = None,
+            log_path: Any = None,
+            cwd: Any = None,
+        ) -> tuple[int, str]:
+            if on_output is not None:
+                on_output("SSIM YUV   All: 0.9842")
+            return 0, ""
+
+        with patch("furnace.adapters.nvencc.subprocess.run") as mock_sub:
+            mock_sub.return_value.stdout = ""
+            with patch("furnace.adapters.nvencc.run_tool", side_effect=fake_run_tool):
+                result = adapter.encode(Path("input.mkv"), Path("output.hevc"), vp)
+        assert result.ssim_score is not None
+        assert abs(result.ssim_score - 0.9842) < 0.001
+
+    def test_encode_vmaf_parsing(self) -> None:
+        adapter = _adapter()
+        vp = _make_vp()
+
+        def fake_run_tool(
+            cmd: Any,
+            on_output: Any = None,
+            on_progress_line: Any = None,
+            log_path: Any = None,
+            cwd: Any = None,
+        ) -> tuple[int, str]:
+            if on_output is not None:
+                on_output("VMAF Score 95.31")
+            return 0, ""
+
+        with patch("furnace.adapters.nvencc.subprocess.run") as mock_sub:
+            mock_sub.return_value.stdout = ""
+            with patch("furnace.adapters.nvencc.run_tool", side_effect=fake_run_tool):
+                result = adapter.encode(Path("input.mkv"), Path("output.hevc"), vp)
+        assert result.vmaf_score is not None
+        assert abs(result.vmaf_score - 95.31) < 0.01
+
+    def test_encode_progress_callback(self) -> None:
+        adapter = _adapter()
+        vp = _make_vp()
+        samples: list[ProgressSample] = []
+
+        def fake_run_tool(
+            cmd: Any,
+            on_output: Any = None,
+            on_progress_line: Any = None,
+            log_path: Any = None,
+            cwd: Any = None,
+        ) -> tuple[int, str]:
+            if on_progress_line is not None:
+                on_progress_line("[50.0%] 1000 frames: 48.0 fps")
+            return 0, ""
+
+        with patch("furnace.adapters.nvencc.subprocess.run") as mock_sub:
+            mock_sub.return_value.stdout = ""
+            with patch("furnace.adapters.nvencc.run_tool", side_effect=fake_run_tool):
+                adapter.encode(Path("input.mkv"), Path("output.hevc"), vp, on_progress=samples.append)
+        assert len(samples) == 1
+        assert abs(samples[0].fraction - 0.5) < 0.01  # type: ignore[operator]
+
+    def test_encode_log_path(self, tmp_path: Path) -> None:
+        adapter = NVEncCAdapter(Path("NVEncC64.exe"), log_dir=tmp_path)
+        vp = _make_vp()
+        captured_kwargs: dict[str, Any] = {}
+
+        def fake_run_tool(
+            cmd: Any,
+            on_output: Any = None,
+            on_progress_line: Any = None,
+            log_path: Any = None,
+            cwd: Any = None,
+        ) -> tuple[int, str]:
+            captured_kwargs["log_path"] = log_path
+            return 0, ""
+
+        with patch("furnace.adapters.nvencc.subprocess.run") as mock_sub:
+            mock_sub.return_value.stdout = ""
+            with patch("furnace.adapters.nvencc.run_tool", side_effect=fake_run_tool):
+                adapter.encode(Path("input.mkv"), Path("output.hevc"), vp)
+        assert captured_kwargs["log_path"] == tmp_path / "nvencc_encode.log"
+
+    def test_encode_no_on_output(self) -> None:
+        """Adapter without on_output: SSIM/VMAF lines still parsed via internal callback."""
+        adapter = NVEncCAdapter(Path("NVEncC64.exe"), on_output=None)
+        vp = _make_vp()
+
+        def fake_run_tool(
+            cmd: Any,
+            on_output: Any = None,
+            on_progress_line: Any = None,
+            log_path: Any = None,
+            cwd: Any = None,
+        ) -> tuple[int, str]:
+            # Trigger the on_output callback with SSIM and VMAF lines
+            if on_output is not None:
+                on_output("SSIM YUV   All: 0.9900")
+                on_output("VMAF Score 96.50")
+            return 0, ""
+
+        with patch("furnace.adapters.nvencc.subprocess.run") as mock_sub:
+            mock_sub.return_value.stdout = ""
+            with patch("furnace.adapters.nvencc.run_tool", side_effect=fake_run_tool):
+                result = adapter.encode(Path("in.mkv"), Path("out.hevc"), vp)
+        assert result.ssim_score is not None
+        assert result.vmaf_score is not None
+
+    def test_encode_no_on_progress(self) -> None:
+        """encode without on_progress: progress line still consumed, no callback."""
+        adapter = _adapter()
+        vp = _make_vp()
+
+        def fake_run_tool(
+            cmd: Any,
+            on_output: Any = None,
+            on_progress_line: Any = None,
+            log_path: Any = None,
+            cwd: Any = None,
+        ) -> tuple[int, str]:
+            if on_progress_line is not None:
+                consumed = on_progress_line("[50.0%] frames")
+                assert consumed is True
+            return 0, ""
+
+        with patch("furnace.adapters.nvencc.subprocess.run") as mock_sub:
+            mock_sub.return_value.stdout = ""
+            with patch("furnace.adapters.nvencc.run_tool", side_effect=fake_run_tool):
+                result = adapter.encode(Path("in.mkv"), Path("out.hevc"), vp, on_progress=None)
+        assert result.return_code == 0
+
+    def test_encode_on_output_non_metric_lines(self) -> None:
+        """Lines without SSIM/VMAF keywords don't set scores."""
+        output_lines: list[str] = []
+        adapter = NVEncCAdapter(Path("NVEncC64.exe"), on_output=output_lines.append)
+        vp = _make_vp()
+
+        def fake_run_tool(
+            cmd: Any,
+            on_output: Any = None,
+            on_progress_line: Any = None,
+            log_path: Any = None,
+            cwd: Any = None,
+        ) -> tuple[int, str]:
+            if on_output is not None:
+                on_output("encode started")
+                on_output("encode finished")
+            return 0, ""
+
+        with patch("furnace.adapters.nvencc.subprocess.run") as mock_sub:
+            mock_sub.return_value.stdout = ""
+            with patch("furnace.adapters.nvencc.run_tool", side_effect=fake_run_tool):
+                result = adapter.encode(Path("in.mkv"), Path("out.hevc"), vp)
+        assert result.ssim_score is None
+        assert result.vmaf_score is None
+        assert "encode started" in output_lines
+
+    def test_encode_non_progress_line_not_consumed(self) -> None:
+        """Non-progress lines return False from the progress closure."""
+        adapter = _adapter()
+        vp = _make_vp()
+        results: list[bool] = []
+
+        def fake_run_tool(
+            cmd: Any,
+            on_output: Any = None,
+            on_progress_line: Any = None,
+            log_path: Any = None,
+            cwd: Any = None,
+        ) -> tuple[int, str]:
+            if on_progress_line is not None:
+                results.append(on_progress_line("not a progress line"))
+            return 0, ""
+
+        with patch("furnace.adapters.nvencc.subprocess.run") as mock_sub:
+            mock_sub.return_value.stdout = ""
+            with patch("furnace.adapters.nvencc.run_tool", side_effect=fake_run_tool):
+                adapter.encode(Path("in.mkv"), Path("out.hevc"), vp)
+        assert results == [False]
+
+    def test_encode_ssim_line_without_numeric_skipped(self) -> None:
+        """Line contains 'SSIM' keyword but numeric regex fails → score stays None."""
+        adapter = _adapter()
+        vp = _make_vp()
+
+        def fake_run_tool(
+            cmd: Any,
+            on_output: Any = None,
+            on_progress_line: Any = None,
+            log_path: Any = None,
+            cwd: Any = None,
+        ) -> tuple[int, str]:
+            if on_output is not None:
+                # Keyword present, but no `All: <number>` match.
+                on_output("SSIM YUV  All: N/A")
+            return 0, ""
+
+        with patch("furnace.adapters.nvencc.subprocess.run") as mock_sub:
+            mock_sub.return_value.stdout = ""
+            with patch("furnace.adapters.nvencc.run_tool", side_effect=fake_run_tool):
+                result = adapter.encode(Path("in.mkv"), Path("out.hevc"), vp)
+        assert result.ssim_score is None
+
+    def test_encode_vmaf_line_without_numeric_skipped(self) -> None:
+        """Line contains 'VMAF' keyword but numeric regex fails → score stays None."""
+        adapter = _adapter()
+        vp = _make_vp()
+
+        def fake_run_tool(
+            cmd: Any,
+            on_output: Any = None,
+            on_progress_line: Any = None,
+            log_path: Any = None,
+            cwd: Any = None,
+        ) -> tuple[int, str]:
+            if on_output is not None:
+                # Keyword present, but no `VMAF Score <number>` match.
+                on_output("VMAF Score calculation skipped")
+            return 0, ""
+
+        with patch("furnace.adapters.nvencc.subprocess.run") as mock_sub:
+            mock_sub.return_value.stdout = ""
+            with patch("furnace.adapters.nvencc.run_tool", side_effect=fake_run_tool):
+                result = adapter.encode(Path("in.mkv"), Path("out.hevc"), vp)
+        assert result.vmaf_score is None

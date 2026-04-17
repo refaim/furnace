@@ -169,7 +169,10 @@ class FFmpegAdapter:
                 "-",
             ]
             logger.debug("detect_crop cmd: %s", cmd)
-            result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", check=False)
+            result = subprocess.run(
+                cmd, capture_output=True, text=True,
+                encoding="utf-8", errors="replace", check=False,
+            )
             last_crop: str | None = None
             for line in result.stderr.splitlines():
                 m = re.search(r"crop=(\d+:\d+:\d+:\d+)", line)
@@ -177,15 +180,15 @@ class FFmpegAdapter:
                     last_crop = m.group(1)
             if last_crop is not None:
                 parts = last_crop.split(":")
-                if len(parts) == len(["w", "h", "x", "y"]):
-                    crop_values.append(
-                        CropRect(
-                            w=int(parts[0]),
-                            h=int(parts[1]),
-                            x=int(parts[2]),
-                            y=int(parts[3]),
-                        )
+                # Regex `crop=(\d+:\d+:\d+:\d+)` structurally guarantees 4 parts.
+                crop_values.append(
+                    CropRect(
+                        w=int(parts[0]),
+                        h=int(parts[1]),
+                        x=int(parts[2]),
+                        y=int(parts[3]),
                     )
+                )
 
         if not crop_values:
             return None
@@ -245,7 +248,10 @@ class FFmpegAdapter:
                 "-",
             ]
             logger.debug("run_idet cmd: %s", cmd)
-            result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", check=False)
+            result = subprocess.run(
+                cmd, capture_output=True, text=True,
+                encoding="utf-8", errors="replace", check=False,
+            )
 
             for line in result.stderr.splitlines():
                 m = re.search(

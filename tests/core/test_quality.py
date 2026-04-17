@@ -82,6 +82,39 @@ class TestInterpolateCq:
         cqs = [interpolate_cq(a) for a in areas]
         assert cqs == sorted(cqs)
 
+    def test_just_above_sd_anchor(self) -> None:
+        """Pixel area one above SD anchor -> still CQ 22 (close to y0=22)."""
+        # At x0+1, t ~ 0, round(22 + ~0*(24-22)) = 22
+        assert interpolate_cq(409_921) == 22
+
+    def test_just_below_4k_anchor(self) -> None:
+        """Pixel area one below 4K anchor -> CQ 31 (very close to y1=31)."""
+        # At x1-1, t ~ 1, round(28 + ~1*(31-28)) = 31
+        assert interpolate_cq(8_294_399) == 31
+
+    def test_midpoint_sd_720p_exact(self) -> None:
+        """Midpoint between SD and 720p: t=0.5 -> round(22 + 0.5*2) = 23."""
+        x0, _ = CQ_ANCHORS[0]
+        x1, _ = CQ_ANCHORS[1]
+        mid = (x0 + x1) // 2
+        # t ~= 0.5, y = 22 + 0.5*2 = 23.0
+        assert interpolate_cq(mid) == 23
+
+    def test_midpoint_1440p_4k_exact(self) -> None:
+        """Midpoint between 1440p and 4K: t=0.5 -> round(28 + 0.5*3) = round(29.5) = 30."""
+        x0, _ = CQ_ANCHORS[3]
+        x1, _ = CQ_ANCHORS[4]
+        mid = (x0 + x1) // 2
+        # t ~= 0.5, y = 28 + 0.5*3 = 29.5 -> banker's rounding -> 30
+        assert interpolate_cq(mid) == 30
+
+    def test_quarter_720p_to_1080p(self) -> None:
+        """Quarter point between 720p (24) and 1080p (25): t=0.25 -> round(24.25) = 24."""
+        x0, _ = CQ_ANCHORS[1]
+        x1, _ = CQ_ANCHORS[2]
+        q = x0 + (x1 - x0) // 4
+        assert interpolate_cq(q) == 24
+
 
 # ---------------------------------------------------------------------------
 # test_align_dimensions

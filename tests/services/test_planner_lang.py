@@ -5,40 +5,32 @@ from unittest.mock import MagicMock
 
 from furnace.core.models import (
     AudioCodecId,
+    Movie,
     SubtitleCodecId,
     Track,
     TrackType,
 )
 from furnace.services.planner import PlannerService
+from tests.conftest import make_movie, make_track, make_video_info
 
 
 def _audio_track(language: str, index: int = 0) -> Track:
-    return Track(
+    return make_track(
         index=index,
-        track_type=TrackType.AUDIO,
-        codec_name="aac",
-        codec_id=AudioCodecId.AAC_LC,
         language=language,
-        title="",
-        is_default=False,
-        is_forced=False,
-        source_file=Path("/src/movie.mkv"),
-        channels=2,
         bitrate=192000,
     )
 
 
 def _sub_track(language: str, index: int = 0, is_forced: bool = False) -> Track:
-    return Track(
+    return make_track(
         index=index,
         track_type=TrackType.SUBTITLE,
         codec_name="subrip",
         codec_id=SubtitleCodecId.SRT,
         language=language,
-        title="",
-        is_default=False,
         is_forced=is_forced,
-        source_file=Path("/src/movie.mkv"),
+        channels=None,
     )
 
 
@@ -161,3 +153,222 @@ class TestResolveUndLanguages:
         result = planner._resolve_und_languages(movie, tracks, ["rus", "eng"], cb)
         assert cb.call_count == 2
         assert [t.language for t in result] == ["rus", "eng"]
+
+
+def _make_movie_with_subs(
+    tmp_path: Path,
+    audio: list[Track] | None = None,
+    subs: list[Track] | None = None,
+) -> Movie:
+    main = tmp_path / "movie.mkv"
+    main.write_bytes(b"")
+    default_audio = [
+        make_track(
+            index=1,
+            track_type=TrackType.AUDIO,
+            codec_name="aac",
+            codec_id=AudioCodecId.AAC_LC,
+            language="eng",
+            is_default=True,
+            source_file=main,
+            channels=2,
+            bitrate=192_000,
+        ),
+    ]
+    return make_movie(
+        main_file=main,
+        video=make_video_info(
+            codec_name="hevc",
+            pix_fmt="yuv420p10le",
+            source_file=main,
+            bitrate=10_000_000,
+        ),
+        audio_tracks=audio if audio is not None else default_audio,
+        subtitle_tracks=subs if subs is not None else [],
+    )
+
+
+class TestSubtitleAutoSelectFallback:
+    """When _auto_select_from_candidates returns None for subs."""
+
+    def test_track_selector_called_for_ambiguous_subs(self, tmp_path: Path) -> None:
+        """Multiple subs per language -> track_selector callback is called for SUBTITLE."""
+        main = tmp_path / "movie.mkv"
+        main.write_bytes(b"")
+        # Two subs with same language -> ambiguity
+        subs = [
+            _sub_track("eng", index=3),
+            _sub_track("eng", index=4),
+        ]
+        for s in subs:
+            s.source_file = main
+
+        movie = _make_movie_with_subs(tmp_path, subs=subs)
+        prober = MagicMock()
+        prober.detect_crop.return_value = None
+
+        selector = MagicMock(return_value=subs[:1])
+        planner = PlannerService(prober=prober, previewer=None, track_selector=selector)
+
+        planner.create_plan(
+            [(movie, tmp_path / "out.mkv")],
+            audio_lang_filter=["eng"],
+            sub_lang_filter=["eng"],
+            vmaf_enabled=False,
+            dry_run=False,
+        )
+
+        sub_calls = [c for c in selector.call_args_list if c[0][2] == TrackType.SUBTITLE]
+        assert len(sub_calls) == 1
+
+    def test_headless_includes_all_subs_when_ambiguous(self, tmp_path: Path) -> None:
+        """Without track_selector (headless), all ambiguous subs are included."""
+        main = tmp_path / "movie.mkv"
+        main.write_bytes(b"")
+        subs = [
+            _sub_track("eng", index=3),
+            _sub_track("eng", index=4),
+        ]
+        for s in subs:
+            s.source_file = main
+
+        movie = _make_movie_with_subs(tmp_path, subs=subs)
+        prober = MagicMock()
+        prober.detect_crop.return_value = None
+
+        # No track_selector: headless mode
+        planner = PlannerService(prober=prober, previewer=None)
+
+        plan = planner.create_plan(
+            [(movie, tmp_path / "out.mkv")],
+            audio_lang_filter=["eng"],
+            sub_lang_filter=["eng"],
+            vmaf_enabled=False,
+            dry_run=False,
+        )
+
+        assert len(plan.jobs) == 1
+        assert len(plan.jobs[0].subtitles) == 2
+
+
+class TestUndResolverIntegration:
+    """und_resolver integration: called for audio and sub tracks in _build_job."""
+
+    def test_und_resolver_called_for_audio_tracks(self, tmp_path: Path) -> None:
+        """und_resolver is invoked for audio tracks with language 'und'."""
+        main = tmp_path / "movie.mkv"
+        main.write_bytes(b"")
+        audio = [
+            make_track(
+                index=1,
+                track_type=TrackType.AUDIO,
+                codec_name="aac",
+                codec_id=AudioCodecId.AAC_LC,
+                language="und",
+                source_file=main,
+                channels=2,
+                bitrate=192_000,
+            ),
+        ]
+        movie = _make_movie_with_subs(tmp_path, audio=audio)
+        prober = MagicMock()
+        prober.detect_crop.return_value = None
+
+        und_resolver = MagicMock(return_value="eng")
+        planner = PlannerService(
+            prober=prober,
+            previewer=None,
+            und_resolver=und_resolver,
+        )
+
+        plan = planner.create_plan(
+            [(movie, tmp_path / "out.mkv")],
+            audio_lang_filter=["eng"],
+            sub_lang_filter=["eng"],
+            vmaf_enabled=False,
+            dry_run=True,
+        )
+
+        assert len(plan.jobs) == 1
+        assert plan.jobs[0].audio[0].language == "eng"
+
+    def test_und_resolver_called_for_sub_tracks(self, tmp_path: Path) -> None:
+        """und_resolver is invoked for subtitle tracks with language 'und'."""
+        main = tmp_path / "movie.mkv"
+        main.write_bytes(b"")
+        audio = [
+            make_track(
+                index=1,
+                track_type=TrackType.AUDIO,
+                codec_name="aac",
+                codec_id=AudioCodecId.AAC_LC,
+                language="eng",
+                source_file=main,
+                channels=2,
+                bitrate=192_000,
+            ),
+        ]
+        subs = [
+            _sub_track("und", index=3),
+        ]
+        subs[0].source_file = main
+        movie = _make_movie_with_subs(tmp_path, audio=audio, subs=subs)
+        prober = MagicMock()
+        prober.detect_crop.return_value = None
+
+        und_resolver = MagicMock(return_value="eng")
+        planner = PlannerService(
+            prober=prober,
+            previewer=None,
+            und_resolver=und_resolver,
+        )
+
+        plan = planner.create_plan(
+            [(movie, tmp_path / "out.mkv")],
+            audio_lang_filter=["eng"],
+            sub_lang_filter=["eng"],
+            vmaf_enabled=False,
+            dry_run=True,
+        )
+
+        assert len(plan.jobs) == 1
+        assert plan.jobs[0].subtitles[0].language == "eng"
+
+    def test_und_resolver_single_lang_auto_assigns_in_build_job(self, tmp_path: Path) -> None:
+        """Single lang in filter -> und auto-assigned without calling resolver callback."""
+        main = tmp_path / "movie.mkv"
+        main.write_bytes(b"")
+        audio = [
+            make_track(
+                index=1,
+                track_type=TrackType.AUDIO,
+                codec_name="aac",
+                codec_id=AudioCodecId.AAC_LC,
+                language="und",
+                source_file=main,
+                channels=2,
+                bitrate=192_000,
+            ),
+        ]
+        movie = _make_movie_with_subs(tmp_path, audio=audio)
+        prober = MagicMock()
+        prober.detect_crop.return_value = None
+
+        und_resolver = MagicMock(return_value="eng")
+        planner = PlannerService(
+            prober=prober,
+            previewer=None,
+            und_resolver=und_resolver,
+        )
+
+        plan = planner.create_plan(
+            [(movie, tmp_path / "out.mkv")],
+            audio_lang_filter=["eng"],
+            sub_lang_filter=["eng"],
+            vmaf_enabled=False,
+            dry_run=True,
+        )
+
+        # Single lang auto-assigns, so callback should NOT be called
+        und_resolver.assert_not_called()
+        assert plan.jobs[0].audio[0].language == "eng"

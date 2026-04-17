@@ -28,17 +28,11 @@ def _parse_qaac_progress_line(line: str) -> ProgressSample | None:
     m_pct = _QAAC_PROGRESS_RE.match(line.strip())
     if not m_pct:
         return None
-    try:
-        fraction = float(m_pct.group(1)) / 100.0
-    except ValueError:
-        return None
+    fraction = float(m_pct.group(1)) / 100.0
     speed: float | None = None
     m_speed = _QAAC_SPEED_RE.search(line)
     if m_speed:
-        try:
-            speed = float(m_speed.group(1))
-        except ValueError:
-            speed = None
+        speed = float(m_speed.group(1))
     return ProgressSample(fraction=fraction, speed=speed)
 
 

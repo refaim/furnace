@@ -12,10 +12,9 @@ from furnace.core.models import (
     AudioInstruction,
     DownmixMode,
     Job,
-    JobStatus,
-    VideoParams,
 )
 from furnace.services.executor import Executor
+from tests.conftest import make_audio_instruction, make_job
 
 
 def _instr(
@@ -24,13 +23,9 @@ def _instr(
     channels: int | None = 8,
     stream_index: int = 1,
 ) -> AudioInstruction:
-    return AudioInstruction(
-        source_file="/src/movie.mkv",
+    return make_audio_instruction(
         stream_index=stream_index,
-        language="eng",
         action=AudioAction.DECODE_ENCODE,
-        delay_ms=0,
-        is_default=True,
         codec_name=codec_name,
         channels=channels,
         bitrate=4_500_000,
@@ -40,31 +35,11 @@ def _instr(
 
 def _job(duration_s: float = 5400.0) -> Job:
     """Minimal Job instance sufficient for _process_audio_track."""
-    return Job(
-        id="test-job",
-        source_files=["/src/movie.mkv"],
-        output_file="/out/movie.mkv",
-        video_params=VideoParams(
-            cq=25,
-            crop=None,
-            deinterlace=False,
-            color_matrix="bt709",
-            color_range="tv",
-            color_transfer="bt709",
-            color_primaries="bt709",
-            hdr=None,
-            gop=120,
-            fps_num=24,
-            fps_den=1,
-            source_width=1920,
-            source_height=1080,
-        ),
+    return make_job(
+        job_id="test-job",
         audio=[],
         subtitles=[],
-        attachments=[],
         copy_chapters=False,
-        chapters_source=None,
-        status=JobStatus.PENDING,
         source_size=0,
         duration_s=duration_s,
     )

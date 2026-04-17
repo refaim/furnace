@@ -3,12 +3,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from furnace.core.models import AudioCodecId, DownmixMode, HdrMetadata, Movie, Track, TrackType, VideoInfo
+from furnace.core.models import AudioCodecId, DownmixMode, Track, TrackType
 from furnace.ui.tui import TrackSelection, TrackSelectorScreen, _fmt_audio_track
+from tests.conftest import make_movie, make_track, make_video_info
 
 
 def _t(channels: int | None = 6, codec: str = "dts", layout: str = "5.1") -> Track:
-    return Track(
+    return make_track(
         index=1,
         track_type=TrackType.AUDIO,
         codec_name=codec,
@@ -16,8 +17,6 @@ def _t(channels: int | None = 6, codec: str = "dts", layout: str = "5.1") -> Tra
         language="eng",
         title="Main",
         is_default=True,
-        is_forced=False,
-        source_file=Path("/src/movie.mkv"),
         channels=channels,
         channel_layout=layout,
         bitrate=3_500_000,
@@ -51,6 +50,46 @@ class TestFmtAudioTrackDownmixTag:
         assert "3500 kbps" in line
         assert "Main" in line
 
+    def test_fmt_audio_track_no_channel_layout(self) -> None:
+        """Track with no channel_layout renders codec without layout suffix."""
+        track = make_track(
+            index=1,
+            track_type=TrackType.AUDIO,
+            codec_name="aac",
+            codec_id=AudioCodecId.AAC_LC,
+            language="eng",
+            title="",
+            channels=2,
+            channel_layout=None,
+            bitrate=128_000,
+        )
+        line = _fmt_audio_track(track, selected=True, downmix=None)
+        # Codec still present, but no layout (no "5.1" or trailing layout token).
+        assert "AAC" in line
+        # Bitrate still shown, so "128 kbps" should appear.
+        assert "128 kbps" in line
+        # No parenthesised or dotted layout token.
+        assert "5.1" not in line
+        assert "7.1" not in line
+
+    def test_fmt_audio_track_no_bitrate(self) -> None:
+        """Track with no bitrate renders without the kbps suffix."""
+        track = make_track(
+            index=1,
+            track_type=TrackType.AUDIO,
+            codec_name="aac",
+            codec_id=AudioCodecId.AAC_LC,
+            language="eng",
+            title="",
+            channels=2,
+            channel_layout="stereo",
+            bitrate=None,
+        )
+        line = _fmt_audio_track(track, selected=True, downmix=None)
+        assert "AAC" in line
+        assert "stereo" in line
+        assert "kbps" not in line
+
 
 class TestTrackSelection:
     def test_default_empty_downmix(self) -> None:
@@ -77,32 +116,12 @@ class TestTrackSelectorDownmixLogic:
     """
 
     def make_screen(self, tracks: list[Track]) -> TrackSelectorScreen:
-        video = VideoInfo(
-            index=0,
-            codec_name="hevc",
-            width=1920, height=1080,
-            pixel_area=1920 * 1080,
-            fps_num=24, fps_den=1,
-            duration_s=120.0,
-            interlaced=False,
-            color_matrix_raw="bt709",
-            color_range="tv",
-            color_transfer="bt709",
-            color_primaries="bt709",
-            pix_fmt="yuv420p10le",
-            hdr=HdrMetadata(
-                mastering_display=None, content_light=None,
-                is_dolby_vision=False, is_hdr10_plus=False,
+        movie = make_movie(
+            video=make_video_info(
+                codec_name="hevc", pix_fmt="yuv420p10le",
+                duration_s=120.0, bitrate=10_000_000,
             ),
-            source_file=Path("/src/movie.mkv"),
-            bitrate=10_000_000,
-            sar_num=1, sar_den=1,
-        )
-        movie = Movie(
-            main_file=Path("/src/movie.mkv"),
-            satellite_files=[], file_size=0, video=video,
-            audio_tracks=tracks, subtitle_tracks=[], attachments=[],
-            has_chapters=False,
+            audio_tracks=tracks,
         )
         screen = TrackSelectorScreen(movie, tracks, TrackType.AUDIO)
         # Monkeypatch the method to a no-op for pure-logic tests; mypy can't model

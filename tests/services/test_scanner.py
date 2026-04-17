@@ -236,3 +236,191 @@ class TestScannerIgnoresDemuxDir:
         found_files = [r.main_file for r in results]
         assert movie in found_files
         assert demuxed not in found_files
+
+
+# ---------------------------------------------------------------------------
+# test_scan_single_file
+# ---------------------------------------------------------------------------
+
+class TestScanSingleFile:
+    def test_scan_single_video_file(self, tmp_path: Path) -> None:
+        """scan() with a single video file path -> one ScanResult."""
+        movie = tmp_path / "movie.mkv"
+        movie.touch()
+        dest = tmp_path / "output"
+        dest.mkdir()
+
+        scanner = make_scanner()
+        results = scanner.scan(movie, dest)
+
+        assert len(results) == 1
+        assert results[0].main_file == movie
+
+    def test_scan_single_non_video_file_returns_empty(self, tmp_path: Path) -> None:
+        """scan() with a non-video file -> empty result."""
+        txt_file = tmp_path / "readme.txt"
+        txt_file.touch()
+        dest = tmp_path / "output"
+        dest.mkdir()
+
+        scanner = make_scanner()
+        results = scanner.scan(txt_file, dest)
+
+        assert results == []
+
+    def test_scan_single_mp4_file(self, tmp_path: Path) -> None:
+        """scan() with a single .mp4 file -> one ScanResult."""
+        movie = tmp_path / "movie.mp4"
+        movie.touch()
+        dest = tmp_path / "output"
+        dest.mkdir()
+
+        scanner = make_scanner()
+        results = scanner.scan(movie, dest)
+
+        assert len(results) == 1
+        assert results[0].main_file == movie
+
+    def test_scan_single_file_finds_satellites(self, tmp_path: Path) -> None:
+        """scan() with a single video file also finds satellites."""
+        movie = tmp_path / "movie.mkv"
+        movie.touch()
+        srt = tmp_path / "movie.eng.srt"
+        srt.touch()
+        dest = tmp_path / "output"
+        dest.mkdir()
+
+        scanner = make_scanner()
+        results = scanner.scan(movie, dest)
+
+        assert len(results) == 1
+        assert srt in results[0].satellite_files
+
+
+# ---------------------------------------------------------------------------
+# test_scan_directory_skips_non_video
+# ---------------------------------------------------------------------------
+
+class TestScanDirectorySkipsNonVideo:
+    def test_non_video_file_skipped_in_walk(self, tmp_path: Path) -> None:
+        """Non-video files in directory walk are skipped (line 72)."""
+        movie = tmp_path / "movie.mkv"
+        movie.touch()
+        txt = tmp_path / "readme.txt"
+        txt.touch()
+        nfo = tmp_path / "movie.nfo"
+        nfo.touch()
+        dest = tmp_path / "output"
+        dest.mkdir()
+
+        scanner = make_scanner()
+        results = scanner.scan(tmp_path, dest)
+
+        found = [r.main_file for r in results]
+        assert movie in found
+        assert txt not in found
+        assert nfo not in found
+        assert len(results) == 1
+
+
+# ---------------------------------------------------------------------------
+# test_build_output_path_relative_to_valueerror
+# ---------------------------------------------------------------------------
+
+class TestBuildOutputPathRelativeToFallback:
+    def test_relative_to_valueerror_fallback(self, tmp_path: Path) -> None:
+        """When source is not relative to source_root -> fallback to source.name."""
+        source = Path("/completely/different/path/movie.mkv")
+        source_root = tmp_path / "src"
+        source_root.mkdir()
+        dest = tmp_path / "out"
+
+        scanner = make_scanner()
+        output = scanner.build_output_path(source, source_root, dest, None)
+
+        # Should fallback to source.name as relative path
+        assert output.name == "movie.mkv"
+        assert output.parent == dest
+
+
+# ---------------------------------------------------------------------------
+# test_load_names_map
+# ---------------------------------------------------------------------------
+
+class TestLoadNamesMap:
+    def test_parse_entries(self, tmp_path: Path) -> None:
+        """Parse rename file with valid entries."""
+        names_file = tmp_path / "names.txt"
+        names_file.write_text(
+            "movie1.mkv = Movie One\nmovie2.mkv = Movie Two\n",
+            encoding="utf-8",
+        )
+        result = Scanner.load_names_map(names_file)
+        assert result == {"movie1.mkv": "Movie One", "movie2.mkv": "Movie Two"}
+
+    def test_parse_comments_ignored(self, tmp_path: Path) -> None:
+        """Lines starting with # are comments and ignored."""
+        names_file = tmp_path / "names.txt"
+        names_file.write_text(
+            "# This is a comment\nmovie1.mkv = Movie One\n",
+            encoding="utf-8",
+        )
+        result = Scanner.load_names_map(names_file)
+        assert result == {"movie1.mkv": "Movie One"}
+
+    def test_parse_blank_lines_ignored(self, tmp_path: Path) -> None:
+        """Blank lines are ignored."""
+        names_file = tmp_path / "names.txt"
+        names_file.write_text(
+            "movie1.mkv = Movie One\n\n\nmovie2.mkv = Movie Two\n",
+            encoding="utf-8",
+        )
+        result = Scanner.load_names_map(names_file)
+        assert result == {"movie1.mkv": "Movie One", "movie2.mkv": "Movie Two"}
+
+    def test_parse_lines_without_equals_ignored(self, tmp_path: Path) -> None:
+        """Lines without '=' are ignored."""
+        names_file = tmp_path / "names.txt"
+        names_file.write_text(
+            "movie1.mkv = Movie One\nthis has no equals sign\nmovie2.mkv = Movie Two\n",
+            encoding="utf-8",
+        )
+        result = Scanner.load_names_map(names_file)
+        assert result == {"movie1.mkv": "Movie One", "movie2.mkv": "Movie Two"}
+
+    def test_parse_value_with_equals_sign(self, tmp_path: Path) -> None:
+        """Value containing '=' is handled correctly (split on first '=' only)."""
+        names_file = tmp_path / "names.txt"
+        names_file.write_text(
+            "movie.mkv = Title = Subtitle\n",
+            encoding="utf-8",
+        )
+        result = Scanner.load_names_map(names_file)
+        assert result == {"movie.mkv": "Title = Subtitle"}
+
+    def test_parse_mixed_content(self, tmp_path: Path) -> None:
+        """Mix of entries, comments, blank lines, and lines without '='."""
+        names_file = tmp_path / "names.txt"
+        content = (
+            "# Rename file\n"
+            "\n"
+            "movie1.mkv = Movie One\n"
+            "no-equals-here\n"
+            "\n"
+            "# Another comment\n"
+            "movie2.mkv = Movie Two\n"
+            "   \n"
+        )
+        names_file.write_text(content, encoding="utf-8")
+        result = Scanner.load_names_map(names_file)
+        assert result == {"movie1.mkv": "Movie One", "movie2.mkv": "Movie Two"}
+
+    def test_empty_key_or_value_ignored(self, tmp_path: Path) -> None:
+        """Lines with empty key or empty value after strip are ignored."""
+        names_file = tmp_path / "names.txt"
+        names_file.write_text(
+            " = Movie One\nmovie.mkv = \n good.mkv = Good Movie\n",
+            encoding="utf-8",
+        )
+        result = Scanner.load_names_map(names_file)
+        assert result == {"good.mkv": "Good Movie"}

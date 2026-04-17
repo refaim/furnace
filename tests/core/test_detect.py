@@ -2,12 +2,16 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from furnace.core.detect import (
+    VideoSystem,
     check_unsupported_codecs,
     cluster_crop_values,
     detect_forced_subtitles,
     detect_hdr,
     is_dvd_resolution,
+    resolve_color_metadata,
     should_skip_file,
 )
 from furnace.core.models import (
@@ -18,6 +22,7 @@ from furnace.core.models import (
     Track,
     TrackType,
 )
+from tests.conftest import make_track
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -33,16 +38,16 @@ def make_sub_track(
     num_captions: int | None = None,
     source_file: str = "movie.mkv",
 ) -> Track:
-    return Track(
+    return make_track(
         index=index,
         track_type=TrackType.SUBTITLE,
         codec_name=codec_id.value,
         codec_id=codec_id,
         language=language,
         title=title,
-        is_default=False,
         is_forced=is_forced,
         source_file=Path(source_file),
+        channels=None,
         num_frames=num_frames,
         num_captions=num_captions,
     )
@@ -54,15 +59,12 @@ def make_audio_track(
     codec_name: str = "aac",
     language: str = "eng",
 ) -> Track:
-    return Track(
+    return make_track(
         index=index,
         track_type=TrackType.AUDIO,
         codec_name=codec_name,
         codec_id=codec_id,
         language=language,
-        title="",
-        is_default=False,
-        is_forced=False,
         source_file=Path("movie.mkv"),
     )
 
@@ -351,6 +353,17 @@ class TestHdrDetection:
         assert not result.is_dolby_vision
         assert not result.is_hdr10_plus
         assert result.mastering_display is None
+
+    def test_hdr_metadata_ignores_unknown_side_data_type(self) -> None:
+        """Unknown side_data_type doesn't match any elif branch -> all HDR flags stay False."""
+        side_data = [{"side_data_type": "Unknown foo bar"}]
+        result = detect_hdr({}, side_data)
+        assert not result.is_hdr10_plus
+        assert not result.is_dolby_vision
+        assert result.mastering_display is None
+        assert result.content_light is None
+        assert result.dv_profile is None
+        assert result.dv_bl_compatibility is None
 
 
 # ---------------------------------------------------------------------------
@@ -644,6 +657,22 @@ class TestHdrDetectionFractions:
         }]
         result = detect_hdr({}, side_data)
         assert result.content_light == "MaxCLL=1000,MaxFALL=180"
+
+
+# ---------------------------------------------------------------------------
+# test_resolve_color_metadata_unknown_matrix
+# ---------------------------------------------------------------------------
+
+class TestResolveColorMetadataUnknownMatrix:
+    def test_unknown_matrix_raises(self) -> None:
+        with pytest.raises(ValueError, match="Unrecognized matrix_raw"):
+            resolve_color_metadata(
+                matrix_raw="foobar",
+                transfer_raw=None,
+                primaries_raw=None,
+                system=VideoSystem.HD,
+                has_hdr=False,
+            )
 
 
 # ---------------------------------------------------------------------------
