@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from furnace.core.audio_profile import AudioMetrics, Verdict
 from furnace.core.models import (
     AudioCodecId,
     HdrMetadata,
@@ -1541,3 +1542,89 @@ class TestExternalSubtitleReturnsNone:
         assert movie is not None
         # Only the embedded PGS subtitle, no satellite
         assert len(movie.subtitle_tracks) == 1
+
+
+# ---------------------------------------------------------------------------
+# Audio profiling loop (Task 9)
+# ---------------------------------------------------------------------------
+
+
+def _real_5_1_metrics() -> AudioMetrics:
+    """Synthetic metrics that classify_audio maps to REAL."""
+    return AudioMetrics(
+        channels=6,
+        rms_l=-22.0, rms_r=-22.0, rms_c=-18.0, rms_lfe=-20.0,
+        rms_ls=-25.0, rms_rs=-25.0, rms_lb=None, rms_rb=None,
+        corr_lr=0.3, corr_ls_l=0.1, corr_rs_r=0.1, corr_ls_rs=0.4,
+        corr_lb_ls=None, corr_rb_rs=None,
+    )
+
+
+class TestAudioProfiling:
+    """Analyzer.analyze() profiles each audio track with channels in {2,6,8}."""
+
+    def test_profiles_6ch_track_and_attaches_verdict(self, tmp_path: Path) -> None:
+        scan_result = make_scan_result(tmp_path)
+        probe_data: dict[str, Any] = {
+            "streams": [
+                {
+                    "index": 0, "codec_type": "video", "codec_name": "h264",
+                    "width": 1920, "height": 1080, "avg_frame_rate": "24/1",
+                    "duration": "100.0", "field_order": "progressive", "pix_fmt": "yuv420p",
+                },
+                {
+                    "index": 1, "codec_type": "audio", "codec_name": "ac3",
+                    "channels": 6, "tags": {"language": "eng"},
+                    "disposition": {"default": 1, "forced": 0},
+                },
+            ],
+            "format": {"duration": "100.0"},
+            "chapters": [],
+        }
+        prober = make_prober(probe_data=probe_data)
+        prober.profile_audio_track.return_value = _real_5_1_metrics()
+
+        with (
+            patch("furnace.services.analyzer.should_skip_file", return_value=(False, "")),
+            patch("furnace.services.analyzer.detect_hdr", return_value=HdrMetadata()),
+            patch("furnace.services.analyzer.check_unsupported_codecs", return_value=None),
+        ):
+            movie = Analyzer(prober=prober).analyze(scan_result)
+
+        assert movie is not None
+        assert movie.audio_tracks[0].audio_profile is not None
+        assert movie.audio_tracks[0].audio_profile.verdict == Verdict.REAL
+        prober.profile_audio_track.assert_called_once_with(
+            path=scan_result.main_file, stream_index=1, channels=6, duration_s=100.0,
+        )
+
+    def test_skips_1ch_track(self, tmp_path: Path) -> None:
+        scan_result = make_scan_result(tmp_path)
+        probe_data: dict[str, Any] = {
+            "streams": [
+                {
+                    "index": 0, "codec_type": "video", "codec_name": "h264",
+                    "width": 1920, "height": 1080, "avg_frame_rate": "24/1",
+                    "duration": "100.0", "field_order": "progressive", "pix_fmt": "yuv420p",
+                },
+                {
+                    "index": 1, "codec_type": "audio", "codec_name": "aac",
+                    "channels": 1, "tags": {"language": "eng"},
+                    "disposition": {"default": 1, "forced": 0},
+                },
+            ],
+            "format": {"duration": "100.0"},
+            "chapters": [],
+        }
+        prober = make_prober(probe_data=probe_data)
+
+        with (
+            patch("furnace.services.analyzer.should_skip_file", return_value=(False, "")),
+            patch("furnace.services.analyzer.detect_hdr", return_value=HdrMetadata()),
+            patch("furnace.services.analyzer.check_unsupported_codecs", return_value=None),
+        ):
+            movie = Analyzer(prober=prober).analyze(scan_result)
+
+        assert movie is not None
+        assert movie.audio_tracks[0].audio_profile is None
+        prober.profile_audio_track.assert_not_called()

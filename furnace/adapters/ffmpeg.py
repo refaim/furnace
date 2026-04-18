@@ -2,12 +2,16 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import re
 import subprocess
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+import numpy as np
+
+from furnace.core.audio_profile import AudioMetrics
 from furnace.core.detect import cluster_crop_values
 from furnace.core.models import CropRect
 from furnace.core.progress import ProgressSample
@@ -15,6 +19,39 @@ from furnace.core.progress import ProgressSample
 from ._subprocess import OutputCallback, run_tool
 
 logger = logging.getLogger(__name__)
+
+_PROFILE_WINDOW_SEC = 20.0
+_PROFILE_STEREO_POINTS: tuple[float, ...] = (0.30, 0.60)
+_PROFILE_MULTI_POINTS: tuple[float, ...] = (0.15, 0.35, 0.55, 0.75)
+_PROFILE_SAMPLE_RATE = 48000
+_DIGITAL_SILENCE_DB = -120.0
+_ZERO_NORM_EPS = 1e-9
+_CHANNELS_STEREO = 2
+_CHANNELS_5_1 = 6
+_CHANNELS_7_1 = 8
+
+
+def _rms_db(x: np.ndarray) -> float:
+    """RMS in dB. Empty input or near-zero signal → -120 dB floor."""
+    if x.size == 0:
+        return _DIGITAL_SILENCE_DB
+    rms = float(np.sqrt(np.mean(x.astype(np.float64) ** 2) + 1e-30))
+    if rms < _ZERO_NORM_EPS:
+        return _DIGITAL_SILENCE_DB
+    return 20.0 * math.log10(rms)
+
+
+def _pearson(a: np.ndarray, b: np.ndarray) -> float:
+    """Pearson correlation, zero-norm safe (returns 0.0 on empty or constant input)."""
+    if a.size == 0 or b.size == 0:
+        return 0.0
+    a64 = a.astype(np.float64) - float(a.mean())
+    b64 = b.astype(np.float64) - float(b.mean())
+    na = float(np.sqrt(float((a64 * a64).sum())))
+    nb = float(np.sqrt(float((b64 * b64).sum())))
+    if na < _ZERO_NORM_EPS or nb < _ZERO_NORM_EPS:
+        return 0.0
+    return float((a64 * b64).sum() / (na * nb))
 
 
 def _parse_ffmpeg_progress_block(kv: dict[str, str]) -> ProgressSample | None:
@@ -408,4 +445,176 @@ class FFmpegAdapter:
             on_progress_line=_on_progress_line,
             log_path=log_path,
         )
+        return rc
+
+    def _decode_pcm_window(
+        self,
+        path: Path,
+        stream_index: int,
+        channels: int,
+        layout: str,
+        start_s: float,
+        dur_s: float,
+    ) -> np.ndarray:
+        """Decode one PCM window to f32le via ffmpeg stdout pipe."""
+        cmd = [
+            str(self._ffmpeg),
+            "-v", "error", "-nostdin",
+            "-ss", f"{start_s:.2f}",
+            "-i", str(path),
+            "-map", f"0:{stream_index}",
+            "-t", f"{dur_s:.2f}",
+            "-af", f"aformat=channel_layouts={layout}:sample_rates={_PROFILE_SAMPLE_RATE}",
+            "-f", "f32le", "-",
+        ]
+        result = subprocess.run(cmd, capture_output=True, check=False)
+        if result.returncode != 0:
+            logger.warning(
+                "profile_audio_track ffmpeg rc=%d at %.1fs: %s",
+                result.returncode, start_s,
+                result.stderr.decode("utf-8", errors="replace")[:200],
+            )
+            return np.empty((0, channels), dtype=np.float32)
+        buf = np.frombuffer(result.stdout, dtype=np.float32)
+        n = buf.size // channels
+        if n == 0:
+            return np.empty((0, channels), dtype=np.float32)
+        return buf[: n * channels].reshape(n, channels)
+
+    def profile_audio_track(
+        self,
+        path: Path,
+        stream_index: int,
+        channels: int,
+        duration_s: float,
+    ) -> AudioMetrics:
+        """Sample PCM windows and compute per-channel RMS + pairwise Pearson."""
+        if channels == _CHANNELS_STEREO:
+            layout = "stereo"
+            points = _PROFILE_STEREO_POINTS
+        elif channels == _CHANNELS_5_1:
+            layout = "5.1"
+            points = _PROFILE_MULTI_POINTS
+        elif channels == _CHANNELS_7_1:
+            layout = "7.1"
+            points = _PROFILE_MULTI_POINTS
+        else:
+            raise ValueError(f"profile_audio_track: unsupported channels={channels}")
+
+        chunks: list[np.ndarray] = []
+        for frac in points:
+            start = max(0.0, duration_s * frac - _PROFILE_WINDOW_SEC / 2)
+            window = self._decode_pcm_window(
+                path, stream_index, channels, layout, start, _PROFILE_WINDOW_SEC,
+            )
+            if window.size > 0:
+                chunks.append(window)
+
+        if not chunks:
+            raise RuntimeError(
+                f"profile_audio_track: no windows decoded from {path} stream {stream_index}",
+            )
+
+        data = np.concatenate(chunks, axis=0)
+        cols = [data[:, i] for i in range(channels)]
+
+        if channels == _CHANNELS_STEREO:
+            left, right = cols
+            return AudioMetrics(
+                channels=_CHANNELS_STEREO,
+                rms_l=_rms_db(left), rms_r=_rms_db(right),
+                rms_c=None, rms_lfe=None, rms_ls=None, rms_rs=None,
+                rms_lb=None, rms_rb=None,
+                corr_lr=_pearson(left, right),
+                corr_ls_l=None, corr_rs_r=None, corr_ls_rs=None,
+                corr_lb_ls=None, corr_rb_rs=None,
+            )
+
+        if channels == _CHANNELS_5_1:
+            left, right, center, lfe, ls, rs = cols
+            return AudioMetrics(
+                channels=_CHANNELS_5_1,
+                rms_l=_rms_db(left), rms_r=_rms_db(right),
+                rms_c=_rms_db(center), rms_lfe=_rms_db(lfe),
+                rms_ls=_rms_db(ls), rms_rs=_rms_db(rs),
+                rms_lb=None, rms_rb=None,
+                corr_lr=_pearson(left, right),
+                corr_ls_l=_pearson(ls, left),
+                corr_rs_r=_pearson(rs, right),
+                corr_ls_rs=_pearson(ls, rs),
+                corr_lb_ls=None, corr_rb_rs=None,
+            )
+
+        # 7.1 — canonical order after aformat: [L, R, C, LFE, Lb, Rb, Ls, Rs]
+        left, right, center, lfe, lb, rb, ls, rs = cols
+        return AudioMetrics(
+            channels=_CHANNELS_7_1,
+            rms_l=_rms_db(left), rms_r=_rms_db(right),
+            rms_c=_rms_db(center), rms_lfe=_rms_db(lfe),
+            rms_ls=_rms_db(ls), rms_rs=_rms_db(rs),
+            rms_lb=_rms_db(lb), rms_rb=_rms_db(rb),
+            corr_lr=_pearson(left, right),
+            corr_ls_l=_pearson(ls, left),
+            corr_rs_r=_pearson(rs, right),
+            corr_ls_rs=_pearson(ls, rs),
+            corr_lb_ls=_pearson(lb, ls),
+            corr_rb_rs=_pearson(rb, rs),
+        )
+
+    def downmix_to_mono_wav(
+        self,
+        input_path: Path,
+        stream_index: int,
+        channels: int,
+        output_wav: Path,
+        delay_ms: int,
+    ) -> int:
+        """ffmpeg pan filter -> mono WAV. Bypasses eac3to.
+
+        Stereo sources are averaged (0.5*FL + 0.5*FR). Multichannel
+        sources use an ITU-R BS.775 / Dolby Lo downmix, normalized via
+        ``aformat=channel_layouts=<layout>`` and peak-protected via
+        ``alimiter=limit=0.99``. LFE is excluded per ITU standard.
+        """
+        if channels == _CHANNELS_STEREO:
+            filters = ["pan=mono|c0=0.5*FL+0.5*FR"]
+        elif channels == _CHANNELS_5_1:
+            filters = [
+                "aformat=channel_layouts=5.1",
+                "pan=mono|c0=0.707*FC+0.5*FL+0.5*FR+0.354*BL+0.354*BR",
+                "alimiter=limit=0.99",
+            ]
+        elif channels == _CHANNELS_7_1:
+            filters = [
+                "aformat=channel_layouts=7.1",
+                (
+                    "pan=mono|c0=0.707*FC+0.5*FL+0.5*FR"
+                    "+0.354*SL+0.354*SR+0.354*BL+0.354*BR"
+                ),
+                "alimiter=limit=0.99",
+            ]
+        else:
+            raise ValueError(f"downmix_to_mono_wav: unsupported channels={channels}")
+
+        if delay_ms > 0:
+            filters.append(f"adelay={delay_ms}")
+        elif delay_ms < 0:
+            seconds = abs(delay_ms) / 1000.0
+            filters.append(f"atrim=start={seconds:.3f}")
+
+        af_value = ",".join(filters)
+
+        cmd = [
+            str(self._ffmpeg),
+            "-hide_banner", "-loglevel", "warning",
+            "-i", str(input_path),
+            "-map", f"0:{stream_index}",
+            "-af", af_value,
+            "-ac", "1",
+            "-f", "wav",
+            "-rf64", "auto",
+            "-y", str(output_wav),
+        ]
+        log_path = self._log_dir / f"ffmpeg_mono_s{stream_index}.log" if self._log_dir else None
+        rc, _out = run_tool(cmd, on_output=self._on_output, log_path=log_path)
         return rc

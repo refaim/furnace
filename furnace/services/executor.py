@@ -16,7 +16,16 @@ import psutil
 
 from furnace import VERSION as FURNACE_VERSION
 from furnace.core.chapters import chapters_have_mojibake, write_ogm_chapters
-from furnace.core.models import AudioAction, AudioInstruction, Job, JobStatus, Plan, SubtitleAction, SubtitleInstruction
+from furnace.core.models import (
+    AudioAction,
+    AudioInstruction,
+    DownmixMode,
+    Job,
+    JobStatus,
+    Plan,
+    SubtitleAction,
+    SubtitleInstruction,
+)
 from furnace.core.ports import (
     AacEncoder,
     AudioDecoder,
@@ -498,6 +507,38 @@ class Executor:
             return denormed
 
         if instr.action == AudioAction.DECODE_ENCODE:
+            if instr.downmix == DownmixMode.MONO:
+                # Planner guarantees channels is set (Task 12 rejects MONO on
+                # None-channel tracks). Bypass eac3to entirely: ffmpeg's pan
+                # filter produces an ITU-R BS.775 downmix for 5.1/7.1 (stereo
+                # averages L+R) and writes a mono WAV, which qaac64 then
+                # encodes to AAC.
+                if instr.channels is None:
+                    raise RuntimeError(
+                        f"MONO downmix without channel count for stream {track_idx}",
+                    )
+                wav_path = temp_dir / f"audio_{track_idx}_mono.wav"
+                rc = self._audio_extractor.downmix_to_mono_wav(
+                    input_path=source_path,
+                    stream_index=track_idx,
+                    channels=instr.channels,
+                    output_wav=wav_path,
+                    delay_ms=instr.delay_ms,
+                )
+                if rc != 0:
+                    raise RuntimeError(f"downmix_to_mono_wav failed: rc={rc}")
+
+                m4a_path = temp_dir / f"audio_{track_idx}.m4a"
+                _, on_progress = self._make_progress_callback(total_s=None)
+                rc = self._aac_encoder.encode_aac(
+                    wav_path,
+                    m4a_path,
+                    on_progress=on_progress,
+                )
+                if rc != 0:
+                    raise RuntimeError(f"encode_aac failed: rc={rc}")
+                return m4a_path
+
             if _codec_supported_by_eac3to(instr.codec_name):
                 logger.info("Extracting audio stream %d", track_idx)
                 if self._progress is not None:

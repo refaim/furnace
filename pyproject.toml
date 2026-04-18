@@ -1,6 +1,6 @@
 [project]
 name = "furnace"
-version = "1.12.1"
+version = "1.13.0"
 description = "Movie collection transcoding tool for home archival"
 license = "MIT"
 requires-python = ">=3.13"
@@ -10,6 +10,7 @@ dependencies = [
     "textual>=3.0",
     "charset-normalizer>=3.0",
     "psutil>=6.0",
+    "numpy>=2.4.4",
 ]
 
 [project.scripts]

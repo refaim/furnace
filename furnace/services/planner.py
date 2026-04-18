@@ -441,16 +441,23 @@ class PlannerService:
         """Route through rules.get_audio_action(), unless downmix forces
         DECODE_ENCODE. Validates downmix applicability."""
         if downmix is not None:
-            if track.channels is None or track.channels <= STEREO_CHANNELS:
-                raise ValueError(
-                    f"Downmix not applicable: track has {track.channels} channels "
-                    f"({track.source_file} index {track.index})"
-                )
-            if downmix == DownmixMode.DOWN6 and track.channels <= SURROUND_5_1_CHANNELS:
-                raise ValueError(
-                    f"DOWN6 not applicable: track has {track.channels} channels "
-                    f"({track.source_file} index {track.index})"
-                )
+            if downmix == DownmixMode.MONO:
+                if track.channels is None or track.channels < STEREO_CHANNELS:
+                    raise ValueError(
+                        f"MONO downmix requires >=2 channels, got {track.channels} "
+                        f"({track.source_file} index {track.index})"
+                    )
+            else:
+                if track.channels is None or track.channels <= STEREO_CHANNELS:
+                    raise ValueError(
+                        f"Downmix not applicable: track has {track.channels} channels "
+                        f"({track.source_file} index {track.index})"
+                    )
+                if downmix == DownmixMode.DOWN6 and track.channels <= SURROUND_5_1_CHANNELS:
+                    raise ValueError(
+                        f"DOWN6 not applicable: track has {track.channels} channels "
+                        f"({track.source_file} index {track.index})"
+                    )
             action = AudioAction.DECODE_ENCODE
         elif track.codec_id is not None and not isinstance(track.codec_id, AudioCodecId):
             # Should not happen for audio tracks, but guard

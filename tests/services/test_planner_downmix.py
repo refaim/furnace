@@ -91,6 +91,32 @@ class TestBuildAudioInstructionValidation:
         instr = planner._build_audio_instruction(track, is_default=True, downmix=None)
         assert instr.downmix is None
 
+    def test_mono_on_6ch_ok(self) -> None:
+        track = _audio_track(channels=6)
+        planner = PlannerService(prober=MagicMock(), previewer=None)
+        instr = planner._build_audio_instruction(track, is_default=True, downmix=DownmixMode.MONO)
+        assert instr.downmix == DownmixMode.MONO
+        assert instr.action.value == "decode_encode"
+
+    def test_mono_on_stereo_track_ok(self) -> None:
+        track = _audio_track(codec_name="ac3", codec_id=AudioCodecId.AC3, channels=2)
+        planner = PlannerService(prober=MagicMock(), previewer=None)
+        instr = planner._build_audio_instruction(track, is_default=True, downmix=DownmixMode.MONO)
+        assert instr.downmix == DownmixMode.MONO
+        assert instr.action.value == "decode_encode"
+
+    def test_mono_on_1ch_raises(self) -> None:
+        track = _audio_track(codec_name="aac", codec_id=AudioCodecId.AAC_LC, channels=1)
+        planner = PlannerService(prober=MagicMock(), previewer=None)
+        with pytest.raises(ValueError, match="MONO downmix requires >=2 channels, got 1"):
+            planner._build_audio_instruction(track, is_default=True, downmix=DownmixMode.MONO)
+
+    def test_mono_on_none_channels_raises(self) -> None:
+        track = _audio_track(channels=None)
+        planner = PlannerService(prober=MagicMock(), previewer=None)
+        with pytest.raises(ValueError, match="MONO downmix requires >=2 channels, got None"):
+            planner._build_audio_instruction(track, is_default=True, downmix=DownmixMode.MONO)
+
 
 class TestBuildAudioInstructionForcing:
     """Downmix must force AudioAction.DECODE_ENCODE regardless of source codec."""

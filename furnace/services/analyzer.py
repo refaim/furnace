@@ -7,6 +7,7 @@ from typing import Any
 
 from charset_normalizer import from_path as _from_path
 
+from furnace.core.audio_profile import classify_audio
 from furnace.core.detect import (
     check_unsupported_codecs,
     detect_forced_subtitles,
@@ -18,6 +19,8 @@ from furnace.core.detect import (
 from furnace.core.models import Attachment, Movie, ScanResult, SubtitleCodecId, Track, TrackType, VideoInfo
 from furnace.core.ports import Prober
 from furnace.core.rules import parse_audio_codec, parse_subtitle_codec
+
+_PROFILEABLE_CHANNEL_COUNTS = frozenset({2, 6, 8})
 
 _ISO_639_3_LENGTH = 3  # ISO 639-3 language codes are exactly three letters
 
@@ -133,6 +136,33 @@ class Analyzer:
 
         # Detect forced subtitles (in-place mutation)
         detect_forced_subtitles(subtitle_tracks)
+
+        # Profile audio tracks with supported channel layouts; attach a
+        # classification verdict. Errors are swallowed and leave audio_profile=None.
+        for track in audio_tracks:
+            if track.channels not in _PROFILEABLE_CHANNEL_COUNTS:
+                continue
+            logger.info(
+                "Profiling audio track %d (%s %s %dch)",
+                track.index, track.codec_name, track.language, track.channels,
+            )
+            try:
+                metrics = self._prober.profile_audio_track(
+                    path=main_file,
+                    stream_index=track.index,
+                    channels=track.channels,
+                    duration_s=video_info.duration_s,
+                )
+                track.audio_profile = classify_audio(metrics)
+            except Exception as exc:  # noqa: BLE001 -- fail-soft by design
+                logger.warning(
+                    "profile_audio_track failed for track %d: %s", track.index, exc,
+                )
+                continue
+            logger.info(
+                "Profiled track %d: %s (score %d)",
+                track.index, track.audio_profile.verdict.value, track.audio_profile.score,
+            )
 
         file_size = main_file.stat().st_size
 

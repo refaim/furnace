@@ -6,6 +6,7 @@ from typing import Any, Protocol, runtime_checkable
 
 from furnace.core.progress import ProgressSample
 
+from .audio_profile import AudioMetrics
 from .models import CropRect, DiscTitle, DownmixMode, DvMode, EncodeResult, VideoParams
 
 
@@ -38,6 +39,23 @@ class Prober(Protocol):
 
     def probe_hdr_side_data(self, path: Path) -> list[dict[str, Any]]:
         """Read side_data_list from the first video frame."""
+        ...
+
+    def profile_audio_track(
+        self,
+        path: Path,
+        stream_index: int,
+        channels: int,
+        duration_s: float,
+    ) -> AudioMetrics:
+        """Sample PCM windows from an audio stream, compute per-channel RMS
+        and pairwise correlations, and return raw measurements.
+
+        channels must be 2, 6, or 8; other counts raise ValueError.
+        duration_s is used to pick sample offsets.
+
+        Raises RuntimeError if no windows decoded successfully.
+        """
         ...
 
 
@@ -104,6 +122,24 @@ class AudioExtractor(Protocol):
     ) -> int:
         """Decode exotic codec to WAV via ffmpeg.
         ffmpeg -i input -map 0:{index} -f wav -rf64 auto output.wav
+        """
+        ...
+
+    def downmix_to_mono_wav(
+        self,
+        input_path: Path,
+        stream_index: int,
+        channels: int,
+        output_wav: Path,
+        delay_ms: int,
+    ) -> int:
+        """Produce a mono WAV from a 2/6/8-channel audio stream via ffmpeg's
+        pan filter. Multichannel sources use an ITU-R BS.775 / Dolby Lo
+        downmix (FC=0.707, FL/FR=0.5, surrounds=0.354) with alimiter peak
+        protection; LFE is excluded. Stereo averages L and R.
+
+        delay_ms is applied via -af adelay (pad leading silence) when positive
+        or by trimming when negative. Returns ffmpeg exit code.
         """
         ...
 

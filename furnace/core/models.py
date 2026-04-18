@@ -2,8 +2,41 @@ from __future__ import annotations
 
 import enum
 from dataclasses import dataclass, field
-from enum import StrEnum
 from pathlib import Path
+
+from .audio_profile import AudioProfile
+from .downmix import STEREO_CHANNELS, SURROUND_5_1_CHANNELS, DownmixMode
+
+__all__ = [
+    "STEREO_CHANNELS",
+    "SURROUND_5_1_CHANNELS",
+    "Attachment",
+    "AudioAction",
+    "AudioCodecId",
+    "AudioInstruction",
+    "AudioProfile",
+    "CropRect",
+    "DiscSource",
+    "DiscTitle",
+    "DiscType",
+    "DownmixMode",
+    "DvBlCompatibility",
+    "DvMode",
+    "EncodeResult",
+    "HdrMetadata",
+    "Job",
+    "JobStatus",
+    "Movie",
+    "Plan",
+    "ScanResult",
+    "SubtitleAction",
+    "SubtitleCodecId",
+    "SubtitleInstruction",
+    "Track",
+    "TrackType",
+    "VideoInfo",
+    "VideoParams",
+]
 
 
 class TrackType(enum.Enum):
@@ -50,22 +83,6 @@ class AudioAction(enum.Enum):
     DENORM = "denorm"  # AC3/EAC3/DTS core -- eac3to denormalize
     DECODE_ENCODE = "decode_encode"  # lossless -> eac3to WAV -> qaac64 AAC
     FFMPEG_ENCODE = "ffmpeg_encode"  # exotic codecs -> ffmpeg WAV -> qaac64 AAC
-
-
-# Channel-count landmarks referenced across planner/UI when deciding downmix.
-STEREO_CHANNELS = 2  # a 2.0 track cannot be downmixed further
-SURROUND_5_1_CHANNELS = 6  # DOWN6 only makes sense for >6 channels (7.1/6.1)
-
-
-class DownmixMode(StrEnum):
-    """Audio downmix target applied via eac3to flags.
-
-    STEREO -> eac3to: -downStereo  (multichannel -> 2.0 AAC)
-    DOWN6  -> eac3to: -down6       (7.1/6.1 -> 5.1 AAC)
-    """
-
-    STEREO = "stereo"
-    DOWN6 = "down6"
 
 
 class SubtitleAction(enum.Enum):
@@ -172,6 +189,9 @@ class Track:
     num_frames: int | None = None  # forced detection: frame count (binary subs)
     num_captions: int | None = None  # forced detection: caption count (text subs)
     encoding: str | None = None  # detected text-subtitle encoding
+
+    # audio detector result (None when not analysed or unsupported layout)
+    audio_profile: AudioProfile | None = None
 
 
 @dataclass

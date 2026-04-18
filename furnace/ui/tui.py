@@ -11,6 +11,7 @@ from textual.containers import Container
 from textual.screen import Screen
 from textual.widgets import Footer, Header, Input, ListItem, ListView, Static
 
+from furnace.core.audio_profile import Verdict
 from furnace.core.models import (
     STEREO_CHANNELS,
     SURROUND_5_1_CHANNELS,
@@ -22,6 +23,131 @@ from furnace.core.models import (
     TrackType,
 )
 from furnace.ui.fmt import fmt_size
+
+_DOWNMIX_TAG_LABEL = {
+    DownmixMode.STEREO: "2.0",
+    DownmixMode.MONO: "1.0",
+    DownmixMode.DOWN6: "5.1",
+}
+
+_BAR_WIDTH = 20
+_BAR_MIN_DB = -60.0
+_BAR_MAX_DB = 0.0
+
+_FULL_DB_THRESHOLD = -25.0
+_LOUD_DB_THRESHOLD = -40.0
+_QUIET_DB_THRESHOLD = -50.0
+_VERY_QUIET_DB_THRESHOLD = -60.0
+
+
+def _bar_and_word(rms_db: float) -> tuple[str, str]:
+    """Return (ASCII bar, one-word volume category) for a dB value."""
+    clamped = max(_BAR_MIN_DB, min(_BAR_MAX_DB, rms_db))
+    fill = round((clamped - _BAR_MIN_DB) / (_BAR_MAX_DB - _BAR_MIN_DB) * _BAR_WIDTH)
+    bar = "[" + "#" * fill + "." * (_BAR_WIDTH - fill) + "]"
+    if rms_db > _FULL_DB_THRESHOLD:
+        word = "full"
+    elif rms_db > _LOUD_DB_THRESHOLD:
+        word = "loud"
+    elif rms_db > _QUIET_DB_THRESHOLD:
+        word = "quiet"
+    elif rms_db > _VERY_QUIET_DB_THRESHOLD:
+        word = "very quiet"
+    else:
+        word = "silent"
+    return bar, word
+
+
+def _mode_label(mode: DownmixMode | None) -> str:
+    if mode == DownmixMode.STEREO:
+        return "STEREO"
+    if mode == DownmixMode.MONO:
+        return "MONO"
+    if mode == DownmixMode.DOWN6:
+        return "DOWN6"
+    return "(none)"
+
+
+def _render_detector_panel(track: Track | None) -> str:
+    """Multi-line panel for the track under the cursor.
+
+    Shows verdict + reasons + ASCII level bars. `None` or non-audio tracks
+    render a short placeholder.
+    """
+    if track is None or track.track_type != TrackType.AUDIO:
+        return " Detector: ---"
+    if track.audio_profile is None:
+        return " Detector: not analyzed"
+
+    p = track.audio_profile
+    m = p.metrics
+
+    lines: list[str] = []
+
+    if p.verdict == Verdict.REAL:
+        kind = "real stereo" if m.channels == STEREO_CHANNELS else "real surround"
+        lines.append(f" Detector: {kind}")
+    elif p.verdict == Verdict.FAKE:
+        mode_label = _mode_label(p.suggested)
+        kind = "FAKE stereo" if m.channels == STEREO_CHANNELS else "FAKE surround"
+        lines.append(f" Detector: {kind} -> suggested {mode_label} (auto-applied)")
+    else:  # SUSPICIOUS
+        mode_label = _mode_label(p.suggested) if p.suggested else "(none)"
+        kind = "SUSPICIOUS stereo" if m.channels == STEREO_CHANNELS else "SUSPICIOUS surround"
+        lines.append(f" Detector: {kind} -> suggested {mode_label} (decide manually)")
+
+    if p.reasons:
+        lines.append(f"   reason: {'; '.join(p.reasons)}")
+
+    lines.append("")
+
+    channel_values: list[tuple[str, float]] = []
+    if m.channels == STEREO_CHANNELS:
+        channel_values = [("L", m.rms_l), ("R", m.rms_r)]
+    elif m.channels == SURROUND_5_1_CHANNELS:
+        channel_values = [
+            ("L", m.rms_l), ("R", m.rms_r),
+            ("C", m.rms_c if m.rms_c is not None else _BAR_MIN_DB),
+            ("LFE", m.rms_lfe if m.rms_lfe is not None else _BAR_MIN_DB),
+            ("Ls", m.rms_ls if m.rms_ls is not None else _BAR_MIN_DB),
+            ("Rs", m.rms_rs if m.rms_rs is not None else _BAR_MIN_DB),
+        ]
+    else:  # 7.1
+        channel_values = [
+            ("L", m.rms_l), ("R", m.rms_r),
+            ("C", m.rms_c if m.rms_c is not None else _BAR_MIN_DB),
+            ("LFE", m.rms_lfe if m.rms_lfe is not None else _BAR_MIN_DB),
+            ("Lb", m.rms_lb if m.rms_lb is not None else _BAR_MIN_DB),
+            ("Rb", m.rms_rb if m.rms_rb is not None else _BAR_MIN_DB),
+            ("Ls", m.rms_ls if m.rms_ls is not None else _BAR_MIN_DB),
+            ("Rs", m.rms_rs if m.rms_rs is not None else _BAR_MIN_DB),
+        ]
+
+    reason_text = " ".join(p.reasons).lower()
+    annotations: dict[str, str] = {}
+    if "surrounds are silent" in reason_text:
+        annotations["Ls"] = "<- silent"
+        annotations["Rs"] = "<- silent"
+    if "lfe is dead" in reason_text:
+        annotations["LFE"] = "<- dead"
+    if "center is way louder" in reason_text:
+        annotations["C"] = "<- dominant"
+    if "identical (mono)" in reason_text:
+        annotations["L"] = "<- mono"
+        annotations["R"] = "<- mono"
+    if "surrounds carry the same signal" in reason_text:
+        annotations["Ls"] = "<- identical"
+        annotations["Rs"] = "<- identical"
+    if "copy of fronts" in reason_text:
+        annotations["Ls"] = "<- copy of L"
+        annotations["Rs"] = "<- copy of R"
+
+    for label, value in channel_values:
+        bar, word = _bar_and_word(value)
+        note = f"   {annotations[label]}" if label in annotations else ""
+        lines.append(f"   {label:<4} {bar} {value:6.1f} dB   {word}{note}")
+
+    return "\n".join(lines)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -73,10 +199,20 @@ def _fmt_audio_track(
     downmix_tag = ""
     if downmix == DownmixMode.STEREO:
         downmix_tag = "\\[-> 2.0]"
+    elif downmix == DownmixMode.MONO:
+        downmix_tag = "\\[-> 1.0]"
     elif downmix == DownmixMode.DOWN6:
         downmix_tag = "\\[-> 5.1]"
 
-    parts = [p for p in [lang, codec_layout, bitrate, title, downmix_tag] if p]
+    detector_tag = ""
+    if not downmix_tag and track.audio_profile is not None:
+        p = track.audio_profile
+        if p.verdict == Verdict.FAKE and p.suggested is not None:
+            detector_tag = f"\\[FAKE -> {_DOWNMIX_TAG_LABEL[p.suggested]}]"
+        elif p.verdict == Verdict.SUSPICIOUS:
+            detector_tag = "\\[SUSPICIOUS]"
+
+    parts = [p for p in [lang, codec_layout, bitrate, title, downmix_tag, detector_tag] if p]
     # Escape brackets so Rich doesn't interpret them as markup tags
     return f"\\[{mark}]  {'  '.join(parts)}"
 
@@ -127,6 +263,7 @@ class TrackSelectorScreen(Screen[TrackSelection]):
         Binding("space", "toggle_track", "Toggle"),
         Binding("p", "preview_track", "Preview"),
         Binding("s", "set_downmix('stereo')", "Stereo", show=False),
+        Binding("m", "set_downmix('mono')", "Mono", show=False),
         Binding("6", "set_downmix('down6')", "5.1", show=False),
         Binding("d", "done", "Done"),
     ]
@@ -146,6 +283,23 @@ class TrackSelectorScreen(Screen[TrackSelection]):
         # Pre-select tracks that are marked as default
         self._selected: list[bool] = [t.is_default for t in tracks]
         self._downmix: list[DownmixMode | None] = [None] * len(tracks)
+
+        # Auto-preselect detector-suggested mode for FAKE tracks.
+        if track_type == TrackType.AUDIO:
+            for i, t in enumerate(tracks):
+                p = t.audio_profile
+                if p is None or p.verdict != Verdict.FAKE or p.suggested is None:
+                    continue
+                if t.channels is None:
+                    continue
+                if p.suggested == DownmixMode.STEREO and t.channels <= STEREO_CHANNELS:
+                    continue
+                if p.suggested == DownmixMode.MONO and t.channels < STEREO_CHANNELS:
+                    continue
+                if p.suggested == DownmixMode.DOWN6 and t.channels <= SURROUND_5_1_CHANNELS:
+                    continue
+                self._downmix[i] = p.suggested
+
         self._cursor: int = 0
 
     # ------------------------------------------------------------------
@@ -169,7 +323,7 @@ class TrackSelectorScreen(Screen[TrackSelection]):
         yield Static(f"Select {kind} tracks  (Space=toggle  P=preview  D=done)", id="track-hint")
         if self._track_type == TrackType.AUDIO:
             yield Static(
-                "Downmix >2ch:  S=stereo  6=7.1->5.1",
+                "Downmix: S=2.0  M=1.0  6=5.1",
                 id="track-downmix-hint",
             )
 
@@ -179,6 +333,10 @@ class TrackSelectorScreen(Screen[TrackSelection]):
             items.append(ListItem(Static(label, id=f"track-label-{i}"), id=f"track-item-{i}"))
 
         yield ListView(*items, id="track-list")
+
+        if self._track_type == TrackType.AUDIO:
+            initial_track = self._tracks[0] if self._tracks else None
+            yield Static(_render_detector_panel(initial_track), id="detector-panel")
 
         yield Footer()
 
@@ -197,6 +355,18 @@ class TrackSelectorScreen(Screen[TrackSelection]):
         label_widget = self.query_one(f"#track-label-{index}", Static)
         label_widget.update(self._render_line(index))
 
+    def _refresh_detector_panel(self) -> None:
+        if self._track_type != TrackType.AUDIO:
+            return
+        with contextlib.suppress(Exception):
+            panel = self.query_one("#detector-panel", Static)
+            track = (
+                self._tracks[self._cursor]
+                if 0 <= self._cursor < len(self._tracks)
+                else None
+            )
+            panel.update(_render_detector_panel(track))
+
     # ------------------------------------------------------------------
     # Actions
     # ------------------------------------------------------------------
@@ -205,11 +375,13 @@ class TrackSelectorScreen(Screen[TrackSelection]):
         lv = self.query_one("#track-list", ListView)
         lv.action_cursor_up()
         self._cursor = max(0, self._cursor - 1)
+        self._refresh_detector_panel()
 
     def action_move_down(self) -> None:
         lv = self.query_one("#track-list", ListView)
         lv.action_cursor_down()
         self._cursor = min(len(self._tracks) - 1, self._cursor + 1)
+        self._refresh_detector_panel()
 
     def action_toggle_track(self) -> None:
         if not self._tracks:
@@ -226,11 +398,18 @@ class TrackSelectorScreen(Screen[TrackSelection]):
         if not self._tracks or self._track_type != TrackType.AUDIO:
             return
         track = self._tracks[self._cursor]
-        if track.channels is None or track.channels <= STEREO_CHANNELS:
+        if track.channels is None:
             return
         new_mode = DownmixMode(mode)
+
+        # Per-mode channel-count guards
+        if new_mode == DownmixMode.STEREO and track.channels <= STEREO_CHANNELS:
+            return
+        if new_mode == DownmixMode.MONO and track.channels < STEREO_CHANNELS:
+            return
         if new_mode == DownmixMode.DOWN6 and track.channels <= SURROUND_5_1_CHANNELS:
             return
+
         if self._downmix[self._cursor] == new_mode:
             self._downmix[self._cursor] = None
         else:
