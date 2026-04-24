@@ -14,6 +14,7 @@ import pytest
 from textual.app import App, ComposeResult
 from textual.widgets import Input, Static
 
+from furnace.core.audio_profile import AudioMetrics, AudioProfile, Verdict
 from furnace.core.models import (
     CropRect,
     DiscTitle,
@@ -350,6 +351,63 @@ async def test_track_selector_list_view_highlighted_updates_cursor() -> None:
         await pilot.pause()
     # reference ListView so import is used
     assert ListView is not None
+
+
+async def test_track_selector_detector_panel_refreshes_on_highlight() -> None:
+    """When ListView highlight moves to another track, #detector-panel updates."""
+    real_metrics = AudioMetrics(
+        channels=6,
+        rms_l=-20.0, rms_r=-20.5, rms_c=-25.0, rms_lfe=-30.0,
+        rms_ls=-22.0, rms_rs=-22.5, rms_lb=None, rms_rb=None,
+        corr_lr=0.3, corr_ls_l=0.1, corr_rs_r=0.1, corr_ls_rs=0.2,
+        corr_lb_ls=None, corr_rb_rs=None,
+    )
+    fake_metrics = AudioMetrics(
+        channels=6,
+        rms_l=-50.0, rms_r=-47.0, rms_c=-28.0, rms_lfe=-75.0,
+        rms_ls=-47.0, rms_rs=-49.0, rms_lb=None, rms_rb=None,
+        corr_lr=0.4, corr_ls_l=0.1, corr_rs_r=0.1, corr_ls_rs=0.2,
+        corr_lb_ls=None, corr_rb_rs=None,
+    )
+    t0 = _audio_track(index=1)
+    t0.audio_profile = AudioProfile(
+        verdict=Verdict.REAL, score=0, suggested=None,
+        reasons=(), metrics=real_metrics,
+    )
+    t1 = _audio_track(index=2)
+    t1.audio_profile = AudioProfile(
+        verdict=Verdict.FAKE, score=2, suggested=DownmixMode.STEREO,
+        reasons=("LFE is dead",), metrics=fake_metrics,
+    )
+
+    mv = _movie_with_audio_and_subs()
+    app = _HostApp(
+        lambda: TrackSelectorScreen(
+            movie=mv, tracks=[t0, t1], track_type=TrackType.AUDIO, preview_cb=None
+        )
+    )
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, TrackSelectorScreen)
+
+        panel = screen.query_one("#detector-panel", Static)
+        assert "real surround" in str(panel.render())
+        assert "FAKE surround" not in str(panel.render())
+
+        class _Item1:
+            id = "track-item-1"
+
+        class _Event1:
+            item = _Item1()
+
+        screen.on_list_view_highlighted(_Event1())  # type: ignore[arg-type]
+        await pilot.pause()
+
+        assert "FAKE surround" in str(panel.render())
+
+        await pilot.press("d")
+        await pilot.pause()
 
 
 # ---------------------------------------------------------------------------

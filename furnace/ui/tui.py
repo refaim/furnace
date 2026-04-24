@@ -431,6 +431,7 @@ class TrackSelectorScreen(Screen[TrackSelection]):
             if item_id.startswith("track-item-"):
                 with contextlib.suppress(ValueError):
                     self._cursor = int(item_id.removeprefix("track-item-"))
+                    self._refresh_detector_panel()
 
     def on_click(self, event: object) -> None:
         """Handle click on the Done label."""
