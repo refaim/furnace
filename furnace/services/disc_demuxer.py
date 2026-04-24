@@ -9,7 +9,7 @@ from pathlib import Path
 from furnace.adapters._subprocess import run_tool
 from furnace.core.chapters import fix_chapters_file
 from furnace.core.models import DiscSource, DiscTitle, DiscType
-from furnace.core.ports import DiscDemuxerPort
+from furnace.core.ports import DiscDemuxerPort, PcmTranscoder
 
 logger = logging.getLogger(__name__)
 
@@ -46,12 +46,14 @@ class DiscDemuxer:
         bd_port: DiscDemuxerPort,
         dvd_port: DiscDemuxerPort,
         mkvmerge_path: Path | None = None,
+        pcm_transcoder: PcmTranscoder | None = None,
     ) -> None:
         self._ports: dict[DiscType, DiscDemuxerPort] = {
             DiscType.BLURAY: bd_port,
             DiscType.DVD: dvd_port,
         }
         self._mkvmerge = mkvmerge_path
+        self._pcm_transcoder = pcm_transcoder
 
     def _port_for(self, disc: DiscSource) -> DiscDemuxerPort:
         return self._ports[disc.disc_type]
@@ -135,6 +137,8 @@ class DiscDemuxer:
                     title_dir,
                 )
 
+                created_files = self._transcode_w64_files(created_files)
+
                 # If multiple files (BD/eac3to), mux into single MKV
                 final_mkv = demux_dir / f"{disc_label}_title_{title.number}.mkv"
                 if self._needs_muxing(created_files):
@@ -158,6 +162,44 @@ class DiscDemuxer:
         mkv_files = [f for f in files if f.suffix.lower() == ".mkv"]
         non_mkv = [f for f in files if f.suffix.lower() != ".mkv"]
         return len(mkv_files) != 1 or len(non_mkv) > 0
+
+    def _transcode_w64_files(self, files: list[Path]) -> list[Path]:
+        """Replace any Wave64 (.w64) entries in ``files`` with transcoded FLAC.
+
+        eac3to sometimes writes PCM to Wave64 when the stream exceeds the 4 GB
+        WAV limit; mkvmerge cannot read Wave64, so we transcode to FLAC
+        (lossless) before muxing. The original .w64 is deleted on success.
+
+        - If no .w64 is present: return ``files`` unchanged.
+        - If pcm_transcoder is None and at least one .w64 is present: raise
+          RuntimeError (fail fast rather than silently dropping the track).
+        - If the transcoder returns non-zero rc for any file: raise
+          RuntimeError, leaving the .w64 on disk for inspection.
+        """
+        if not any(f.suffix.lower() == ".w64" for f in files):
+            return files
+        if self._pcm_transcoder is None:
+            w64_names = [f.name for f in files if f.suffix.lower() == ".w64"]
+            msg = (
+                "pcm_transcoder not configured; cannot handle Wave64 demux "
+                f"output: {w64_names}"
+            )
+            raise RuntimeError(msg)
+
+        result: list[Path] = []
+        for f in files:
+            if f.suffix.lower() != ".w64":
+                result.append(f)
+                continue
+            flac_path = f.with_suffix(".flac")
+            logger.info("Transcoding Wave64 to FLAC: %s -> %s", f.name, flac_path.name)
+            rc = self._pcm_transcoder.transcode_to_flac(f, flac_path)
+            if rc != 0:
+                msg = f"eac3to transcode of {f.name} to FLAC failed (rc={rc})"
+                raise RuntimeError(msg)
+            f.unlink()
+            result.append(flac_path)
+        return result
 
     def _mux_to_mkv(
         self,

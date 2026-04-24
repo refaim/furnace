@@ -13,11 +13,13 @@ def _make_demuxer(
     bd_port: MagicMock | None = None,
     dvd_port: MagicMock | None = None,
     mkvmerge_path: Path | None = None,
+    pcm_transcoder: MagicMock | None = None,
 ) -> DiscDemuxer:
     return DiscDemuxer(
         bd_port=bd_port or MagicMock(),
         dvd_port=dvd_port or MagicMock(),
         mkvmerge_path=mkvmerge_path,
+        pcm_transcoder=pcm_transcoder,
     )
 
 
@@ -480,3 +482,211 @@ class TestCleanPartial:
         demux_dir = tmp_path
         # Just make sure it doesn't crash
         DiscDemuxer._clean_partial(demux_dir, "movie", 1)
+
+
+class TestW64Transcode:
+    def _make_fake_transcoder(self, rc: int = 0) -> MagicMock:
+        """Build a fake pcm_transcoder whose transcode_to_flac creates the
+        output file (mimicking eac3to) and returns the given rc.
+        """
+        transcoder = MagicMock()
+
+        def fake_transcode(input_path: Path, output_path: Path, on_progress: object = None) -> int:
+            if rc == 0:
+                output_path.write_bytes(b"fake flac data")
+            return rc
+
+        transcoder.transcode_to_flac.side_effect = fake_transcode
+        return transcoder
+
+    def test_demux_transcodes_w64_to_flac(self, tmp_path: Path) -> None:
+        """A .w64 in demux output is transcoded to .flac; .w64 is deleted;
+        mkvmerge receives the .flac.
+        """
+        demux_dir = tmp_path / ".furnace_demux"
+        mkvmerge_path = Path("/usr/bin/mkvmerge")
+
+        port = MagicMock()
+
+        def fake_demux(disc_path: Path, title_num: int, output_dir: Path, on_progress: object = None) -> list[Path]:
+            video = output_dir / "video.h264"
+            video.write_bytes(b"video data")
+            w64 = output_dir / "audio [eng].w64"
+            w64.write_bytes(b"huge pcm data")
+            return [video, w64]
+
+        port.demux_title.side_effect = fake_demux
+        transcoder = self._make_fake_transcoder(rc=0)
+        demuxer = _make_demuxer(
+            bd_port=port,
+            mkvmerge_path=mkvmerge_path,
+            pcm_transcoder=transcoder,
+        )
+
+        disc = DiscSource(path=tmp_path / "movie" / "BDMV", disc_type=DiscType.BLURAY)
+        title = DiscTitle(number=1, duration_s=6000.0, raw_label="1) test")
+
+        with patch("furnace.services.disc_demuxer.run_tool", return_value=(0, "")) as mock_run:
+            demuxer.demux(
+                discs=[disc],
+                selected_titles={disc: [title]},
+                demux_dir=demux_dir,
+            )
+
+        # Transcoder was invoked exactly once with the w64 as input
+        transcoder.transcode_to_flac.assert_called_once()
+        args = transcoder.transcode_to_flac.call_args
+        input_path = args[0][0]
+        output_path = args[0][1]
+        assert input_path.suffix == ".w64"
+        assert output_path.suffix == ".flac"
+        assert output_path.stem == input_path.stem
+
+        # mkvmerge was called with the .flac path, not the .w64
+        cmd = mock_run.call_args[0][0]
+        flac_args = [a for a in cmd if a.endswith(".flac")]
+        w64_args = [a for a in cmd if a.endswith(".w64")]
+        assert len(flac_args) == 1
+        assert w64_args == []
+
+    def test_demux_multiple_w64_files(self, tmp_path: Path) -> None:
+        """Multiple .w64 files in one title are each transcoded independently."""
+        demux_dir = tmp_path / ".furnace_demux"
+        mkvmerge_path = Path("/usr/bin/mkvmerge")
+
+        port = MagicMock()
+
+        def fake_demux(disc_path: Path, title_num: int, output_dir: Path, on_progress: object = None) -> list[Path]:
+            video = output_dir / "video.h264"
+            video.write_bytes(b"v")
+            w64_a = output_dir / "audio1 [eng].w64"
+            w64_b = output_dir / "audio2 [rus].w64"
+            w64_a.write_bytes(b"a")
+            w64_b.write_bytes(b"b")
+            return [video, w64_a, w64_b]
+
+        port.demux_title.side_effect = fake_demux
+        transcoder = self._make_fake_transcoder(rc=0)
+        demuxer = _make_demuxer(
+            bd_port=port,
+            mkvmerge_path=mkvmerge_path,
+            pcm_transcoder=transcoder,
+        )
+
+        disc = DiscSource(path=tmp_path / "movie" / "BDMV", disc_type=DiscType.BLURAY)
+        title = DiscTitle(number=1, duration_s=6000.0, raw_label="1) test")
+
+        with patch("furnace.services.disc_demuxer.run_tool", return_value=(0, "")) as mock_run:
+            demuxer.demux(
+                discs=[disc],
+                selected_titles={disc: [title]},
+                demux_dir=demux_dir,
+            )
+
+        assert transcoder.transcode_to_flac.call_count == 2
+        cmd = mock_run.call_args[0][0]
+        flac_args = [a for a in cmd if a.endswith(".flac")]
+        assert len(flac_args) == 2
+
+    def test_demux_transcode_failure_raises_and_keeps_w64(self, tmp_path: Path) -> None:
+        """Non-zero rc from transcoder -> RuntimeError; .w64 stays on disk for
+        post-mortem inspection (title_dir is NOT cleaned on failure).
+        """
+        demux_dir = tmp_path / ".furnace_demux"
+        mkvmerge_path = Path("/usr/bin/mkvmerge")
+
+        port = MagicMock()
+        w64_holder: dict[str, Path] = {}
+
+        def fake_demux(disc_path: Path, title_num: int, output_dir: Path, on_progress: object = None) -> list[Path]:
+            video = output_dir / "video.h264"
+            video.write_bytes(b"v")
+            w64 = output_dir / "audio.w64"
+            w64.write_bytes(b"a")
+            w64_holder["path"] = w64
+            return [video, w64]
+
+        port.demux_title.side_effect = fake_demux
+        transcoder = self._make_fake_transcoder(rc=2)
+        demuxer = _make_demuxer(
+            bd_port=port,
+            mkvmerge_path=mkvmerge_path,
+            pcm_transcoder=transcoder,
+        )
+
+        disc = DiscSource(path=tmp_path / "movie" / "BDMV", disc_type=DiscType.BLURAY)
+        title = DiscTitle(number=1, duration_s=6000.0, raw_label="1) test")
+
+        with pytest.raises(RuntimeError, match="transcode"):
+            demuxer.demux(
+                discs=[disc],
+                selected_titles={disc: [title]},
+                demux_dir=demux_dir,
+            )
+
+        # The .w64 must still be on disk (title_dir not cleaned on failure)
+        assert w64_holder["path"].exists()
+
+    def test_demux_w64_without_transcoder_raises(self, tmp_path: Path) -> None:
+        """pcm_transcoder=None + .w64 in demux output -> RuntimeError (fail fast
+        rather than silently dropping the track).
+        """
+        demux_dir = tmp_path / ".furnace_demux"
+
+        port = MagicMock()
+
+        def fake_demux(disc_path: Path, title_num: int, output_dir: Path, on_progress: object = None) -> list[Path]:
+            video = output_dir / "video.h264"
+            video.write_bytes(b"v")
+            w64 = output_dir / "audio.w64"
+            w64.write_bytes(b"a")
+            return [video, w64]
+
+        port.demux_title.side_effect = fake_demux
+        demuxer = _make_demuxer(bd_port=port, pcm_transcoder=None)
+
+        disc = DiscSource(path=tmp_path / "movie" / "BDMV", disc_type=DiscType.BLURAY)
+        title = DiscTitle(number=1, duration_s=6000.0, raw_label="1) test")
+
+        with pytest.raises(RuntimeError, match="pcm_transcoder"):
+            demuxer.demux(
+                discs=[disc],
+                selected_titles={disc: [title]},
+                demux_dir=demux_dir,
+            )
+
+    def test_demux_no_w64_skips_transcode(self, tmp_path: Path) -> None:
+        """Regression: demux output without any .w64 does NOT invoke the
+        transcoder, even when one is configured.
+        """
+        demux_dir = tmp_path / ".furnace_demux"
+        mkvmerge_path = Path("/usr/bin/mkvmerge")
+
+        port = MagicMock()
+
+        def fake_demux(disc_path: Path, title_num: int, output_dir: Path, on_progress: object = None) -> list[Path]:
+            video = output_dir / "video.h264"
+            video.write_bytes(b"v")
+            audio = output_dir / "audio [eng].ac3"
+            audio.write_bytes(b"a")
+            return [video, audio]
+
+        port.demux_title.side_effect = fake_demux
+        transcoder = MagicMock()
+        demuxer = _make_demuxer(
+            bd_port=port,
+            mkvmerge_path=mkvmerge_path,
+            pcm_transcoder=transcoder,
+        )
+
+        disc = DiscSource(path=tmp_path / "movie" / "BDMV", disc_type=DiscType.BLURAY)
+        title = DiscTitle(number=1, duration_s=6000.0, raw_label="1) test")
+
+        with patch("furnace.services.disc_demuxer.run_tool", return_value=(0, "")):
+            demuxer.demux(
+                discs=[disc],
+                selected_titles={disc: [title]},
+                demux_dir=demux_dir,
+            )
+
+        transcoder.transcode_to_flac.assert_not_called()

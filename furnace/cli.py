@@ -410,7 +410,12 @@ def plan(
     makemkv_adapter = MakemkvAdapter(cfg.makemkvcon, on_output=_console_output)
 
     # 4. Disc demux phase
-    disc_demuxer = DiscDemuxer(bd_port=eac3to_adapter, dvd_port=makemkv_adapter, mkvmerge_path=cfg.mkvmerge)
+    disc_demuxer = DiscDemuxer(
+        bd_port=eac3to_adapter,
+        dvd_port=makemkv_adapter,
+        mkvmerge_path=cfg.mkvmerge,
+        pcm_transcoder=eac3to_adapter,
+    )
     typer.echo("[furnace] Scanning for disc structures...")
     detected_discs = disc_demuxer.detect(source)
     demux_dir: Path | None = None

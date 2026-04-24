@@ -267,3 +267,22 @@ class DiscDemuxerPort(Protocol):
     ) -> list[Path]:
         """Demux one title to MKV file(s) in output_dir. Returns paths to created files."""
         ...
+
+
+@runtime_checkable
+class PcmTranscoder(Protocol):
+    """Transcode uncompressed PCM (Wave64) to FLAC.
+
+    Used by DiscDemuxer to normalize eac3to's Wave64 output to a format
+    mkvmerge can mux (FLAC). Lossless — the resulting stream decodes
+    bit-identical to the source PCM. Implemented by Eac3toAdapter.
+    """
+
+    def transcode_to_flac(
+        self,
+        input_path: Path,
+        output_path: Path,
+        on_progress: Callable[[ProgressSample], None] | None = None,
+    ) -> int:
+        """Transcode a PCM input (Wave64 or WAV) to FLAC. Returns exit code."""
+        ...

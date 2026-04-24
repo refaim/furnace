@@ -204,6 +204,26 @@ class Eac3toAdapter:
         )
         return rc
 
+    def transcode_to_flac(
+        self,
+        input_path: Path,
+        output_path: Path,
+        on_progress: Callable[[ProgressSample], None] | None = None,
+    ) -> int:
+        """Transcode Wave64 (or any PCM input) to FLAC via eac3to.
+
+        eac3to picks the output format from the output file's extension;
+        passing ``.flac`` yields a FLAC stream. No ``-removeDialnorm`` is
+        emitted — PCM has no dialnorm metadata. Lossless: the resulting
+        FLAC decodes bit-identical to the source PCM.
+        """
+        rc, _output = self._run(
+            [str(input_path), str(output_path)],
+            "w64_to_flac",
+            on_progress=on_progress,
+        )
+        return rc
+
     # -- DiscDemuxerPort protocol ----------------------------------------------
 
     def list_titles(self, disc_path: Path) -> list[DiscTitle]:
