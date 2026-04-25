@@ -182,16 +182,18 @@ def _resolve_und_language_tui(
 
 def _collect_selected_titles(
     detected_discs: list[DiscSource],
-    disc_demuxer: DiscDemuxer,
+    disc_titles: dict[DiscSource, list[DiscTitle]],
     *,
+    reporter: RichPlanReporter | None = None,
     playlist_app_runner: Callable[
         [Callable[[], Screen[list[DiscTitle]]]], list[DiscTitle] | None
     ] = _run_screen_app,
 ) -> dict[DiscSource, list[DiscTitle]]:
-    """For each detected disc, list titles and (optionally via TUI) pick which to demux."""
+    """For each detected disc, pick which titles to demux from the pre-listed
+    playlists. Pauses the reporter only around the interactive playlist screen."""
     selected_titles: dict[DiscSource, list[DiscTitle]] = {}
     for disc in detected_discs:
-        playlists = disc_demuxer.list_titles(disc)
+        playlists = disc_titles.get(disc, [])
         if not playlists:
             logger.warning("No playlists found for disc at %s", disc.path)
             continue
@@ -206,7 +208,11 @@ def _collect_selected_titles(
         ) -> Screen[list[DiscTitle]]:
             return PlaylistSelectorScreen(disc_label=_disc_label, playlists=_playlists)
 
+        if reporter is not None:
+            reporter.pause()
         picked = playlist_app_runner(_factory)
+        if reporter is not None:
+            reporter.resume()
         if picked:
             selected_titles[disc] = picked
     return selected_titles
@@ -244,6 +250,7 @@ def _run_disc_demux_interactive(
     *,
     source: Path,
     detected_discs: list[DiscSource],
+    disc_titles: dict[DiscSource, list[DiscTitle]],
     disc_demuxer: DiscDemuxer,
     ffmpeg_adapter: FFmpegAdapter,
     mpv_adapter: MpvAdapter,
@@ -263,15 +270,12 @@ def _run_disc_demux_interactive(
     if not detected_discs:
         return None, [], set()
 
-    if reporter is not None:
-        reporter.pause()
     selected_titles = _collect_selected_titles(
         detected_discs,
-        disc_demuxer,
+        disc_titles,
+        reporter=reporter,
         playlist_app_runner=playlist_app_runner,
     )
-    if reporter is not None:
-        reporter.resume()
 
     if not selected_titles:
         return None, [], set()
@@ -418,6 +422,7 @@ def plan(
         )
 
         detected_discs = disc_demuxer.detect(source)
+        disc_titles: dict[DiscSource, list[DiscTitle]] = {}
         for disc in detected_discs:
             try:
                 rel = disc.path.parent.relative_to(source)
@@ -425,6 +430,9 @@ def plan(
             except ValueError:
                 rel_str = disc.path.parent.name
             reporter.detect_disc(disc.disc_type, rel_str)
+            titles = disc_demuxer.list_titles(disc)
+            reporter.detect_disc_titles_done(len(titles))
+            disc_titles[disc] = titles
 
         demux_dir: Path | None = None
         demuxed_paths: list[Path] = []
@@ -434,6 +442,7 @@ def plan(
             demux_dir, demuxed_paths, sar_override_paths = _run_disc_demux_interactive(
                 source=source,
                 detected_discs=detected_discs,
+                disc_titles=disc_titles,
                 disc_demuxer=disc_demuxer,
                 ffmpeg_adapter=ffmpeg_adapter,
                 mpv_adapter=mpv_adapter,

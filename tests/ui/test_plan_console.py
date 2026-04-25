@@ -40,8 +40,11 @@ def test_detect_renders_one_row_per_disc() -> None:
     reporter, buf = _make_reporter()
     reporter.start()
     reporter.detect_disc(DiscType.BLURAY, "Matrix_BD")
+    reporter.detect_disc_titles_done(3)
     reporter.detect_disc(DiscType.BLURAY, "OldMatrix_BD")
+    reporter.detect_disc_titles_done(7)
     reporter.detect_disc(DiscType.DVD, "DirtyHarry_DVD")
+    reporter.detect_disc_titles_done(1)
     reporter.stop()
     text = buf.getvalue()
     # Phase header exactly once
@@ -52,6 +55,51 @@ def test_detect_renders_one_row_per_disc() -> None:
     assert "Matrix_BD" in text
     assert "OldMatrix_BD" in text
     assert "DirtyHarry_DVD" in text
+
+
+def test_detect_disc_followed_by_titles_done_renders_persistent_row() -> None:
+    reporter, buf = _make_reporter()
+    reporter.start()
+    reporter.detect_disc(DiscType.DVD, "PRIHODI_SCN")
+    reporter.detect_disc_titles_done(4)
+    reporter.stop()
+    text = buf.getvalue()
+    assert "DVD   PRIHODI_SCN -> 4 titles" in text
+
+
+def test_detect_disc_titles_done_singular() -> None:
+    reporter, buf = _make_reporter()
+    reporter.start()
+    reporter.detect_disc(DiscType.DVD, "PRIHODI_SCN")
+    reporter.detect_disc_titles_done(1)
+    reporter.stop()
+    text = buf.getvalue()
+    assert "DVD   PRIHODI_SCN -> 1 title" in text
+    # Should not say "1 titles" (plural).
+    assert "1 titles" not in text
+
+
+def test_detect_disc_titles_done_without_start_is_noop() -> None:
+    reporter, buf = _make_reporter()
+    reporter.start()
+    # No prior detect_disc; should not crash and should not emit anything.
+    reporter.detect_disc_titles_done(5)
+    reporter.stop()
+    text = buf.getvalue()
+    assert "title" not in text
+    assert "Detect" not in text
+
+
+def test_detect_disc_called_twice_finalizes_previous_progress() -> None:
+    """Defensive: a second detect_disc without titles_done first stops the
+    in-flight spinner instead of asserting."""
+    reporter, _buf = _make_reporter()
+    reporter.start()
+    reporter.detect_disc(DiscType.BLURAY, "First_BD")
+    # Spinner is alive — call detect_disc again, must not crash.
+    reporter.detect_disc(DiscType.DVD, "Second_DVD")
+    reporter.detect_disc_titles_done(2)
+    reporter.stop()
 
 
 def test_no_detect_block_when_no_discs() -> None:
@@ -425,6 +473,7 @@ def test_phase_headers_separated_by_blank_line() -> None:
     reporter, buf = _make_reporter()
     reporter.start()
     reporter.detect_disc(DiscType.BLURAY, "Matrix_BD")
+    reporter.detect_disc_titles_done(2)
     reporter.scan_file("Matrix_BD_title_1.mkv")
     reporter.stop()
     text = buf.getvalue()
@@ -456,6 +505,7 @@ def test_first_phase_has_no_leading_blank_line() -> None:
     )
     reporter.start()
     reporter.detect_disc(DiscType.BLURAY, "Matrix_BD")
+    reporter.detect_disc_titles_done(1)
     reporter.stop()
     raw_lines = buf.getvalue().splitlines()
     # After the Source/Output header (and its trailing blank line emitted by
@@ -509,6 +559,7 @@ def test_non_tty_output_has_no_ansi_escapes() -> None:
     )
     reporter.start()
     reporter.detect_disc(DiscType.BLURAY, "Matrix_BD")
+    reporter.detect_disc_titles_done(1)
     reporter.scan_file("Inception.mkv")
     reporter.analyze_file_start("Inception.mkv")
     reporter.analyze_microop("idet", has_progress=True)
@@ -537,7 +588,9 @@ def test_canonical_plan_golden_snapshot() -> None:
     )
     reporter.start()
     reporter.detect_disc(DiscType.BLURAY, "Matrix_BD")
+    reporter.detect_disc_titles_done(1)
     reporter.detect_disc(DiscType.DVD, "DirtyHarry_DVD")
+    reporter.detect_disc_titles_done(1)
     reporter.demux_disc_start("Matrix_BD")
     reporter.demux_title_start(3)
     reporter.demux_title_substep("rip", has_progress=True)

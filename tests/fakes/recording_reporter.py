@@ -38,6 +38,9 @@ class RecordingPlanReporter:
     def detect_disc(self, disc_type: DiscType, rel_path: str) -> None:
         self._record("detect_disc", (disc_type, rel_path), {})
 
+    def detect_disc_titles_done(self, n_titles: int) -> None:
+        self._record("detect_disc_titles_done", (n_titles,), {})
+
     # Demux
     def demux_disc_cached(self, label: str) -> None:
         self._record("demux_disc_cached", (label,), {})

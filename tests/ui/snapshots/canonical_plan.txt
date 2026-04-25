@@ -2,8 +2,8 @@ Source: D:/Library
 Output: Z:/plans/library
 
 Detect
-BDMV  Matrix_BD
-DVD   DirtyHarry_DVD
+BDMV  Matrix_BD -> 1 title
+DVD   DirtyHarry_DVD -> 1 title
 
 Demux
 Matrix_BD

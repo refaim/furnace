@@ -441,8 +441,12 @@ class TestPlanNames:
 
 class TestPlanDiscDryRun:
     def test_detected_discs_skipped_in_dry_run(self, tmp_path: Path) -> None:
-        """When discs are detected but --dry-run is set, demux phase is skipped."""
-        from furnace.core.models import DiscSource, DiscType
+        """When discs are detected but --dry-run is set, demux phase is skipped.
+
+        list_titles still runs once per disc — it now feeds the Detect phase
+        rendering (``... -> N titles``). Only the actual demux is skipped.
+        """
+        from furnace.core.models import DiscSource, DiscTitle, DiscType
 
         source = tmp_path / "src"
         source.mkdir()
@@ -464,6 +468,9 @@ class TestPlanDiscDryRun:
             patch("furnace.cli.PlannerService") as mock_planner_cls,
         ):
             mock_demuxer_cls.return_value.detect.return_value = [disc]
+            mock_demuxer_cls.return_value.list_titles.return_value = [
+                DiscTitle(number=1, duration_s=1.0, raw_label="1"),
+            ]
             mock_scanner_cls.return_value.scan.return_value = []
             mock_planner_cls.return_value.create_plan.return_value = plan_obj
 
@@ -473,8 +480,10 @@ class TestPlanDiscDryRun:
             )
 
         assert result.exit_code == 0, result.output
-        # list_titles should NOT be called in dry-run
-        mock_demuxer_cls.return_value.list_titles.assert_not_called()
+        # list_titles is now called from the Detect loop (not from demux).
+        mock_demuxer_cls.return_value.list_titles.assert_called_once_with(disc)
+        # But the actual demux is still skipped under --dry-run.
+        mock_demuxer_cls.return_value.demux.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -1408,6 +1417,7 @@ class TestRunDiscDemuxInteractive:
         demux_dir, paths, sar = _run_disc_demux_interactive(
             source=tmp_path,
             detected_discs=[],
+            disc_titles={},
             disc_demuxer=demuxer,
             ffmpeg_adapter=ffmpeg,
             mpv_adapter=mpv,
@@ -1418,6 +1428,8 @@ class TestRunDiscDemuxInteractive:
         assert demux_dir is None
         assert paths == []
         assert sar == set()
+        # list_titles is no longer called inside _run_disc_demux_interactive —
+        # it's invoked by `cli.plan`'s Detect loop and passed in as `disc_titles`.
         demuxer.list_titles.assert_not_called()
 
     def test_single_playlist_auto_selected_and_demuxed(self, tmp_path: Path) -> None:
@@ -1430,7 +1442,6 @@ class TestRunDiscDemuxInteractive:
         title = DiscTitle(number=1, duration_s=5400.0, raw_label="1: ...")
 
         demuxer = MagicMock()
-        demuxer.list_titles.return_value = [title]
         demuxed_mkv = tmp_path / "disc_folder_title_1.mkv"
         demuxer.demux.return_value = [demuxed_mkv]
 
@@ -1439,6 +1450,7 @@ class TestRunDiscDemuxInteractive:
         demux_dir, paths, sar = _run_disc_demux_interactive(
             source=tmp_path,
             detected_discs=[disc],
+            disc_titles={disc: [title]},
             disc_demuxer=demuxer,
             ffmpeg_adapter=ffmpeg,
             mpv_adapter=mpv,
@@ -1450,21 +1462,23 @@ class TestRunDiscDemuxInteractive:
         assert paths == [demuxed_mkv]
         assert sar == set()
         demuxer.demux.assert_called_once()
+        demuxer.list_titles.assert_not_called()
 
     def test_empty_playlist_list_skips_disc(self, tmp_path: Path) -> None:
-        """When list_titles returns [], that disc is skipped entirely."""
+        """When list_titles returned [] (now passed in via disc_titles), that
+        disc is skipped entirely."""
         from furnace.cli import _run_disc_demux_interactive
         from furnace.core.models import DiscSource, DiscType
 
         disc = DiscSource(path=tmp_path / "BDMV", disc_type=DiscType.BLURAY)
 
         demuxer = MagicMock()
-        demuxer.list_titles.return_value = []
 
         ffmpeg, mpv = self._adapters()
         demux_dir, paths, sar = _run_disc_demux_interactive(
             source=tmp_path,
             detected_discs=[disc],
+            disc_titles={disc: []},
             disc_demuxer=demuxer,
             ffmpeg_adapter=ffmpeg,
             mpv_adapter=mpv,
@@ -1493,7 +1507,6 @@ class TestRunDiscDemuxInteractive:
         t2 = DiscTitle(number=2, duration_s=200, raw_label="2")
 
         demuxer = MagicMock()
-        demuxer.list_titles.return_value = [t1, t2]
         demuxed_mkv = tmp_path / "disc_title_2.mkv"
         demuxer.demux.return_value = [demuxed_mkv]
 
@@ -1508,6 +1521,7 @@ class TestRunDiscDemuxInteractive:
         demux_dir, paths, sar = _run_disc_demux_interactive(
             source=tmp_path,
             detected_discs=[disc],
+            disc_titles={disc: [t1, t2]},
             disc_demuxer=demuxer,
             ffmpeg_adapter=ffmpeg,
             mpv_adapter=mpv,
@@ -1535,13 +1549,13 @@ class TestRunDiscDemuxInteractive:
         t2 = DiscTitle(number=2, duration_s=200, raw_label="2")
 
         demuxer = MagicMock()
-        demuxer.list_titles.return_value = [t1, t2]
 
         ffmpeg, mpv = self._adapters()
 
         demux_dir, paths, sar = _run_disc_demux_interactive(
             source=tmp_path,
             detected_discs=[disc],
+            disc_titles={disc: [t1, t2]},
             disc_demuxer=demuxer,
             ffmpeg_adapter=ffmpeg,
             mpv_adapter=mpv,
@@ -1566,7 +1580,6 @@ class TestRunDiscDemuxInteractive:
         title = DiscTitle(number=1, duration_s=100, raw_label="t")
 
         demuxer = MagicMock()
-        demuxer.list_titles.return_value = [title]
         dvd_mkv = tmp_path / ".furnace_demux" / "dvdroot_title_1.mkv"
         demuxer.demux.return_value = [dvd_mkv]
 
@@ -1583,6 +1596,7 @@ class TestRunDiscDemuxInteractive:
         demux_dir, paths, sar = _run_disc_demux_interactive(
             source=tmp_path,
             detected_discs=[disc],
+            disc_titles={disc: [title]},
             disc_demuxer=demuxer,
             ffmpeg_adapter=ffmpeg,
             mpv_adapter=mpv,
@@ -1609,7 +1623,6 @@ class TestRunDiscDemuxInteractive:
         t1 = DiscTitle(number=1, duration_s=1.0, raw_label="1")
         t2 = DiscTitle(number=2, duration_s=2.0, raw_label="2")
         demuxer = MagicMock()
-        demuxer.list_titles.return_value = [t1, t2]
         mkv1 = tmp_path / ".furnace_demux" / "bdroot_title_1.mkv"
         mkv2 = tmp_path / ".furnace_demux" / "bdroot_title_2.mkv"
         demuxer.demux.return_value = [mkv1, mkv2]
@@ -1623,6 +1636,7 @@ class TestRunDiscDemuxInteractive:
         demux_dir, paths, sar = _run_disc_demux_interactive(
             source=tmp_path,
             detected_discs=[disc],
+            disc_titles={disc: [t1, t2]},
             disc_demuxer=demuxer,
             ffmpeg_adapter=ffmpeg,
             mpv_adapter=mpv,
@@ -1646,7 +1660,6 @@ class TestRunDiscDemuxInteractive:
         t1 = DiscTitle(number=1, duration_s=1.0, raw_label="1")
         t2 = DiscTitle(number=2, duration_s=2.0, raw_label="2")
         demuxer = MagicMock()
-        demuxer.list_titles.return_value = [t1, t2]
         mkv1 = tmp_path / ".furnace_demux" / "bdroot_title_1.mkv"
         mkv2 = tmp_path / ".furnace_demux" / "bdroot_title_2.mkv"
         demuxer.demux.return_value = [mkv1, mkv2]
@@ -1660,6 +1673,7 @@ class TestRunDiscDemuxInteractive:
         _demux_dir, paths, sar = _run_disc_demux_interactive(
             source=tmp_path,
             detected_discs=[disc],
+            disc_titles={disc: [t1, t2]},
             disc_demuxer=demuxer,
             ffmpeg_adapter=ffmpeg,
             mpv_adapter=mpv,
@@ -1681,7 +1695,6 @@ class TestRunDiscDemuxInteractive:
         title = DiscTitle(number=1, duration_s=0.0, raw_label="t")
 
         demuxer = MagicMock()
-        demuxer.list_titles.return_value = [title]
         mkv = tmp_path / ".furnace_demux" / "dvd_title_1.mkv"
         demuxer.demux.return_value = [mkv]
 
@@ -1693,6 +1706,7 @@ class TestRunDiscDemuxInteractive:
         _, paths, _sar = _run_disc_demux_interactive(
             source=tmp_path,
             detected_discs=[disc],
+            disc_titles={disc: [title]},
             disc_demuxer=demuxer,
             ffmpeg_adapter=ffmpeg,
             mpv_adapter=mpv,
@@ -1789,6 +1803,7 @@ class TestPlanDiscInteractive:
             patch("furnace.cli.save_plan"),
         ):
             mock_demuxer_cls.return_value.detect.return_value = [disc]
+            mock_demuxer_cls.return_value.list_titles.return_value = []
             mock_interactive.return_value = (source / ".furnace_demux", [demuxed], {demuxed})
             mock_scanner_cls.return_value.scan.return_value = []
             mock_planner_cls.return_value.create_plan.return_value = plan_obj
@@ -1800,6 +1815,9 @@ class TestPlanDiscInteractive:
 
         assert result.exit_code == 0, result.output
         mock_interactive.assert_called_once()
+        # _run_disc_demux_interactive received the disc_titles dict from the
+        # Detect loop.
+        assert "disc_titles" in mock_interactive.call_args.kwargs
         # Plan.demux_dir should be set from the returned demux_dir
         assert plan_obj.demux_dir == str(source / ".furnace_demux")
         # sar_override_paths forwarded to planner
@@ -1829,7 +1847,6 @@ class TestPlanDiscInteractiveReporter:
         t2 = DiscTitle(number=2, duration_s=2.0, raw_label="2")
 
         demuxer = MagicMock()
-        demuxer.list_titles.return_value = [t1, t2]
         mkv1 = tmp_path / ".furnace_demux" / "bdroot_title_1.mkv"
         mkv2 = tmp_path / ".furnace_demux" / "bdroot_title_2.mkv"
         demuxer.demux.return_value = [mkv1, mkv2]
@@ -1849,6 +1866,7 @@ class TestPlanDiscInteractiveReporter:
         _run_disc_demux_interactive(
             source=tmp_path,
             detected_discs=[disc],
+            disc_titles={disc: [t1, t2]},
             disc_demuxer=demuxer,
             ffmpeg_adapter=ffmpeg,
             mpv_adapter=mpv,
@@ -1857,7 +1875,8 @@ class TestPlanDiscInteractiveReporter:
             file_app_runner=file_runner,
         )
 
-        # pause/resume called once around the playlist runner and once around the file runner.
+        # pause/resume called once around the playlist runner (now inside
+        # _collect_selected_titles) and once around the file runner.
         assert manager.mock_calls == [call.pause(), call.resume(), call.pause(), call.resume()]
         # demuxer.demux receives the reporter (not on_output) under the new wiring.
         assert demuxer.demux.call_args.kwargs["reporter"] is reporter
@@ -1903,6 +1922,7 @@ class TestPlanDetectRelPathFallback:
         ):
             reporter_inst = mock_reporter_cls.return_value
             mock_demuxer_cls.return_value.detect.return_value = [disc]
+            mock_demuxer_cls.return_value.list_titles.return_value = []
             mock_interactive.return_value = (None, [], set())
             mock_scanner_cls.return_value.scan.return_value = []
             mock_planner_cls.return_value.create_plan.return_value = plan_obj
@@ -1915,6 +1935,8 @@ class TestPlanDetectRelPathFallback:
         assert result.exit_code == 0, result.output
         # detect_disc was called with the parent-name fallback.
         reporter_inst.detect_disc.assert_called_once_with(DiscType.BLURAY, "elsewhere")
+        # detect_disc_titles_done was called too with the empty title count.
+        reporter_inst.detect_disc_titles_done.assert_called_once_with(0)
 
 
 # ---------------------------------------------------------------------------

@@ -75,6 +75,11 @@ class RichPlanReporter:
         # Tracks whether any phase header has been emitted yet — controls the
         # "blank line before phase header" rule for non-first phases.
         self._any_phase_started = False
+        # Per-disc detect state: set on detect_disc, cleared on
+        # detect_disc_titles_done. Used to render the persistent
+        # "<TYPE> <name> -> N title(s)" row once title listing finishes.
+        self._current_detect_disc_type: DiscType | None = None
+        self._current_detect_rel_path: str | None = None
 
     def _start_progress(self, *, has_progress: bool) -> Progress | None:
         """Start a transient Rich Progress.
@@ -143,11 +148,38 @@ class RichPlanReporter:
     # -- Detect ---------------------------------------------------------------
 
     def detect_disc(self, disc_type: DiscType, rel_path: str) -> None:
+        # Defensive: finalize any in-flight progress (caller misorder) before
+        # starting a new spinner row for this disc.
+        self._stop_progress()
         if not self._detect_started:
             self._emit_phase_header("Detect")
             self._detect_started = True
+        self._current_detect_disc_type = disc_type
+        self._current_detect_rel_path = rel_path
         type_name = _DISC_TYPE_NAMES[disc_type]
-        self._console.print(f"{type_name:<5} {rel_path}", highlight=False)
+        progress = self._start_progress(has_progress=False)
+        if progress is None:
+            # Non-TTY: no spinner. The persistent row is emitted by
+            # detect_disc_titles_done once title count is known.
+            return
+        desc = f"{type_name:<6}{rel_path} -> scanning"
+        self._task_id = progress.add_task(desc, total=None)
+
+    def detect_disc_titles_done(self, n_titles: int) -> None:
+        self._stop_progress()
+        if self._current_detect_rel_path is None:
+            return
+        # _current_detect_disc_type is set in lockstep with rel_path; mypy needs
+        # the assert so it can narrow the Optional when indexing _DISC_TYPE_NAMES.
+        assert self._current_detect_disc_type is not None  # noqa: S101
+        type_name = _DISC_TYPE_NAMES[self._current_detect_disc_type]
+        word = "title" if n_titles == 1 else "titles"
+        self._console.print(
+            f"{type_name:<6}{self._current_detect_rel_path} -> {n_titles} {word}",
+            highlight=False,
+        )
+        self._current_detect_rel_path = None
+        self._current_detect_disc_type = None
 
     # -- Demux ---------------------------------------------------------------
 

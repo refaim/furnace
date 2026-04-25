@@ -9,6 +9,7 @@ def test_records_method_name_and_args(tmp_path: Path) -> None:
     plan_path = tmp_path / "furnace-plan.json"
     r = RecordingPlanReporter()
     r.detect_disc(DiscType.BLURAY, "Matrix_BD")
+    r.detect_disc_titles_done(3)
     r.demux_disc_cached("OldMatrix_BD")
     r.demux_title_start(5)
     r.demux_title_substep("rip", has_progress=True)
@@ -23,6 +24,7 @@ def test_records_method_name_and_args(tmp_path: Path) -> None:
 
     assert r.events == [
         Event("detect_disc", (DiscType.BLURAY, "Matrix_BD")),
+        Event("detect_disc_titles_done", (3,)),
         Event("demux_disc_cached", ("OldMatrix_BD",)),
         Event("demux_title_start", (5,)),
         Event("demux_title_substep", ("rip",), (("has_progress", True),)),
