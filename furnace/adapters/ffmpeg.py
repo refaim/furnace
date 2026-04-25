@@ -177,18 +177,22 @@ class FFmpegAdapter:
         *,
         interlaced: bool = False,
         is_dvd: bool = False,
+        on_progress: Callable[[ProgressSample], None] | None = None,
     ) -> CropRect | None:
         """Run cropdetect at multiple points across the timeline.
 
         Returns the median crop of the dominant cluster only if the cluster
         contains >50 % of samples.  Returns None otherwise.
+
+        ``on_progress`` is called after each sample point with a fraction
+        (``points_done / total_points``).
         """
         points = self._CROP_SAMPLE_POINTS_DVD if is_dvd else self._CROP_SAMPLE_POINTS
         vf = "yadif,cropdetect=24:16:0" if interlaced else "cropdetect=24:16:0"
 
         crop_values: list[CropRect] = []
 
-        for pct in points:
+        for i, pct in enumerate(points, start=1):
             seek = duration_s * pct
             cmd = [
                 str(self._ffmpeg),
@@ -227,6 +231,9 @@ class FFmpegAdapter:
                     )
                 )
 
+            if on_progress is not None:
+                on_progress(ProgressSample(fraction=i / len(points)))
+
         if not crop_values:
             return None
 
@@ -258,16 +265,24 @@ class FFmpegAdapter:
                 return str(tags[key])
         return None
 
-    def run_idet(self, path: Path, duration_s: float) -> float:
+    def run_idet(
+        self,
+        path: Path,
+        duration_s: float,
+        *,
+        on_progress: Callable[[ProgressSample], None] | None = None,
+    ) -> float:
         """Run idet filter at multiple points across the timeline.
 
         Samples 1000 frames at 10%, 30%, 50%, 70%, 90% of duration.
-        Returns the ratio of interlaced frames (0.0 to 1.0).
+        Returns the ratio of interlaced frames (0.0 to 1.0). After each
+        sample point, calls ``on_progress`` with a fraction.
         """
+        points = (0.10, 0.30, 0.50, 0.70, 0.90)
         total_interlaced = 0
         total_prog = 0
 
-        for pct in (0.10, 0.30, 0.50, 0.70, 0.90):
+        for i, pct in enumerate(points, start=1):
             seek = duration_s * pct
             cmd = [
                 str(self._ffmpeg),
@@ -298,6 +313,9 @@ class FFmpegAdapter:
                 if m:
                     total_interlaced += int(m.group(1)) + int(m.group(2))
                     total_prog += int(m.group(3))
+
+            if on_progress is not None:
+                on_progress(ProgressSample(fraction=i / len(points)))
 
         total = total_interlaced + total_prog
         if total == 0:
@@ -487,6 +505,8 @@ class FFmpegAdapter:
         stream_index: int,
         channels: int,
         duration_s: float,
+        *,
+        on_progress: Callable[[ProgressSample], None] | None = None,
     ) -> AudioMetrics:
         """Sample PCM windows and compute per-channel RMS + pairwise Pearson."""
         if channels == _CHANNELS_STEREO:
@@ -502,13 +522,15 @@ class FFmpegAdapter:
             raise ValueError(f"profile_audio_track: unsupported channels={channels}")
 
         chunks: list[np.ndarray] = []
-        for frac in points:
+        for i, frac in enumerate(points, start=1):
             start = max(0.0, duration_s * frac - _PROFILE_WINDOW_SEC / 2)
             window = self._decode_pcm_window(
                 path, stream_index, channels, layout, start, _PROFILE_WINDOW_SEC,
             )
             if window.size > 0:
                 chunks.append(window)
+            if on_progress is not None:
+                on_progress(ProgressSample(fraction=i / len(points)))
 
         if not chunks:
             raise RuntimeError(

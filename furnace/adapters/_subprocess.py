@@ -27,6 +27,7 @@ def run_tool(
     on_progress_line: Callable[[str], bool] | None = None,
     log_path: Path | None = None,
     cwd: Path | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> tuple[int, str]:
     """Run a subprocess, streaming both stdout and stderr to callbacks.
 
@@ -41,6 +42,9 @@ def run_tool(
             flow normally to log / output.
         log_path: If provided, write full command + all output to this file.
         cwd: Optional working directory for the subprocess.
+        cancel_event: If set during execution, the running child is killed
+            and `run_tool` returns. Default `None` preserves blocking-wait
+            behavior for all callers that don't need cancellation.
 
     Returns:
         `(return_code, combined_output_text)` — the text includes only the
@@ -121,6 +125,17 @@ def run_tool(
         stdout_thread.start()
         stderr_thread.start()
 
+        # Polled wait so we can react to cancel_event.
+        if cancel_event is not None:
+            while process.poll() is None:
+                if cancel_event.is_set():
+                    # SIGKILL — plan-phase probes (eac3to/makemkvcon/mkvmerge -i)
+                    # have nothing to flush; cancel must be instant on Ctrl+C.
+                    process.kill()
+                    break
+                cancel_event.wait(timeout=0.1)
+        # process.wait() reaps the zombie and produces returncode (also runs
+        # for the no-cancel-event path where the polled block was skipped).
         process.wait()
         stdout_thread.join(timeout=5)
         stderr_thread.join(timeout=5)

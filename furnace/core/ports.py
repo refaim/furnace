@@ -7,7 +7,7 @@ from typing import Any, Protocol, runtime_checkable
 from furnace.core.progress import ProgressSample
 
 from .audio_profile import AudioMetrics
-from .models import CropRect, DiscTitle, DownmixMode, DvMode, EncodeResult, VideoParams
+from .models import CropRect, DiscTitle, DiscType, DownmixMode, DvMode, EncodeResult, VideoParams
 
 
 @runtime_checkable
@@ -25,16 +25,30 @@ class Prober(Protocol):
         *,
         interlaced: bool = False,
         is_dvd: bool = False,
+        on_progress: Callable[[ProgressSample], None] | None = None,
     ) -> CropRect | None:
-        """Run cropdetect, return detected values (before alignment)."""
+        """Run cropdetect, return detected values (before alignment).
+
+        ``on_progress`` is called after each sample point.
+        """
         ...
 
     def get_encoder_tag(self, path: Path) -> str | None:
         """Read MKV tag ENCODER. None if absent."""
         ...
 
-    def run_idet(self, path: Path, duration_s: float) -> float:
-        """Run idet analysis. Returns interlaced frame ratio (0.0 to 1.0)."""
+    def run_idet(
+        self,
+        path: Path,
+        duration_s: float,
+        *,
+        on_progress: Callable[[ProgressSample], None] | None = None,
+    ) -> float:
+        """Run idet analysis. Returns interlaced frame ratio (0.0 to 1.0).
+
+        ``on_progress`` is called after each sample point with a fraction
+        (``points_done / total_points``).
+        """
         ...
 
     def probe_hdr_side_data(self, path: Path) -> list[dict[str, Any]]:
@@ -47,12 +61,15 @@ class Prober(Protocol):
         stream_index: int,
         channels: int,
         duration_s: float,
+        *,
+        on_progress: Callable[[ProgressSample], None] | None = None,
     ) -> AudioMetrics:
         """Sample PCM windows from an audio stream, compute per-channel RMS
         and pairwise correlations, and return raw measurements.
 
         channels must be 2, 6, or 8; other counts raise ValueError.
         duration_s is used to pick sample offsets.
+        ``on_progress`` is called after each window decode with a fraction.
 
         Raises RuntimeError if no windows decoded successfully.
         """
@@ -286,3 +303,52 @@ class PcmTranscoder(Protocol):
     ) -> int:
         """Transcode a PCM input (Wave64 or WAV) to FLAC. Returns exit code."""
         ...
+
+
+@runtime_checkable
+class PlanReporter(Protocol):
+    """Structured terminal output for ``furnace plan``.
+
+    State is implicit: after ``*_file_start(name)`` or ``demux_title_start(n)``,
+    all subsequent micro-op / progress / done calls apply to that latest-started
+    item. The ``plan`` pipeline is strictly serial — only one file/title is
+    active at a time — so this is unambiguous.
+    """
+
+    # Detect
+    def detect_disc(self, disc_type: DiscType, rel_path: str) -> None: ...
+
+    # Demux
+    def demux_disc_cached(self, label: str) -> None: ...
+    def demux_disc_start(self, label: str) -> None: ...
+    def demux_title_start(self, title_num: int) -> None: ...
+    def demux_title_substep(self, label: str, *, has_progress: bool) -> None: ...
+    def demux_title_progress(self, fraction: float) -> None: ...
+    def demux_title_done(self) -> None: ...
+    def demux_title_failed(self, reason: str) -> None: ...
+
+    # Scan
+    def scan_file(self, name: str) -> None: ...
+    def scan_skipped(self, name: str, reason: str) -> None: ...
+
+    # Analyze
+    def analyze_file_start(self, name: str) -> None: ...
+    def analyze_microop(self, label: str, *, has_progress: bool) -> None: ...
+    def analyze_progress(self, fraction: float) -> None: ...
+    def analyze_file_done(self, summary: str) -> None: ...
+    def analyze_file_failed(self, reason: str) -> None: ...
+    def analyze_file_skipped(self, reason: str) -> None: ...
+
+    # Plan
+    def plan_file_start(self, name: str) -> None: ...
+    def plan_microop(self, label: str, *, has_progress: bool) -> None: ...
+    def plan_progress(self, fraction: float) -> None: ...
+    def plan_file_done(self, summary: str) -> None: ...
+
+    # Final
+    def plan_saved(self, path: Path, n_jobs: int) -> None: ...
+    def interrupted(self) -> None: ...
+
+    # Lifecycle (for interactive Textual TUI pauses)
+    def pause(self) -> None: ...
+    def resume(self) -> None: ...

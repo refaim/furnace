@@ -169,8 +169,9 @@ class TestPlanDryRun:
             )
 
         assert result.exit_code == 0, result.output
-        assert "Dry run" in result.output
-        assert "0 job(s) planned" in result.output
+        # plan_saved no longer prints a visible line, so we verify via mocks
+        # that the planner was invoked and produced a zero-job plan.
+        mock_planner_cls.return_value.create_plan.assert_called_once()
         # Analyzer should not have been called since scanner returned empty
         mock_analyzer_cls.return_value.analyze.assert_not_called()
 
@@ -220,8 +221,10 @@ class TestPlanDryRun:
             )
 
         assert result.exit_code == 0, result.output
-        assert "2 job(s) planned" in result.output
-        assert "1 pending" in result.output
+        # plan_saved no longer prints a visible line; verify the planner ran
+        # and produced the expected two-job plan.
+        mock_planner_cls.return_value.create_plan.assert_called_once()
+        assert len(mock_planner_cls.return_value.create_plan.return_value.jobs) == 2
 
     def test_dry_run_passes_language_lists(self, tmp_path: Path) -> None:
         """Language lists are correctly parsed and passed to planner."""
@@ -368,10 +371,10 @@ class TestPlanSave:
             )
 
         assert result.exit_code == 0, result.output
-        assert "Plan saved" in result.output
-        assert "1 total" in result.output
-        assert "1 pending" in result.output
+        # plan_saved no longer prints a visible line; verify the plan was
+        # written to disk via save_plan and the planner was invoked.
         mock_save.assert_called_once()
+        mock_planner_cls.return_value.create_plan.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
@@ -1061,22 +1064,6 @@ class TestMainModule:
             with contextlib.suppress(SystemExit):
                 runpy.run_module("furnace", run_name="__main__")
         mock_app.assert_called_once()
-
-
-# ---------------------------------------------------------------------------
-# _console_output
-# ---------------------------------------------------------------------------
-
-
-class TestConsoleOutput:
-    def test_echoes_to_stderr(self, capsys: Any) -> None:
-        """_console_output writes the line to stderr."""
-        from furnace.cli import _console_output
-
-        _console_output("hello world")
-        captured = capsys.readouterr()
-        assert "hello world" in captured.err
-        assert captured.out == ""
 
 
 # ---------------------------------------------------------------------------
@@ -1818,6 +1805,205 @@ class TestPlanDiscInteractive:
         # sar_override_paths forwarded to planner
         call_kwargs = mock_planner_cls.return_value.create_plan.call_args.kwargs
         assert call_kwargs["sar_overrides"] == {demuxed}
+
+
+# ---------------------------------------------------------------------------
+# disc-demux interactive: reporter pause/resume coverage
+# ---------------------------------------------------------------------------
+
+
+class TestPlanDiscInteractiveReporter:
+    """Cover the `reporter is not None` branches in `_run_disc_demux_interactive`."""
+
+    def test_reporter_pause_resume_around_screens(self, tmp_path: Path) -> None:
+        """When a reporter is supplied, pause/resume bracket every interactive screen."""
+        from unittest.mock import call
+
+        from furnace.cli import _run_disc_demux_interactive
+        from furnace.core.models import DiscSource, DiscTitle, DiscType
+        from furnace.ui.tui import FileSelection
+
+        disc_root = tmp_path / "bdroot" / "BDMV"
+        disc = DiscSource(path=disc_root, disc_type=DiscType.BLURAY)
+        t1 = DiscTitle(number=1, duration_s=1.0, raw_label="1")
+        t2 = DiscTitle(number=2, duration_s=2.0, raw_label="2")
+
+        demuxer = MagicMock()
+        demuxer.list_titles.return_value = [t1, t2]
+        mkv1 = tmp_path / ".furnace_demux" / "bdroot_title_1.mkv"
+        mkv2 = tmp_path / ".furnace_demux" / "bdroot_title_2.mkv"
+        demuxer.demux.return_value = [mkv1, mkv2]
+
+        ffmpeg = MagicMock()
+        ffmpeg.probe.return_value = {"format": {"duration": "1", "size": "2"}}
+        mpv = MagicMock()
+
+        reporter = MagicMock()
+        manager = MagicMock()
+        manager.attach_mock(reporter.pause, "pause")
+        manager.attach_mock(reporter.resume, "resume")
+
+        playlist_runner = MagicMock(return_value=[t1, t2])
+        file_runner = MagicMock(return_value=FileSelection(selected=[mkv1], sar_override=set()))
+
+        _run_disc_demux_interactive(
+            source=tmp_path,
+            detected_discs=[disc],
+            disc_demuxer=demuxer,
+            ffmpeg_adapter=ffmpeg,
+            mpv_adapter=mpv,
+            reporter=reporter,
+            playlist_app_runner=playlist_runner,
+            file_app_runner=file_runner,
+        )
+
+        # pause/resume called once around the playlist runner and once around the file runner.
+        assert manager.mock_calls == [call.pause(), call.resume(), call.pause(), call.resume()]
+        # demuxer.demux receives the reporter (not on_output) under the new wiring.
+        assert demuxer.demux.call_args.kwargs["reporter"] is reporter
+
+
+# ---------------------------------------------------------------------------
+# plan: detect_disc rel_path fallback (ValueError branch)
+# ---------------------------------------------------------------------------
+
+
+class TestPlanDetectRelPathFallback:
+    """The `rel_str = disc.path.parent.name` fallback fires when relative_to() raises."""
+
+    def test_disc_outside_source_falls_back_to_basename(self, tmp_path: Path) -> None:
+        """A disc whose parent dir is not under `source` triggers the ValueError branch."""
+        from furnace.core.models import DiscSource, DiscType
+
+        source = tmp_path / "src"
+        source.mkdir()
+        output = tmp_path / "out"
+
+        # Disc lives outside `source`, so .relative_to(source) raises ValueError.
+        outside = tmp_path / "elsewhere" / "BDMV"
+        disc = DiscSource(path=outside, disc_type=DiscType.BLURAY)
+
+        cfg = _make_tool_paths(tmp_path)
+        plan_obj = make_plan(jobs=[])
+
+        with (
+            patch("furnace.cli.load_config", return_value=cfg),
+            patch("furnace.cli._setup_logging"),
+            patch("furnace.cli.FFmpegAdapter"),
+            patch("furnace.cli.MpvAdapter"),
+            patch("furnace.cli.Eac3toAdapter"),
+            patch("furnace.cli.MakemkvAdapter"),
+            patch("furnace.cli.DiscDemuxer") as mock_demuxer_cls,
+            patch("furnace.cli._run_disc_demux_interactive") as mock_interactive,
+            patch("furnace.cli.Scanner") as mock_scanner_cls,
+            patch("furnace.cli.Analyzer"),
+            patch("furnace.cli.PlannerService") as mock_planner_cls,
+            patch("furnace.cli.save_plan"),
+            patch("furnace.cli.RichPlanReporter") as mock_reporter_cls,
+        ):
+            reporter_inst = mock_reporter_cls.return_value
+            mock_demuxer_cls.return_value.detect.return_value = [disc]
+            mock_interactive.return_value = (None, [], set())
+            mock_scanner_cls.return_value.scan.return_value = []
+            mock_planner_cls.return_value.create_plan.return_value = plan_obj
+
+            result = runner.invoke(
+                app,
+                ["plan", str(source), "-o", str(output), "-al", "eng", "-sl", "eng"],
+            )
+
+        assert result.exit_code == 0, result.output
+        # detect_disc was called with the parent-name fallback.
+        reporter_inst.detect_disc.assert_called_once_with(DiscType.BLURAY, "elsewhere")
+
+
+# ---------------------------------------------------------------------------
+# plan: analyzer raises ValueError (HDR10+ branch)
+# ---------------------------------------------------------------------------
+
+
+class TestPlanAnalyzerValueError:
+    """Analyzer.analyze() raising ValueError is logged and skipped, not propagated."""
+
+    def test_analyzer_value_error_skipped(self, tmp_path: Path) -> None:
+        from furnace.core.models import ScanResult
+
+        source = tmp_path / "src"
+        source.mkdir()
+        output = tmp_path / "out"
+
+        cfg = _make_tool_paths(tmp_path)
+        scan_result = ScanResult(
+            main_file=source / "movie.mkv",
+            satellite_files=[],
+            output_path=output / "movie" / "movie.mkv",
+        )
+        plan_obj = make_plan(jobs=[])
+
+        with (
+            patch("furnace.cli.load_config", return_value=cfg),
+            patch("furnace.cli._setup_logging"),
+            patch("furnace.cli.FFmpegAdapter"),
+            patch("furnace.cli.MpvAdapter"),
+            patch("furnace.cli.Eac3toAdapter"),
+            patch("furnace.cli.MakemkvAdapter"),
+            patch("furnace.cli.DiscDemuxer") as mock_demuxer_cls,
+            patch("furnace.cli.Scanner") as mock_scanner_cls,
+            patch("furnace.cli.Analyzer") as mock_analyzer_cls,
+            patch("furnace.cli.PlannerService") as mock_planner_cls,
+        ):
+            mock_demuxer_cls.return_value.detect.return_value = []
+            mock_scanner_cls.return_value.scan.return_value = [scan_result]
+            mock_analyzer_cls.return_value.analyze.side_effect = ValueError("HDR10+ not supported")
+            mock_planner_cls.return_value.create_plan.return_value = plan_obj
+
+            result = runner.invoke(
+                app,
+                ["plan", str(source), "-o", str(output), "-al", "eng", "-sl", "eng", "--dry-run"],
+            )
+
+        assert result.exit_code == 0, result.output
+        # Planner sees no movies because analyze raised.
+        call_kwargs = mock_planner_cls.return_value.create_plan.call_args.kwargs
+        assert call_kwargs["movies"] == []
+
+
+# ---------------------------------------------------------------------------
+# plan: KeyboardInterrupt -> reporter.interrupted() + Exit(130)
+# ---------------------------------------------------------------------------
+
+
+class TestPlanKeyboardInterrupt:
+    """Ctrl+C anywhere in the plan body exits 130 and notifies the reporter."""
+
+    def test_keyboard_interrupt_during_detect(self, tmp_path: Path) -> None:
+        source = tmp_path / "src"
+        source.mkdir()
+        output = tmp_path / "out"
+
+        cfg = _make_tool_paths(tmp_path)
+
+        with (
+            patch("furnace.cli.load_config", return_value=cfg),
+            patch("furnace.cli._setup_logging"),
+            patch("furnace.cli.FFmpegAdapter"),
+            patch("furnace.cli.MpvAdapter"),
+            patch("furnace.cli.Eac3toAdapter"),
+            patch("furnace.cli.MakemkvAdapter"),
+            patch("furnace.cli.DiscDemuxer") as mock_demuxer_cls,
+            patch("furnace.cli.RichPlanReporter") as mock_reporter_cls,
+        ):
+            reporter_inst = mock_reporter_cls.return_value
+            mock_demuxer_cls.return_value.detect.side_effect = KeyboardInterrupt
+
+            result = runner.invoke(
+                app,
+                ["plan", str(source), "-o", str(output), "-al", "eng", "-sl", "eng", "--dry-run"],
+            )
+
+        assert result.exit_code == 130
+        reporter_inst.interrupted.assert_called_once()
+        reporter_inst.stop.assert_called_once()
 
 
 # ---------------------------------------------------------------------------

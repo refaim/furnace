@@ -4,7 +4,7 @@ import logging
 from pathlib import Path
 
 from furnace.core.models import ScanResult
-from furnace.core.ports import Prober
+from furnace.core.ports import PlanReporter, Prober
 
 logger = logging.getLogger(__name__)
 
@@ -37,8 +37,9 @@ WINDOWS_FORBIDDEN_CHARS: str = '<>/:"|?*'
 
 
 class Scanner:
-    def __init__(self, prober: Prober) -> None:
+    def __init__(self, prober: Prober, reporter: PlanReporter | None = None) -> None:
         self._prober = prober
+        self._reporter = reporter
 
     def scan(
         self,
@@ -60,6 +61,8 @@ class Scanner:
                         output_path=output_path,
                     )
                 )
+                if self._reporter is not None:
+                    self._reporter.scan_file(source.name)
             return results
 
         for path in sorted(source.rglob("*")):
@@ -79,6 +82,9 @@ class Scanner:
                     output_path=output_path,
                 )
             )
+            if self._reporter is not None:
+                rel = path.relative_to(source)
+                self._reporter.scan_file(str(rel))
             logger.debug("Scanned %s -> %s (%d satellites)", path, output_path, len(satellites))
 
         logger.debug("Scan complete: %d video files found in %s", len(results), source)

@@ -1,0 +1,24 @@
+Source: D:/Library
+Output: Z:/plans/library
+
+Detect
+BDMV  Matrix_BD
+DVD   DirtyHarry_DVD
+
+Demux
+Matrix_BD
+  title 3 -> done
+DirtyHarry_DVD
+  title 1 -> done
+
+Scan
+Matrix_BD_title_3.mkv
+DirtyHarry_DVD_title_1.mkv
+
+Analyze
+Matrix_BD_title_3.mkv -> hevc 3840x2160 24fps HDR10, 4 audio (eng), 0 subs
+DirtyHarry_DVD_title_1.mkv -> mpeg2video 720x480 30fps SDR (interlaced), 2 audio (eng), 1 subs
+
+Plan
+Matrix_BD_title_3.mkv -> cq 22, 3840x2160 to 3840x2160
+DirtyHarry_DVD_title_1.mkv -> cq 19, 720x480 to 720x540, deinterlace

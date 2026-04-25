@@ -7,9 +7,11 @@ from collections.abc import Callable
 from pathlib import Path
 
 from furnace.adapters._subprocess import run_tool
+from furnace.adapters.mkvmerge import _parse_mkvmerge_progress_line
 from furnace.core.chapters import fix_chapters_file
 from furnace.core.models import DiscSource, DiscTitle, DiscType
-from furnace.core.ports import DiscDemuxerPort, PcmTranscoder
+from furnace.core.ports import DiscDemuxerPort, PcmTranscoder, PlanReporter
+from furnace.core.progress import ProgressSample
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +84,7 @@ class DiscDemuxer:
         selected_titles: dict[DiscSource, list[DiscTitle]],
         demux_dir: Path,
         on_output: Callable[[str], None] | None = None,
+        reporter: PlanReporter | None = None,
     ) -> list[Path]:
         """Demux selected titles to MKV files.
 
@@ -90,9 +93,21 @@ class DiscDemuxer:
         new structured progress channel — adapter-level progress is wired
         through the executor in the run phase.
 
+        `reporter`, when provided, receives structured per-disc / per-title
+        events:
+
+        - `demux_disc_cached(label)` — every selected title is already on disk
+        - `demux_disc_start(label)` — at least one title needs work
+        - `demux_title_start(n)` — fresh title begins
+        - `demux_title_substep("rip"|"transcode N/M"|"remux", has_progress=True)`
+        - `demux_title_progress(fraction)` — forwarded from adapter
+        - `demux_title_done()` / `demux_title_failed(reason)`
+
+        Behaviour:
+
         - Skips titles with existing .done marker.
         - Deletes MKV without .done marker (partial) and re-demuxes.
-        - Raises RuntimeError on demux failure.
+        - Raises RuntimeError on demux failure (after reporting).
         - For BD (eac3to): demuxes to separate files, then muxes via mkvmerge.
         - For DVD (MakeMKV): single MKV output directly.
         """
@@ -103,6 +118,28 @@ class DiscDemuxer:
             titles = selected_titles.get(disc, [])
             disc_label = disc.path.parent.name
             port = self._port_for(disc)
+
+            # Determine cached-ness up front: a disc is cached only if EVERY
+            # selected title already has a .done marker AND at least one MKV
+            # file matching that title. A bare .done with no MKV (e.g. partial
+            # cleanup that left only the marker) does NOT count as cached and
+            # must fall through to the per-title rip path so the title is
+            # re-demuxed.
+            all_cached = all(
+                (demux_dir / f"{disc_label}_title_{t.number}.done").exists()
+                and self._find_done_files(demux_dir, disc_label, t.number)
+                for t in titles
+            )
+            if titles and all_cached:
+                if reporter is not None:
+                    reporter.demux_disc_cached(disc_label)
+                for title in titles:
+                    existing = self._find_done_files(demux_dir, disc_label, title.number)
+                    result_paths.extend(existing)
+                continue
+
+            if titles and reporter is not None:
+                reporter.demux_disc_start(disc_label)
 
             for title in titles:
                 done_name = f"{disc_label}_title_{title.number}.done"
@@ -115,6 +152,9 @@ class DiscDemuxer:
                         logger.info("Already demuxed, skipping: title %d", title.number)
                         result_paths.extend(existing)
                         continue
+
+                if reporter is not None:
+                    reporter.demux_title_start(title.number)
 
                 # Clean up partial demux (no done marker)
                 self._clean_partial(demux_dir, disc_label, title.number)
@@ -131,28 +171,52 @@ class DiscDemuxer:
                     shutil.rmtree(title_dir)
                 title_dir.mkdir()
 
-                created_files = port.demux_title(
-                    disc.path,
-                    title.number,
-                    title_dir,
-                )
+                def _rip_progress(s: ProgressSample) -> None:
+                    if reporter is not None and s.fraction is not None:
+                        reporter.demux_title_progress(s.fraction)
 
-                created_files = self._transcode_w64_files(created_files)
+                try:
+                    if reporter is not None:
+                        reporter.demux_title_substep("rip", has_progress=True)
+                    created_files = port.demux_title(
+                        disc.path,
+                        title.number,
+                        title_dir,
+                        on_progress=_rip_progress,
+                    )
 
-                # If multiple files (BD/eac3to), mux into single MKV
-                final_mkv = demux_dir / f"{disc_label}_title_{title.number}.mkv"
-                if self._needs_muxing(created_files):
-                    self._mux_to_mkv(created_files, final_mkv, on_output)
-                else:
-                    # Single MKV (DVD/MakeMKV) — just move it
-                    src_mkv = next(f for f in created_files if f.suffix.lower() == ".mkv")
-                    shutil.move(str(src_mkv), str(final_mkv))
+                    created_files = self._transcode_w64_files(
+                        created_files, reporter=reporter,
+                    )
 
-                # Clean up title subdir
-                shutil.rmtree(title_dir, ignore_errors=True)
+                    # If multiple files (BD/eac3to), mux into single MKV
+                    final_mkv = demux_dir / f"{disc_label}_title_{title.number}.mkv"
+                    if self._needs_muxing(created_files):
+                        if reporter is not None:
+                            reporter.demux_title_substep("remux", has_progress=True)
+                        self._mux_to_mkv(
+                            created_files,
+                            final_mkv,
+                            on_output,
+                            on_progress=_rip_progress,
+                        )
+                    else:
+                        # Single MKV (DVD/MakeMKV) — just move it
+                        src_mkv = next(f for f in created_files if f.suffix.lower() == ".mkv")
+                        shutil.move(str(src_mkv), str(final_mkv))
 
-                done_marker.touch()
-                result_paths.append(final_mkv)
+                    # Clean up title subdir
+                    shutil.rmtree(title_dir, ignore_errors=True)
+
+                    done_marker.touch()
+                    result_paths.append(final_mkv)
+
+                    if reporter is not None:
+                        reporter.demux_title_done()
+                except Exception as exc:
+                    if reporter is not None:
+                        reporter.demux_title_failed(str(exc))
+                    raise
 
         return result_paths
 
@@ -163,7 +227,11 @@ class DiscDemuxer:
         non_mkv = [f for f in files if f.suffix.lower() != ".mkv"]
         return len(mkv_files) != 1 or len(non_mkv) > 0
 
-    def _transcode_w64_files(self, files: list[Path]) -> list[Path]:
+    def _transcode_w64_files(
+        self,
+        files: list[Path],
+        reporter: PlanReporter | None = None,
+    ) -> list[Path]:
         """Replace any Wave64 (.w64) entries in ``files`` with transcoded FLAC.
 
         eac3to sometimes writes PCM to Wave64 when the stream exceeds the 4 GB
@@ -175,6 +243,11 @@ class DiscDemuxer:
           RuntimeError (fail fast rather than silently dropping the track).
         - If the transcoder returns non-zero rc for any file: raise
           RuntimeError, leaving the .w64 on disk for inspection.
+
+        When ``reporter`` is provided, each transcode emits a
+        ``demux_title_substep("transcode N/M", has_progress=True)`` followed
+        by per-file ``demux_title_progress`` events forwarded from the
+        underlying transcoder.
         """
         if not any(f.suffix.lower() == ".w64" for f in files):
             return files
@@ -186,14 +259,32 @@ class DiscDemuxer:
             )
             raise RuntimeError(msg)
 
+        w64_files = [f for f in files if f.suffix.lower() == ".w64"]
+        total = len(w64_files)
         result: list[Path] = []
+        w64_seen = 0
         for f in files:
             if f.suffix.lower() != ".w64":
                 result.append(f)
                 continue
+            w64_seen += 1
+            if reporter is not None:
+                label = (
+                    "transcode"
+                    if total == 1
+                    else f"transcode {w64_seen}/{total}"
+                )
+                reporter.demux_title_substep(label, has_progress=True)
+
+            def _tr_progress(s: ProgressSample) -> None:
+                if reporter is not None and s.fraction is not None:
+                    reporter.demux_title_progress(s.fraction)
+
             flac_path = f.with_suffix(".flac")
             logger.info("Transcoding Wave64 to FLAC: %s -> %s", f.name, flac_path.name)
-            rc = self._pcm_transcoder.transcode_to_flac(f, flac_path)
+            rc = self._pcm_transcoder.transcode_to_flac(
+                f, flac_path, on_progress=_tr_progress,
+            )
             if rc != 0:
                 msg = f"eac3to transcode of {f.name} to FLAC failed (rc={rc})"
                 raise RuntimeError(msg)
@@ -206,6 +297,7 @@ class DiscDemuxer:
         files: list[Path],
         output_mkv: Path,
         on_output: Callable[[str], None] | None = None,
+        on_progress: Callable[[ProgressSample], None] | None = None,
     ) -> None:
         """Mux separate track files into a single MKV via mkvmerge."""
         if self._mkvmerge is None:
@@ -238,7 +330,18 @@ class DiscDemuxer:
 
         logger.info("Muxing demuxed tracks into %s", output_mkv.name)
         logger.debug("mkvmerge cmd: %s", " ".join(cmd))
-        rc, output = run_tool(cmd, on_output=on_output)
+
+        def _on_progress_line(line: str) -> bool:
+            sample = _parse_mkvmerge_progress_line(line)
+            if sample is None:
+                return False
+            if on_progress is not None:
+                on_progress(sample)
+            return True
+
+        rc, output = run_tool(
+            cmd, on_output=on_output, on_progress_line=_on_progress_line,
+        )
         if rc not in (0, 1):  # mkvmerge returns 1 for warnings
             raise RuntimeError(f"mkvmerge failed (rc={rc}): {output[-500:]}")
 

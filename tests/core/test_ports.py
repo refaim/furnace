@@ -74,8 +74,17 @@ def test_prober_has_profile_audio_track() -> None:
 def test_prober_profile_audio_track_signature() -> None:
     sig = inspect.signature(Prober.profile_audio_track)
     params = sig.parameters
-    # self + four positional args
-    assert list(params) == ["self", "path", "stream_index", "channels", "duration_s"]
+    # self + four positional args + on_progress (positional-with-default)
+    assert list(params) == [
+        "self",
+        "path",
+        "stream_index",
+        "channels",
+        "duration_s",
+        "on_progress",
+    ]
+    # ``on_progress`` is opt-in: defaults to None so existing callers keep working.
+    assert params["on_progress"].default is None
 
     # Annotations are stringified by `from __future__ import annotations`, so
     # resolve them with `typing.get_type_hints` before comparing identities.
@@ -84,6 +93,7 @@ def test_prober_profile_audio_track_signature() -> None:
     assert hints["stream_index"] is int
     assert hints["channels"] is int
     assert hints["duration_s"] is float
+    assert hints["on_progress"] == Callable[[ProgressSample], None] | None
     assert hints["return"] is AudioMetrics
 
 

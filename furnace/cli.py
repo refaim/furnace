@@ -43,6 +43,7 @@ from .services.disc_demuxer import DiscDemuxer
 from .services.executor import Executor
 from .services.planner import PlannerService
 from .services.scanner import Scanner
+from .ui.plan_console import RichPlanReporter
 from .ui.progress import ReportPrinter
 from .ui.run_tui import RunApp
 from .ui.tui import (
@@ -91,11 +92,6 @@ def _run_screen_app[T](screen_factory: Callable[[], Screen[T]]) -> T | None:
 # ---------------------------------------------------------------------------
 # Misc helpers
 # ---------------------------------------------------------------------------
-
-
-def _console_output(line: str) -> None:
-    """Echo a line of tool output to stderr."""
-    typer.echo(line, err=True)
 
 
 def _make_preview_track_cb(movie: Movie, mpv_adapter: MpvAdapter) -> Callable[[Track], None]:
@@ -195,7 +191,6 @@ def _collect_selected_titles(
     """For each detected disc, list titles and (optionally via TUI) pick which to demux."""
     selected_titles: dict[DiscSource, list[DiscTitle]] = {}
     for disc in detected_discs:
-        typer.echo(f"[furnace] Listing titles for {disc.disc_type.value.upper()}: {disc.path}")
         playlists = disc_demuxer.list_titles(disc)
         if not playlists:
             logger.warning("No playlists found for disc at %s", disc.path)
@@ -252,6 +247,7 @@ def _run_disc_demux_interactive(
     disc_demuxer: DiscDemuxer,
     ffmpeg_adapter: FFmpegAdapter,
     mpv_adapter: MpvAdapter,
+    reporter: RichPlanReporter | None = None,
     playlist_app_runner: Callable[
         [Callable[[], Screen[list[DiscTitle]]]], list[DiscTitle] | None
     ] = _run_screen_app,
@@ -267,31 +263,33 @@ def _run_disc_demux_interactive(
     if not detected_discs:
         return None, [], set()
 
-    typer.echo(f"[furnace] Found {len(detected_discs)} disc(s)")
-
+    if reporter is not None:
+        reporter.pause()
     selected_titles = _collect_selected_titles(
         detected_discs,
         disc_demuxer,
         playlist_app_runner=playlist_app_runner,
     )
+    if reporter is not None:
+        reporter.resume()
 
     if not selected_titles:
         return None, [], set()
 
-    total_titles = sum(len(t) for t in selected_titles.values())
-    typer.echo(f"[furnace] Demuxing {total_titles} title(s)...")
     demux_dir = source / ".furnace_demux"
     demuxed_paths = disc_demuxer.demux(
         discs=detected_discs,
         selected_titles=selected_titles,
         demux_dir=demux_dir,
-        on_output=_console_output,
+        reporter=reporter,
     )
 
     dvd_demuxed = _dvd_demuxed_paths(detected_discs, selected_titles, demuxed_paths)
     sar_override_paths: set[Path] = set()
 
     if dvd_demuxed or len(demuxed_paths) > 1:
+        if reporter is not None:
+            reporter.pause()
         file_infos = _probe_file_infos(demuxed_paths, ffmpeg_adapter)
 
         def _factory(
@@ -305,6 +303,8 @@ def _run_disc_demux_interactive(
             )
 
         file_selection = file_app_runner(_factory)
+        if reporter is not None:
+            reporter.resume()
         if file_selection is not None:
             demuxed_paths = file_selection.selected
             sar_override_paths = file_selection.sar_override
@@ -380,16 +380,13 @@ def plan(
     config: Path | None = typer.Option(None, "--config", help="Path to config file"),
 ) -> None:
     """Scan source, show TUI for track selection, save JSON plan."""
-    # Parse comma-separated language lists
     audio_lang_list = [x.strip() for x in audio_lang.split(",") if x.strip()]
     sub_lang_list = [x.strip() for x in sub_lang.split(",") if x.strip()]
 
-    # 1. Load config
     cfg = load_config(config)
 
-    # 2. Setup file logging -> output/furnace.log
     output.mkdir(parents=True, exist_ok=True)
-    _setup_logging(output)
+    _setup_logging(output, console=False)  # console handler removed; reporter owns terminal
 
     logger.debug(
         "plan command started: source=%s output=%s audio_lang=%s sub_lang=%s names=%s dry_run=%s vmaf=%s",
@@ -402,96 +399,115 @@ def plan(
         vmaf,
     )
 
-    # 3. Create adapters (only those needed for planning)
-    ffmpeg_adapter = FFmpegAdapter(cfg.ffmpeg, cfg.ffprobe)
-    mpv_adapter = MpvAdapter(cfg.mpv)
+    reporter = RichPlanReporter(source=source, output=output)
+    reporter.start()
 
-    eac3to_adapter = Eac3toAdapter(cfg.eac3to, on_output=_console_output)
-    makemkv_adapter = MakemkvAdapter(cfg.makemkvcon, on_output=_console_output)
+    try:
+        log_dir = output / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        ffmpeg_adapter = FFmpegAdapter(cfg.ffmpeg, cfg.ffprobe, log_dir=log_dir)
+        mpv_adapter = MpvAdapter(cfg.mpv)
+        eac3to_adapter = Eac3toAdapter(cfg.eac3to, log_dir=log_dir)
+        makemkv_adapter = MakemkvAdapter(cfg.makemkvcon, log_dir=log_dir)
 
-    # 4. Disc demux phase
-    disc_demuxer = DiscDemuxer(
-        bd_port=eac3to_adapter,
-        dvd_port=makemkv_adapter,
-        mkvmerge_path=cfg.mkvmerge,
-        pcm_transcoder=eac3to_adapter,
-    )
-    typer.echo("[furnace] Scanning for disc structures...")
-    detected_discs = disc_demuxer.detect(source)
-    demux_dir: Path | None = None
-    demuxed_paths: list[Path] = []
-    sar_override_paths: set[Path] = set()
-
-    if not dry_run:
-        demux_dir, demuxed_paths, sar_override_paths = _run_disc_demux_interactive(
-            source=source,
-            detected_discs=detected_discs,
-            disc_demuxer=disc_demuxer,
-            ffmpeg_adapter=ffmpeg_adapter,
-            mpv_adapter=mpv_adapter,
+        disc_demuxer = DiscDemuxer(
+            bd_port=eac3to_adapter,
+            dvd_port=makemkv_adapter,
+            mkvmerge_path=cfg.mkvmerge,
+            pcm_transcoder=eac3to_adapter,
         )
 
-    # 5. Load names map if provided
-    names_map: dict[str, str] | None = None
-    if names is not None:
-        with names.open("r", encoding="utf-8") as f:
-            names_map = json.load(f)
+        detected_discs = disc_demuxer.detect(source)
+        for disc in detected_discs:
+            try:
+                rel = disc.path.parent.relative_to(source)
+                rel_str = str(rel) if str(rel) != "." else disc.path.parent.name
+            except ValueError:
+                rel_str = disc.path.parent.name
+            reporter.detect_disc(disc.disc_type, rel_str)
 
-    # 6. Scanner.scan() -> list[ScanResult]
-    scanner = Scanner(prober=ffmpeg_adapter)
-    scan_results = scanner.scan(source, output, names_map)
+        demux_dir: Path | None = None
+        demuxed_paths: list[Path] = []
+        sar_override_paths: set[Path] = set()
 
-    # Add demuxed MKVs as extra ScanResult entries
-    _append_demuxed_scan_results(scan_results, demuxed_paths, output)
+        if not dry_run:
+            demux_dir, demuxed_paths, sar_override_paths = _run_disc_demux_interactive(
+                source=source,
+                detected_discs=detected_discs,
+                disc_demuxer=disc_demuxer,
+                ffmpeg_adapter=ffmpeg_adapter,
+                mpv_adapter=mpv_adapter,
+                reporter=reporter,
+            )
 
-    # 7. Analyzer.analyze() -> list[tuple[Movie, Path]]
-    analyzer = Analyzer(prober=ffmpeg_adapter)
-    movies_with_paths: list[tuple[Movie, Path]] = []
-    for sr in scan_results:
-        movie = analyzer.analyze(sr)
-        if movie is not None:
-            movies_with_paths.append((movie, sr.output_path))
+        names_map: dict[str, str] | None = None
+        if names is not None:
+            with names.open("r", encoding="utf-8") as f:
+                names_map = json.load(f)
 
-    # 8. PlannerService.create_plan() with TUI track selector
-    downmix_overrides: dict[tuple[Path, int], DownmixMode] = {}
+        scanner = Scanner(prober=ffmpeg_adapter, reporter=reporter)
+        scan_results = scanner.scan(source, output, names_map)
+        _append_demuxed_scan_results(scan_results, demuxed_paths, output)
+        # The appended demuxed entries also deserve scan_file events
+        for mkv_path in demuxed_paths:
+            reporter.scan_file(mkv_path.name)
 
-    def _track_selector(movie: Movie, candidates: list[Track], track_type: TrackType) -> list[Track]:
-        return _select_tracks_tui_for_planner(movie, candidates, track_type, mpv_adapter, downmix_overrides)
+        analyzer = Analyzer(prober=ffmpeg_adapter, reporter=reporter)
+        movies_with_paths: list[tuple[Movie, Path]] = []
+        for sr in scan_results:
+            try:
+                movie = analyzer.analyze(sr)
+            except ValueError as exc:
+                # analyze() raises for HDR10+; reporter already saw analyze_file_failed
+                logger.warning("analyze raised: %s", exc)
+                continue
+            if movie is not None:
+                movies_with_paths.append((movie, sr.output_path))
 
-    def _und_resolver(movie: Movie, track: Track, lang_list: list[str]) -> str:
-        return _resolve_und_language_tui(movie, track, lang_list, mpv_adapter)
+        downmix_overrides: dict[tuple[Path, int], DownmixMode] = {}
 
-    planner = PlannerService(
-        prober=ffmpeg_adapter,
-        previewer=mpv_adapter,
-        track_selector=_track_selector if not dry_run else None,
-        und_resolver=_und_resolver if not dry_run else None,
-    )
-    plan_obj = planner.create_plan(
-        movies=movies_with_paths,
-        audio_lang_filter=audio_lang_list,
-        sub_lang_filter=sub_lang_list,
-        vmaf_enabled=vmaf,
-        dry_run=dry_run,
-        sar_overrides=sar_override_paths,
-        downmix_overrides=downmix_overrides,
-    )
+        def _track_selector(movie: Movie, candidates: list[Track], track_type: TrackType) -> list[Track]:
+            return _select_tracks_tui_for_planner(movie, candidates, track_type, mpv_adapter, downmix_overrides)
 
-    # Set demux_dir on the plan if disc demux happened
-    _apply_demux_dir_to_plan(plan_obj, demux_dir)
+        def _und_resolver(movie: Movie, track: Track, lang_list: list[str]) -> str:
+            return _resolve_und_language_tui(movie, track, lang_list, mpv_adapter)
 
-    # 9. save_plan() if not dry_run
-    if dry_run:
-        pending = [j for j in plan_obj.jobs if j.status.value == "pending"]
-        typer.echo(f"Dry run: {len(plan_obj.jobs)} job(s) planned, {len(pending)} pending. Plan NOT saved.")
-    else:
-        plan_path = output / "furnace-plan.json"
-        save_plan(plan_obj, plan_path)
-        pending = [j for j in plan_obj.jobs if j.status.value == "pending"]
-        typer.echo(f"Plan saved: {plan_path}")
-        typer.echo(f"Jobs: {len(plan_obj.jobs)} total, {len(pending)} pending")
+        if not dry_run:
+            reporter.pause()
+        planner = PlannerService(
+            prober=ffmpeg_adapter,
+            previewer=mpv_adapter,
+            track_selector=_track_selector if not dry_run else None,
+            und_resolver=_und_resolver if not dry_run else None,
+            reporter=reporter,
+        )
+        if not dry_run:
+            reporter.resume()
 
-    logger.debug("plan command finished: jobs=%d", len(plan_obj.jobs))
+        plan_obj = planner.create_plan(
+            movies=movies_with_paths,
+            audio_lang_filter=audio_lang_list,
+            sub_lang_filter=sub_lang_list,
+            vmaf_enabled=vmaf,
+            dry_run=dry_run,
+            sar_overrides=sar_override_paths,
+            downmix_overrides=downmix_overrides,
+        )
+        _apply_demux_dir_to_plan(plan_obj, demux_dir)
+
+        if dry_run:
+            reporter.plan_saved(output / "furnace-plan.json", len(plan_obj.jobs))
+        else:
+            plan_path = output / "furnace-plan.json"
+            save_plan(plan_obj, plan_path)
+            reporter.plan_saved(plan_path, len(plan_obj.jobs))
+
+        logger.debug("plan command finished: jobs=%d", len(plan_obj.jobs))
+    except KeyboardInterrupt:
+        reporter.interrupted()
+        raise typer.Exit(code=130) from None
+    finally:
+        reporter.stop()
 
 
 @app.command()

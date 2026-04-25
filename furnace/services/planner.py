@@ -30,11 +30,37 @@ from furnace.core.models import (
     VideoInfo,
     VideoParams,
 )
-from furnace.core.ports import Previewer, Prober
+from furnace.core.ports import PlanReporter, Previewer, Prober
+from furnace.core.progress import ProgressSample
 from furnace.core.quality import calculate_gop, interpolate_cq
 from furnace.core.rules import get_audio_action, get_subtitle_action
 
 logger = logging.getLogger(__name__)
+
+
+def _format_plan_summary(movie: Movie, job: Job) -> str:
+    """One-line per-movie summary shown after Plan completes for that movie.
+
+    Format: ``cq <CQ>, <SrcW>x<SrcH> to <DstW>x<DstH>[, deinterlace]``
+
+    The resolution separator is the word ``to`` (not ``->``) so it doesn't
+    collide with the reporter's ``label -> status`` arrow.
+    """
+    src_w = movie.video.width
+    src_h = movie.video.height
+    if job.video_params.crop is not None:
+        dst_w = job.video_params.crop.w
+        dst_h = job.video_params.crop.h
+    else:
+        dst_w, dst_h = src_w, src_h
+    parts = [
+        f"cq {job.video_params.cq}",
+        f"{src_w}x{src_h} to {dst_w}x{dst_h}",
+    ]
+    if job.video_params.deinterlace:
+        parts.append("deinterlace")
+    return ", ".join(parts)
+
 
 _DV_PROFILE_FEL = 7  # Dolby Vision FEL (Full Enhancement Layer) — needs P7 -> P8.1 conversion
 
@@ -59,11 +85,18 @@ class PlannerService:
         previewer: Previewer | None,  # None in --dry-run
         track_selector: TrackSelectorFn | None = None,  # None = include all (headless)
         und_resolver: UndLanguageResolverFn | None = None,
+        reporter: PlanReporter | None = None,
     ) -> None:
         self._prober = prober
         self._previewer = previewer
         self._track_selector = track_selector
         self._und_resolver = und_resolver
+        self._reporter = reporter
+
+    def _on_crop_progress(self, sample: ProgressSample) -> None:
+        """Forward cropdetect progress samples to the reporter, when present."""
+        if self._reporter is not None and sample.fraction is not None:
+            self._reporter.plan_progress(sample.fraction)
 
     def create_plan(
         self,
@@ -102,6 +135,8 @@ class PlannerService:
         effective_sar_overrides: set[Path] = sar_overrides if sar_overrides is not None else set()
 
         for movie, output_path in movies:
+            if self._reporter is not None:
+                self._reporter.plan_file_start(movie.main_file.name)
             job = self._build_job(
                 movie,
                 output_path,
@@ -111,6 +146,9 @@ class PlannerService:
                 sar_overrides=effective_sar_overrides,
                 downmix_overrides=effective_overrides,
             )
+            if self._reporter is not None:
+                summary = _format_plan_summary(movie, job)
+                self._reporter.plan_file_done(summary)
             jobs.append(job)
 
         now = datetime.datetime.now(datetime.UTC).isoformat()
@@ -141,11 +179,14 @@ class PlannerService:
         if not dry_run:
             try:
                 is_dvd = is_dvd_resolution(movie.video.width, movie.video.height)
+                if self._reporter is not None:
+                    self._reporter.plan_microop("cropdetect", has_progress=True)
                 raw_crop = self._prober.detect_crop(
                     movie.main_file,
                     movie.video.duration_s,
                     interlaced=movie.video.interlaced,
                     is_dvd=is_dvd,
+                    on_progress=self._on_crop_progress,
                 )
                 if raw_crop is not None:
                     crop = raw_crop
