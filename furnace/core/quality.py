@@ -3,7 +3,7 @@ from __future__ import annotations
 import bisect
 import math
 
-from .models import CropRect
+from .models import CropRect, VideoParams
 
 # CQ anchors per the Furnace spec. Deliberately different from Crucible:
 # Crucible used CRF for x264/x265 (software); Furnace uses CQ for NVENC (hardware).
@@ -62,3 +62,18 @@ def correct_sar(width: int, height: int, sar_num: int, sar_den: int) -> tuple[in
     if sar_num > sar_den:
         return round(width * sar_num / sar_den), height
     return width, round(height * sar_den / sar_num)
+
+
+def final_output_dimensions(vp: VideoParams) -> tuple[int, int]:
+    """Return the actual (width, height) that will be encoded in the HEVC track.
+
+    Pipeline: crop (if set) -> SAR correction (if non-square) -> mod-8 HEVC
+    CU alignment. This is the single source of truth -- UI labels, plan-log
+    summaries and the NVEncC ``--output-res`` flag all derive from here.
+    """
+    cur_w = vp.crop.w if vp.crop is not None else vp.source_width
+    cur_h = vp.crop.h if vp.crop is not None else vp.source_height
+    if vp.sar_num != vp.sar_den:
+        cur_w, cur_h = correct_sar(cur_w, cur_h, vp.sar_num, vp.sar_den)
+    aligned = align_dimensions(cur_w, cur_h)
+    return aligned.w, aligned.h

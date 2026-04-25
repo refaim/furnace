@@ -438,6 +438,8 @@ class TestBuildTargetText:
         assert "3840x2160" in text
 
     def test_crop_with_sar(self) -> None:
+        """Crop + anamorphic SAR: actual encoded dims include mod-8 alignment.
+        704 * 64/45 = 1001.24 -> 1001 -> mod-8 -> 1000. Height 464 stays."""
         crop = CropRect(w=704, h=464, x=8, y=8)
         vp = make_video_params(
             source_width=720, source_height=480, cq=22,
@@ -445,7 +447,18 @@ class TestBuildTargetText:
         )
         job = make_job(video_params=vp)
         text = _build_target_text(job)
-        assert "1001x464" in text
+        assert "1000x464" in text
+
+    def test_crop_with_pal_dvd_anamorphic_sar(self) -> None:
+        """The motivating bug: 720x576 SAR 16:15 + crop 704x400 -> 744x400."""
+        crop = CropRect(w=704, h=400, x=8, y=88)
+        vp = make_video_params(
+            source_width=720, source_height=576, cq=22,
+            sar_num=16, sar_den=15, crop=crop,
+        )
+        job = make_job(video_params=vp)
+        text = _build_target_text(job)
+        assert "744x400" in text
 
 
 class TestFmtDuration:

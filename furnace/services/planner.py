@@ -32,7 +32,7 @@ from furnace.core.models import (
 )
 from furnace.core.ports import PlanReporter, Previewer, Prober
 from furnace.core.progress import ProgressSample
-from furnace.core.quality import calculate_gop, interpolate_cq
+from furnace.core.quality import calculate_gop, final_output_dimensions, interpolate_cq
 from furnace.core.rules import get_audio_action, get_subtitle_action
 
 logger = logging.getLogger(__name__)
@@ -43,16 +43,14 @@ def _format_plan_summary(movie: Movie, job: Job) -> str:
 
     Format: ``cq <CQ>, <SrcW>x<SrcH> to <DstW>x<DstH>[, deinterlace]``
 
-    The resolution separator is the word ``to`` (not ``->``) so it doesn't
+    The ``DstWxDstH`` part is the *actual* encoded output (crop -> SAR ->
+    mod-8 HEVC alignment), via :func:`final_output_dimensions`. The
+    resolution separator is the word ``to`` (not ``->``) so it doesn't
     collide with the reporter's ``label -> status`` arrow.
     """
     src_w = movie.video.width
     src_h = movie.video.height
-    if job.video_params.crop is not None:
-        dst_w = job.video_params.crop.w
-        dst_h = job.video_params.crop.h
-    else:
-        dst_w, dst_h = src_w, src_h
+    dst_w, dst_h = final_output_dimensions(job.video_params)
     parts = [
         f"cq {job.video_params.cq}",
         f"{src_w}x{src_h} to {dst_w}x{dst_h}",

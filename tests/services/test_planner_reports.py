@@ -219,6 +219,30 @@ def test_format_plan_summary_includes_deinterlace_flag() -> None:
     assert summary.endswith(", deinterlace")
 
 
+def test_format_plan_summary_anamorphic_dvd_uses_real_output_dims() -> None:
+    """PAL DVD anamorphic source: 720x576 SAR 16:15 + crop 704x400.
+    The summary must reflect the actual encoded output 744x400, not the
+    raw crop dims or the SAR-corrected-but-unaligned 751x400."""
+    pal_dvd_video = replace(
+        _make_video_info(),
+        width=720, height=576,
+        sar_num=16, sar_den=15,
+    )
+    movie = replace(_make_movie(), video=pal_dvd_video)
+    prober = MagicMock()
+    prober.detect_crop.return_value = CropRect(w=704, h=400, x=8, y=88)
+    planner = PlannerService(prober=prober, previewer=None)
+    plan = planner.create_plan(
+        movies=[(movie, Path("/out/x.mkv"))],
+        audio_lang_filter=["eng"],
+        sub_lang_filter=[],
+        vmaf_enabled=False,
+        dry_run=False,
+    )
+    summary = _format_plan_summary(movie, plan.jobs[0])
+    assert "720x576 to 744x400" in summary
+
+
 def test_plan_file_done_summary_is_emitted_via_reporter() -> None:
     """End-to-end: the reporter receives a ``plan_file_done`` with a usable summary."""
     prober = MagicMock()

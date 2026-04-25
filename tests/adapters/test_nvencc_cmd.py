@@ -166,12 +166,17 @@ class TestNVEncCCrop:
         assert "--crop" not in cmd
 
     def test_crop_with_alignment(self) -> None:
-        """Crop that needs mod-8 alignment should add --output-res."""
-        # CropRect that produces non-mod-8 dimensions: 3830x2150
+        """Crop that produces non-mod-8 dims -> --output-res emits the
+        mod-8-aligned dims, not the raw crop dims."""
+        # CropRect 3830x2150 -> mod-8 -> 3824x2144.
         vp = _make_vp(crop=CropRect(w=3830, h=2150, x=3, y=5))
         cmd = _cmd(vp)
         assert "--crop" in cmd
-        assert "--output-res" in cmd
+        idx = cmd.index("--output-res")
+        assert cmd[idx + 1] == "3824x2144"
+        # No SAR correction here -- square pixels, so no --sar/--vpp-resize.
+        assert "--sar" not in cmd
+        assert "--vpp-resize" not in cmd
 
 
 class TestNVEncCDeinterlace:
@@ -254,6 +259,26 @@ class TestNVEncCSar:
         # 3840 * 4/3 = 5120, already mod-8
         assert w == "5120"
         assert h == "2160"
+
+    def test_pal_dvd_anamorphic_with_crop_emits_aligned_output_res(self) -> None:
+        """Bug case: 720x576 SAR 16:15 + crop 704x400.
+        Pipeline yields 744x400; --output-res must reflect that, not 751x400."""
+        vp = _make_vp(
+            sar_num=16, sar_den=15,
+            crop=CropRect(w=704, h=400, x=8, y=88),
+        )
+        # Override the default 4K source dims set by _make_vp.
+        vp.source_width = 720
+        vp.source_height = 576
+        cmd = _cmd(vp)
+        idx = cmd.index("--output-res")
+        assert cmd[idx + 1] == "744x400"
+        # SAR correction is still applied at NVEncC level.
+        idx = cmd.index("--sar")
+        assert cmd[idx + 1] == "1:1"
+        assert "--vpp-resize" in cmd
+        idx = cmd.index("--vpp-resize")
+        assert cmd[idx + 1] == "spline64"
 
 
 class TestNVEncCColor:
@@ -454,15 +479,17 @@ class TestNVEncCOutputFormat:
 
 
 class TestNVEncCSarInSettings:
-    """SAR appears in the encoder_settings string."""
+    """The encoder_settings string never includes a `sar=` field — actual
+    encoded dims are already in the MKV video-track metadata, the field
+    used to be misleading because it omitted mod-8 alignment."""
 
-    def test_sar_in_settings(self) -> None:
+    def test_sar_field_absent_with_anamorphic(self) -> None:
         adapter = _adapter()
         vp = _make_vp(sar_num=64, sar_den=45)
         settings = adapter._build_encoder_settings(vp)
-        assert "sar=" in settings
+        assert "sar=" not in settings
 
-    def test_no_sar_when_square_in_settings(self) -> None:
+    def test_sar_field_absent_with_square_pixels(self) -> None:
         adapter = _adapter()
         vp = _make_vp(sar_num=1, sar_den=1)
         settings = adapter._build_encoder_settings(vp)

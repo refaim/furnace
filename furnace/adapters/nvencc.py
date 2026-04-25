@@ -15,7 +15,7 @@ from pathlib import Path
 
 from furnace.core.models import CropRect, EncodeResult, VideoParams
 from furnace.core.progress import ProgressSample
-from furnace.core.quality import align_dimensions, correct_sar
+from furnace.core.quality import final_output_dimensions
 
 from ._subprocess import OutputCallback, run_tool
 
@@ -174,12 +174,6 @@ class NVEncCAdapter:
             left, top, right, bottom = _convert_crop(vp.crop, vp.source_width, vp.source_height)
             parts.append(f"crop={top}:{bottom}:{left}:{right}")
 
-        if vp.sar_num != vp.sar_den:
-            cur_w = vp.crop.w if vp.crop is not None else vp.source_width
-            cur_h = vp.crop.h if vp.crop is not None else vp.source_height
-            display_w, display_h = correct_sar(cur_w, cur_h, vp.sar_num, vp.sar_den)
-            parts.append(f"sar={display_w}x{display_h}")
-
         if vp.dv_mode is not None:
             parts.append("dolby-vision=8.1")
 
@@ -240,24 +234,24 @@ class NVEncCAdapter:
                 vp.source_height,
             )
             cmd += ["--crop", f"{left},{top},{right},{bottom}"]
-            # Align final dimensions to mod-8 for HEVC CU
-            final_w = vp.crop.w
-            final_h = vp.crop.h
-            aligned = align_dimensions(final_w, final_h)
-            if aligned.w != final_w or aligned.h != final_h:
-                cmd += ["--output-res", f"{aligned.w}x{aligned.h}"]
 
         # --- Deinterlace ---
         if vp.deinterlace:
             cmd += ["--vpp-nnedi", "nns=64,nsize=32x6,quality=slow"]
 
-        # --- SAR correction ---
+        # --- Output resolution (single source of truth: helper) ---
+        final_w, final_h = final_output_dimensions(vp)
+        pre_resize_w = vp.crop.w if vp.crop is not None else vp.source_width
+        pre_resize_h = vp.crop.h if vp.crop is not None else vp.source_height
+        if (final_w, final_h) != (pre_resize_w, pre_resize_h):
+            cmd += ["--output-res", f"{final_w}x{final_h}"]
+
+        # --- SAR correction (anamorphic only) ---
+        # When SAR is non-square, NVEncC must rescale via a high-quality
+        # filter and override the sample aspect ratio of the encoded stream
+        # back to 1:1. For pure mod-8 trims (square SAR) the default resize
+        # is fine -- no spline64 / sar override needed.
         if vp.sar_num != vp.sar_den:
-            cur_w = vp.crop.w if vp.crop is not None else vp.source_width
-            cur_h = vp.crop.h if vp.crop is not None else vp.source_height
-            display_w, display_h = correct_sar(cur_w, cur_h, vp.sar_num, vp.sar_den)
-            aligned = align_dimensions(display_w, display_h)
-            cmd += ["--output-res", f"{aligned.w}x{aligned.h}"]
             cmd += ["--vpp-resize", "spline64"]
             cmd += ["--sar", "1:1"]
 

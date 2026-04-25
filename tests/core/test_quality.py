@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from furnace.core.models import CropRect
+from furnace.core.models import CropRect, VideoParams
 from furnace.core.quality import (
     CQ_ANCHORS,
     align_dimensions,
     calculate_gop,
     correct_sar,
+    final_output_dimensions,
     interpolate_cq,
 )
 
@@ -226,3 +227,88 @@ class TestCorrectSar:
         assert h == 540
 
 
+# ---------------------------------------------------------------------------
+# test_final_output_dimensions
+# ---------------------------------------------------------------------------
+
+
+def _vp(
+    *,
+    source_width: int,
+    source_height: int,
+    crop: CropRect | None = None,
+    sar_num: int = 1,
+    sar_den: int = 1,
+) -> VideoParams:
+    """Minimal VideoParams stub - only the fields final_output_dimensions reads."""
+    return VideoParams(
+        cq=22,
+        crop=crop,
+        deinterlace=False,
+        color_matrix="bt709",
+        color_range="tv",
+        color_transfer="bt709",
+        color_primaries="bt709",
+        hdr=None,
+        gop=120,
+        fps_num=24, fps_den=1,
+        source_width=source_width,
+        source_height=source_height,
+        source_codec="h264",
+        source_bitrate=10_000_000,
+        sar_num=sar_num,
+        sar_den=sar_den,
+        dv_mode=None,
+    )
+
+
+class TestFinalOutputDimensions:
+    """`final_output_dimensions` is the single source of truth for the encoded
+    output (width, height): crop -> SAR correction -> mod-8 HEVC alignment."""
+
+    def test_no_crop_square_sar_mod8_passthrough(self) -> None:
+        """1920x1080, square SAR, no crop -> unchanged."""
+        vp = _vp(source_width=1920, source_height=1080)
+        assert final_output_dimensions(vp) == (1920, 1080)
+
+    def test_no_crop_square_sar_non_mod8_aligned(self) -> None:
+        """1916x802, square SAR, no crop -> mod-8 trim to 1912x800."""
+        vp = _vp(source_width=1916, source_height=802)
+        assert final_output_dimensions(vp) == (1912, 800)
+
+    def test_crop_square_sar_mod8_passthrough(self) -> None:
+        """Crop 1920x800, square SAR -> unchanged (already mod-8)."""
+        vp = _vp(
+            source_width=1920, source_height=1080,
+            crop=CropRect(w=1920, h=800, x=0, y=140),
+        )
+        assert final_output_dimensions(vp) == (1920, 800)
+
+    def test_crop_square_sar_non_mod8_aligned(self) -> None:
+        """Crop 1916x802, square SAR -> mod-8 trim to 1912x800."""
+        vp = _vp(
+            source_width=1920, source_height=1080,
+            crop=CropRect(w=1916, h=802, x=2, y=139),
+        )
+        assert final_output_dimensions(vp) == (1912, 800)
+
+    def test_no_crop_pal_dvd_anamorphic(self) -> None:
+        """720x576 SAR 16:15 -> displayed 768x576 (already mod-8)."""
+        vp = _vp(source_width=720, source_height=576, sar_num=16, sar_den=15)
+        assert final_output_dimensions(vp) == (768, 576)
+
+    def test_crop_pal_dvd_anamorphic_bug_case(self) -> None:
+        """The motivating bug: 720x576 SAR 16:15 + crop 704x400.
+        Pipeline: 704 * 16/15 = 750.93 -> 751, then mod-8 -> 744. Height stays 400."""
+        vp = _vp(
+            source_width=720, source_height=576,
+            sar_num=16, sar_den=15,
+            crop=CropRect(w=704, h=400, x=8, y=88),
+        )
+        assert final_output_dimensions(vp) == (744, 400)
+
+    def test_anamorphic_height_grows(self) -> None:
+        """SAR < 1 stretches height. 1024x576 SAR 4:5 -> 1024 x round(576*5/4)=720
+        (mod-8 already)."""
+        vp = _vp(source_width=1024, source_height=576, sar_num=4, sar_den=5)
+        assert final_output_dimensions(vp) == (1024, 720)

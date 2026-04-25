@@ -41,7 +41,7 @@ from furnace.core.models import (
     SubtitleInstruction,
 )
 from furnace.core.progress import TrackerSnapshot
-from furnace.core.quality import correct_sar
+from furnace.core.quality import final_output_dimensions
 from furnace.ui.fmt import fmt_size
 
 # ---------------------------------------------------------------------------
@@ -203,11 +203,8 @@ def _build_target_text(job: Job) -> str:
     lines: list[str] = []
 
     vp = job.video_params
-    cur_w = vp.crop.w if vp.crop else vp.source_width
-    cur_h = vp.crop.h if vp.crop else vp.source_height
-    if vp.sar_num != vp.sar_den:
-        cur_w, cur_h = correct_sar(cur_w, cur_h, vp.sar_num, vp.sar_den)
-    res = f"{cur_w}x{cur_h}"
+    final_w, final_h = final_output_dimensions(vp)
+    res = f"{final_w}x{final_h}"
     lines.append(f"Video: HEVC {res} CQ{vp.cq}")
 
     for i, audio_instr in enumerate(job.audio):
