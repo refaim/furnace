@@ -177,6 +177,7 @@ class FFmpegAdapter:
         *,
         interlaced: bool = False,
         is_dvd: bool = False,
+        hdr_transfer: str | None = None,
         on_progress: Callable[[ProgressSample], None] | None = None,
     ) -> CropRect | None:
         """Run cropdetect at multiple points across the timeline.
@@ -184,11 +185,50 @@ class FFmpegAdapter:
         Returns the median crop of the dominant cluster only if the cluster
         contains >50 % of samples.  Returns None otherwise.
 
+        ``hdr_transfer`` is the source's color transfer ('smpte2084' or
+        'arib-std-b67') when the input needs HDR tonemapping before
+        cropdetect (PQ/HLG -> linear -> bt709, then ``format=yuv420p`` so
+        the SDR ``limit=24`` keeps its intended meaning -- cropdetect does
+        NOT auto-scale ``limit`` to bit depth). DV Profile 5 (single-layer
+        dvhe.05) is also tagged as smpte2084 in container metadata; zscale
+        mis-handles its IPT-PQ-C2 colors but luma magnitude near zero is
+        identical to YCbCr black, so cropdetect still returns the right
+        geometry.
+
         ``on_progress`` is called after each sample point with a fraction
         (``points_done / total_points``).
         """
         points = self._CROP_SAMPLE_POINTS_DVD if is_dvd else self._CROP_SAMPLE_POINTS
-        vf = "yadif,cropdetect=24:16:0" if interlaced else "cropdetect=24:16:0"
+
+        parts: list[str] = []
+        if interlaced:
+            parts.append("yadif")
+        if hdr_transfer is not None:
+            # PQ/HLG -> linear (npl=100 normalises to SDR peak; clips highlights
+            # but leaves shadows untouched, which is all cropdetect cares about).
+            # tin/min/pin set explicitly on BOTH stages: zscale auto-detects from
+            # frame metadata otherwise, and on -ss seeks the parser can land
+            # before VUI propagates from the keyframe -- without explicit tin
+            # zscale falls back to bt709 and npl is silently ignored.
+            # DV Profile 5 (single-layer dvhe.05) is also tagged smpte2084 in
+            # container metadata; zscale mis-handles its IPT-PQ-C2 colors but
+            # luma magnitude near zero is identical to YCbCr black, so cropdetect
+            # still returns the right geometry by accident.
+            parts.append(
+                f"zscale=tin={hdr_transfer}:min=2020_ncl:pin=2020:t=linear:npl=100",
+            )
+            parts.append(
+                "zscale=tin=linear:min=2020_ncl:pin=2020:"
+                "t=bt709:m=bt709:p=bt709:r=tv",
+            )
+            # format=yuv420p is load-bearing: cropdetect's `limit=24` is
+            # bit-depth-naive -- see libavfilter/vf_cropdetect.c -- so
+            # 10-bit input would compare against code 24/1023 (~6 in 8-bit),
+            # below limited-range black. Force 8-bit so the SDR threshold keeps
+            # its intended meaning.
+            parts.append("format=yuv420p")
+        parts.append("cropdetect=24:16:0")
+        vf = ",".join(parts)
 
         crop_values: list[CropRect] = []
 
@@ -220,14 +260,14 @@ class FFmpegAdapter:
                 if m:
                     last_crop = m.group(1)
             if last_crop is not None:
-                parts = last_crop.split(":")
+                parts_crop = last_crop.split(":")
                 # Regex `crop=(\d+:\d+:\d+:\d+)` structurally guarantees 4 parts.
                 crop_values.append(
                     CropRect(
-                        w=int(parts[0]),
-                        h=int(parts[1]),
-                        x=int(parts[2]),
-                        y=int(parts[3]),
+                        w=int(parts_crop[0]),
+                        h=int(parts_crop[1]),
+                        x=int(parts_crop[2]),
+                        y=int(parts_crop[3]),
                     )
                 )
 

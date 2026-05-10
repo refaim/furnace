@@ -127,6 +127,7 @@ def test_cropdetect_progress_samples_forwarded_to_reporter() -> None:
         *,
         interlaced: bool = False,
         is_dvd: bool = False,
+        hdr_transfer: str | None = None,
         on_progress: Any = None,
     ) -> CropRect | None:
         assert on_progress is not None

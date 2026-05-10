@@ -219,6 +219,19 @@ def is_dvd_resolution(width: int, height: int) -> bool:
     return (width, height) in _DVD_RESOLUTIONS
 
 
+_HDR_TRANSFERS = frozenset({"smpte2084", "arib-std-b67"})
+
+
+def hdr_transfer_for_cropdetect(color_transfer: str | None) -> str | None:
+    """Return the transfer string when cropdetect needs HDR tonemapping.
+
+    Maps PQ ('smpte2084') and HLG ('arib-std-b67') through unchanged so the
+    adapter can plug them straight into ``zscale=tin=...``. Anything else
+    (including ``None``) returns ``None`` -- SDR path unchanged.
+    """
+    return color_transfer if color_transfer in _HDR_TRANSFERS else None
+
+
 def cluster_crop_values(
     crops: list[CropRect],
     tolerance: int = 16,

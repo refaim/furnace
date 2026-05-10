@@ -8,7 +8,12 @@ from pathlib import Path
 from typing import Any
 
 from furnace import VERSION as FURNACE_VERSION
-from furnace.core.detect import detect_video_system, is_dvd_resolution, resolve_color_metadata
+from furnace.core.detect import (
+    detect_video_system,
+    hdr_transfer_for_cropdetect,
+    is_dvd_resolution,
+    resolve_color_metadata,
+)
 from furnace.core.models import (
     STEREO_CHANNELS,
     SURROUND_5_1_CHANNELS,
@@ -184,6 +189,9 @@ class PlannerService:
                     movie.video.duration_s,
                     interlaced=movie.video.interlaced,
                     is_dvd=is_dvd,
+                    hdr_transfer=hdr_transfer_for_cropdetect(
+                        movie.video.color_transfer,
+                    ),
                     on_progress=self._on_crop_progress,
                 )
                 if raw_crop is not None:

@@ -25,9 +25,14 @@ class Prober(Protocol):
         *,
         interlaced: bool = False,
         is_dvd: bool = False,
+        hdr_transfer: str | None = None,
         on_progress: Callable[[ProgressSample], None] | None = None,
     ) -> CropRect | None:
         """Run cropdetect, return detected values (before alignment).
+
+        ``hdr_transfer`` is the source's color transfer string ('smpte2084'
+        or 'arib-std-b67') when the input needs HDR tonemapping before
+        cropdetect; ``None`` for SDR.
 
         ``on_progress`` is called after each sample point.
         """

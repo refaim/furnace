@@ -4,6 +4,8 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import MagicMock
 
+import pytest
+
 from furnace.core.models import (
     AudioCodecId,
     CropRect,
@@ -186,3 +188,52 @@ class TestCropDetectNonDryRun:
         )
 
         assert plan.jobs[0].video_params.crop is not None
+
+
+class TestCropDetectHdrTransferKwarg:
+    """Planner must pass the right `hdr_transfer` kwarg to detect_crop."""
+
+    @pytest.mark.parametrize(
+        ("color_transfer", "expected_kwarg"),
+        [
+            ("bt709", None),
+            ("smpte170m", None),
+            ("smpte2084", "smpte2084"),
+            ("arib-std-b67", "arib-std-b67"),
+            (None, None),
+        ],
+    )
+    def test_planner_passes_hdr_transfer(
+        self, tmp_path: Path,
+        color_transfer: str | None, expected_kwarg: str | None,
+    ) -> None:
+        main = tmp_path / "movie.mkv"
+        main.write_bytes(b"")
+        movie = make_movie(
+            main_file=main,
+            video=make_video_info(
+                width=3840, height=2160, source_file=main,
+                bitrate=20_000_000, color_transfer=color_transfer,
+            ),
+            audio_tracks=[
+                make_track(
+                    index=1, track_type=TrackType.AUDIO,
+                    codec_name="aac", codec_id=AudioCodecId.AAC_LC,
+                    language="eng", is_default=True, source_file=main,
+                    channels=2, bitrate=192_000,
+                ),
+            ],
+        )
+        prober = MagicMock()
+        prober.detect_crop.return_value = None
+        planner = PlannerService(prober=prober, previewer=None)
+        planner.create_plan(
+            [(movie, tmp_path / "out.mkv")],
+            audio_lang_filter=["eng"],
+            sub_lang_filter=["eng"],
+            vmaf_enabled=False,
+            dry_run=False,
+        )
+        prober.detect_crop.assert_called_once()
+        _, kwargs = prober.detect_crop.call_args
+        assert kwargs["hdr_transfer"] == expected_kwarg

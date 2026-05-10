@@ -36,6 +36,7 @@ class _MinimalProber:
         *,
         interlaced: bool = False,  # noqa: ARG002
         is_dvd: bool = False,  # noqa: ARG002
+        hdr_transfer: str | None = None,  # noqa: ARG002
     ) -> CropRect | None:
         return None
 
@@ -97,6 +98,24 @@ def test_prober_profile_audio_track_signature() -> None:
     assert hints["return"] is AudioMetrics
 
 
+def test_prober_detect_crop_signature_includes_hdr_transfer() -> None:
+    sig = inspect.signature(Prober.detect_crop)
+    params = sig.parameters
+    assert list(params) == [
+        "self",
+        "path",
+        "duration_s",
+        "interlaced",
+        "is_dvd",
+        "hdr_transfer",
+        "on_progress",
+    ]
+    assert params["hdr_transfer"].default is None
+
+    hints = typing.get_type_hints(Prober.detect_crop)
+    assert hints["hdr_transfer"] == str | None
+
+
 def test_minimal_prober_satisfies_runtime_checkable_protocol() -> None:
     stub = _MinimalProber()
     assert isinstance(stub, Prober)
@@ -115,6 +134,10 @@ def test_minimal_prober_method_surface() -> None:
     assert stub.probe(Path("/dev/null")) == {}
     assert stub.detect_crop(Path("/dev/null"), 60.0) is None
     assert stub.detect_crop(Path("/dev/null"), 60.0, interlaced=True, is_dvd=True) is None
+    assert stub.detect_crop(
+        Path("/dev/null"), 60.0,
+        interlaced=True, is_dvd=True, hdr_transfer="smpte2084",
+    ) is None
     assert stub.get_encoder_tag(Path("/dev/null")) is None
     assert stub.run_idet(Path("/dev/null"), 60.0) == 0.0
     assert stub.probe_hdr_side_data(Path("/dev/null")) == []

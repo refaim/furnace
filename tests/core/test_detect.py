@@ -10,6 +10,7 @@ from furnace.core.detect import (
     cluster_crop_values,
     detect_forced_subtitles,
     detect_hdr,
+    hdr_transfer_for_cropdetect,
     is_dvd_resolution,
     resolve_color_metadata,
     should_skip_file,
@@ -673,6 +674,28 @@ class TestResolveColorMetadataUnknownMatrix:
                 system=VideoSystem.HD,
                 has_hdr=False,
             )
+
+
+# ---------------------------------------------------------------------------
+# test_hdr_transfer_for_cropdetect
+# ---------------------------------------------------------------------------
+
+
+class TestHdrTransferForCropdetect:
+    @pytest.mark.parametrize(
+        ("color_transfer", "expected"),
+        [
+            ("smpte2084", "smpte2084"),
+            ("arib-std-b67", "arib-std-b67"),
+            ("bt709", None),
+            ("smpte170m", None),
+            (None, None),
+        ],
+    )
+    def test_hdr_transfer_for_cropdetect(
+        self, color_transfer: str | None, expected: str | None,
+    ) -> None:
+        assert hdr_transfer_for_cropdetect(color_transfer) == expected
 
 
 # ---------------------------------------------------------------------------
