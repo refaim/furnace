@@ -3,33 +3,60 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
+
+# Decode candidates tried in order. Each entry is (encoding, required_markers):
+# we only attempt the encoding when at least one marker character is present
+# in the input, otherwise the candidate is skipped.
+#
+# cp1251 needs a guard because short clean Cyrillic strings (e.g. T-yo,
+# V-yo) round-trip as valid UTF-8 and would be silently corrupted.
+# Genuine cp1251 mojibake of Russian/Ukrainian text always contains one of
+# the cp1251 chars 0xD0 / 0xD1 because those are the UTF-8 lead bytes for
+# the U+0400..U+047F block (the entire mainstream alphabet). Decoded via
+# cp1251 they render as U+0420 / U+0421 — used as marker characters below
+# via \\u escapes to keep the source ASCII-only and ruff-clean.
+#
+# latin-1 has no marker requirement: it preserves the historical behaviour
+# for Western mojibake and bytes outside cp1251 already raise on encode.
+_CP1251_MOJIBAKE_MARKERS: Final[frozenset[str]] = frozenset({"\u0420", "\u0421"})
+
+_DECODE_CHAIN: Final[tuple[tuple[str, frozenset[str] | None], ...]] = (
+    ("cp1251", _CP1251_MOJIBAKE_MARKERS),
+    ("latin-1", None),
+)
+
+
+def _try_unmangle(text: str) -> str | None:
+    """Return UTF-8-recovered text if `text` round-trips through any known
+    mojibake encoding (subject to per-encoding marker guards), otherwise None.
+    """
+    for enc, markers in _DECODE_CHAIN:
+        if markers is not None and markers.isdisjoint(text):
+            continue
+        try:
+            return text.encode(enc).decode("utf-8")
+        except (UnicodeDecodeError, UnicodeEncodeError):
+            continue
+    return None
 
 
 def is_mojibake(text: str) -> bool:
-    """Check if text appears to be UTF-8 bytes decoded as Latin-1/CP1252."""
+    """Check if text appears to be UTF-8 bytes decoded as cp1251 or latin-1/CP1252."""
     if not text or text.isascii():
         return False
-    try:
-        raw = text.encode("latin-1")
-        raw.decode("utf-8")
-    except (UnicodeDecodeError, UnicodeEncodeError):
-        return False
-    else:
-        return True
+    return _try_unmangle(text) is not None
 
 
 def fix_mojibake(text: str) -> str:
-    """Fix UTF-8 text that was incorrectly decoded as Latin-1/CP1252.
+    """Fix UTF-8 text that was incorrectly decoded as cp1251 or latin-1/CP1252.
 
     Returns the original text unchanged if it's not mojibake.
     """
     if not text or text.isascii():
         return text
-    try:
-        return text.encode("latin-1").decode("utf-8")
-    except (UnicodeDecodeError, UnicodeEncodeError):
-        return text
+    recovered = _try_unmangle(text)
+    return recovered if recovered is not None else text
 
 
 def _seconds_to_timestamp(seconds: float) -> str:

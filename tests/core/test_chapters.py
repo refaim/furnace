@@ -21,6 +21,14 @@ def _make_mojibake(text: str) -> str:
     return text.encode("utf-8").decode("latin-1")
 
 
+def _make_cp1251_mojibake(text: str) -> str:
+    """Simulate the cp1251 flavour: UTF-8 bytes mis-decoded as windows-1251.
+
+    Observed in the wild for some Russian-scene MKV chapter titles.
+    """
+    return text.encode("utf-8").decode("cp1251")
+
+
 class TestIsMojibake:
     def test_ascii_not_mojibake(self) -> None:
         assert not is_mojibake("Chapter 1")
@@ -35,6 +43,18 @@ class TestIsMojibake:
         mangled = _make_mojibake("Глава 1")
         assert is_mojibake(mangled)
 
+    def test_cp1251_mojibake_detected(self) -> None:
+        mangled = _make_cp1251_mojibake("Глава 1")
+        assert is_mojibake(mangled)
+
+    def test_short_clean_cyrillic_not_mojibake(self) -> None:
+        # Short clean Cyrillic strings whose cp1251 byte pair happens to
+        # form a valid UTF-8 sequence (e.g. T+yo -> 0xD2 0xB8 -> U+04B8)
+        # must not be flagged as mojibake. The marker guard skips them
+        # because they lack the U+0420 / U+0421 lead-byte markers.
+        for clean in ("Тё", "Чё.", "ВЁ", "Шё."):
+            assert not is_mojibake(clean), clean
+
     def test_japanese_not_mojibake(self) -> None:
         # Japanese text that can't round-trip through latin-1
         assert not is_mojibake("第1章")
@@ -45,11 +65,23 @@ class TestFixMojibake:
         mangled = _make_mojibake("Глава 1")
         assert fix_mojibake(mangled) == "Глава 1"
 
+    def test_fixes_cp1251_cyrillic(self) -> None:
+        mangled = _make_cp1251_mojibake("Глава 1")
+        assert fix_mojibake(mangled) == "Глава 1"
+
+    def test_fixes_cp1251_full_phrase(self) -> None:
+        mangled = _make_cp1251_mojibake("Начало приключения")
+        assert fix_mojibake(mangled) == "Начало приключения"
+
     def test_leaves_clean_text(self) -> None:
         assert fix_mojibake("Chapter 1") == "Chapter 1"
 
     def test_leaves_clean_cyrillic(self) -> None:
         assert fix_mojibake("Глава 1") == "Глава 1"
+
+    def test_leaves_short_clean_cyrillic(self) -> None:
+        for clean in ("Тё", "Чё.", "ВЁ", "Шё."):
+            assert fix_mojibake(clean) == clean
 
     def test_empty(self) -> None:
         assert fix_mojibake("") == ""
@@ -68,6 +100,22 @@ class TestChaptersHaveMojibake:
         chapters = [
             {"start_time": "0.000000", "tags": {"title": mangled}},
             {"start_time": "300.000000", "tags": {"title": "Chapter 2"}},
+        ]
+        assert chapters_have_mojibake(chapters)
+
+    def test_cp1251_mojibake_chapters(self) -> None:
+        mangled = _make_cp1251_mojibake("Глава 1")
+        chapters = [
+            {"start_time": "0.000000", "tags": {"title": mangled}},
+            {"start_time": "300.000000", "tags": {"title": "Chapter 2"}},
+        ]
+        assert chapters_have_mojibake(chapters)
+
+    def test_mixed_flavour_chapters(self) -> None:
+        chapters = [
+            {"start_time": "0.0", "tags": {"title": _make_mojibake("Глава 1")}},
+            {"start_time": "1.0", "tags": {"title": _make_cp1251_mojibake("Глава 2")}},
+            {"start_time": "2.0", "tags": {"title": "Chapter 3"}},
         ]
         assert chapters_have_mojibake(chapters)
 
@@ -100,6 +148,16 @@ class TestWriteOgmChapters:
         text = out.read_text(encoding="utf-8")
         assert "CHAPTER01NAME=Глава 1" in text
 
+    def test_fixes_cp1251_mojibake_on_write(self, tmp_path: Path) -> None:
+        mangled = _make_cp1251_mojibake("Глава 1")
+        chapters = [
+            {"start_time": "0.000000", "tags": {"title": mangled}},
+        ]
+        out = tmp_path / "chapters.txt"
+        write_ogm_chapters(chapters, out)
+        text = out.read_text(encoding="utf-8")
+        assert "CHAPTER01NAME=Глава 1" in text
+
     def test_missing_title_uses_default(self, tmp_path: Path) -> None:
         chapters = [{"start_time": "0.000000"}]
         out = tmp_path / "chapters.txt"
@@ -111,6 +169,21 @@ class TestWriteOgmChapters:
 class TestFixChaptersFile:
     def test_fixes_mojibake_in_file(self, tmp_path: Path) -> None:
         mangled = _make_mojibake("Глава")
+        content = (
+            f"CHAPTER01=00:00:00.000\n"
+            f"CHAPTER01NAME={mangled} 1\n"
+            f"CHAPTER02=00:05:12.680\n"
+            f"CHAPTER02NAME={mangled} 2\n"
+        )
+        f = tmp_path / "chapters.txt"
+        f.write_text(content, encoding="utf-8")
+        assert fix_chapters_file(f)
+        fixed = f.read_text(encoding="utf-8")
+        assert "CHAPTER01NAME=Глава 1" in fixed
+        assert "CHAPTER02NAME=Глава 2" in fixed
+
+    def test_fixes_cp1251_mojibake_in_file(self, tmp_path: Path) -> None:
+        mangled = _make_cp1251_mojibake("Глава")
         content = (
             f"CHAPTER01=00:00:00.000\n"
             f"CHAPTER01NAME={mangled} 1\n"
