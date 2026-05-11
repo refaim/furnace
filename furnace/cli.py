@@ -559,7 +559,9 @@ def run(
 
         dovi_adapter: DoviToolAdapter | None = None
         if cfg.dovi_tool is not None:
-            dovi_adapter = DoviToolAdapter(cfg.dovi_tool, on_output=tool_output)
+            dovi_adapter = DoviToolAdapter(
+                cfg.dovi_tool, cfg.ffmpeg, on_output=tool_output,
+            )
 
         executor = Executor(
             encoder=nvencc_adapter,

@@ -980,6 +980,9 @@ class TestRunExecutorClosure:
             executor_fn(mock_progress)
 
         mock_dovi.assert_called_once()
+        dovi_args = mock_dovi.call_args.args
+        assert dovi_args[0] == cfg.dovi_tool
+        assert dovi_args[1] == cfg.ffmpeg
         mock_executor_cls.return_value.run.assert_called_once()
 
     def test_executor_fn_stops_progress_on_error(self, tmp_path: Path) -> None:
