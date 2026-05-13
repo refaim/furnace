@@ -419,6 +419,7 @@ def plan(
             dvd_port=makemkv_adapter,
             mkvmerge_path=cfg.mkvmerge,
             pcm_transcoder=eac3to_adapter,
+            prober=ffmpeg_adapter,
         )
 
         detected_discs = disc_demuxer.detect(source)

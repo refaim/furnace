@@ -10,7 +10,7 @@ from furnace.adapters._subprocess import run_tool
 from furnace.adapters.mkvmerge import _parse_mkvmerge_progress_line
 from furnace.core.chapters import fix_chapters_file
 from furnace.core.models import DiscSource, DiscTitle, DiscType
-from furnace.core.ports import DiscDemuxerPort, PcmTranscoder, PlanReporter
+from furnace.core.ports import DiscDemuxerPort, PcmTranscoder, PlanReporter, Prober
 from furnace.core.progress import ProgressSample
 
 logger = logging.getLogger(__name__)
@@ -20,24 +20,48 @@ _DISC_DIR_NAMES: dict[str, DiscType] = {
     "BDMV": DiscType.BLURAY,
 }
 
-# Extensions that mkvmerge can mux as video/audio/subtitle tracks
-_MKV_TRACK_EXTS = {
-    ".mkv",
-    ".m2v",
-    ".h264",
-    ".h265",
+# Extensions that mkvmerge can mux, grouped by track type. Update both the
+# group below AND nothing else — _MKV_TRACK_EXTS is derived so a new codec
+# can never silently disable the audio-desync check (the count-mismatch
+# guard in _compute_audio_sync_offsets relies on these being in sync).
+_VIDEO_EXTS = {".mkv", ".m2v", ".h264", ".h265"}
+_AUDIO_EXTS = {
+    ".flac",
+    ".ac3",
+    ".eac3",
     ".dts",
     ".dtsma",
     ".dtshr",
-    ".ac3",
-    ".eac3",
     ".thd",
-    ".flac",
     ".wav",
     ".m4a",
-    ".sup",
 }
+_SUBTITLE_EXTS = {".sup"}
+_MKV_TRACK_EXTS = _VIDEO_EXTS | _AUDIO_EXTS | _SUBTITLE_EXTS
+
 _CHAPTERS_EXT = ".txt"
+# Minimum audio-vs-video duration gap (ms) that triggers --sync correction.
+# Below this, the gap falls within natural BD audio end-trim and is ignored.
+_AUDIO_DESYNC_THRESHOLD_MS = 500
+
+_DURATION_TAG_RE = re.compile(r"^(\d+):(\d{2}):(\d{2})(?:\.(\d{1,9}))?$")
+
+
+def _parse_mkv_duration_tag(value: str | None) -> int | None:
+    """Parse a mkvmerge DURATION tag (``HH:MM:SS.nnnnnnnnn``) to milliseconds.
+
+    Returns None on missing, empty, or unparseable input.
+    """
+    if not value:
+        return None
+    m = _DURATION_TAG_RE.match(value)
+    if m is None:
+        return None
+    h, minutes, seconds, frac = m.groups()
+    total_ms = (int(h) * 3600 + int(minutes) * 60 + int(seconds)) * 1000
+    if frac:
+        total_ms += int(frac.ljust(9, "0")) // 1_000_000
+    return total_ms
 
 
 class DiscDemuxer:
@@ -49,6 +73,7 @@ class DiscDemuxer:
         dvd_port: DiscDemuxerPort,
         mkvmerge_path: Path | None = None,
         pcm_transcoder: PcmTranscoder | None = None,
+        prober: Prober | None = None,
     ) -> None:
         self._ports: dict[DiscType, DiscDemuxerPort] = {
             DiscType.BLURAY: bd_port,
@@ -56,6 +81,7 @@ class DiscDemuxer:
         }
         self._mkvmerge = mkvmerge_path
         self._pcm_transcoder = pcm_transcoder
+        self._prober = prober
 
     def _port_for(self, disc: DiscSource) -> DiscDemuxerPort:
         return self._ports[disc.disc_type]
@@ -299,12 +325,50 @@ class DiscDemuxer:
         on_output: Callable[[str], None] | None = None,
         on_progress: Callable[[ProgressSample], None] | None = None,
     ) -> None:
-        """Mux separate track files into a single MKV via mkvmerge."""
+        """Mux separate track files into a single MKV via mkvmerge.
+
+        After the initial mux, when a prober is configured we probe the
+        output for per-track DURATION tags. If any audio track is shorter
+        than the video track by more than ``_AUDIO_DESYNC_THRESHOLD_MS``
+        — typical of multi-segment BD titles whose intro segment carries
+        no PCM audio — the audio is at PTS 0 instead of the intended
+        offset, so we re-mux with ``--sync`` to push each short audio
+        track later by the missing-prefix duration. The fix assumes the
+        gap is at the START (the common BD authoring pattern); an OUTRO-
+        only gap would be wrongly shifted by this heuristic.
+        """
         if self._mkvmerge is None:
             msg = "mkvmerge path not configured, cannot mux BD demux output"
             raise RuntimeError(msg)
 
+        self._run_mkvmerge_mux(files, output_mkv, {}, on_output, on_progress)
+
+        if self._prober is None:
+            return
+        offsets = self._compute_audio_sync_offsets(output_mkv, files)
+        if not offsets:
+            return
+
+        summary = ", ".join(f"{p.name}: +{d}ms" for p, d in offsets.items())
+        logger.warning(
+            "Audio/video desync detected in %s (%s); re-muxing with --sync",
+            output_mkv.name, summary,
+        )
+        output_mkv.unlink(missing_ok=True)
+        self._run_mkvmerge_mux(files, output_mkv, offsets, on_output, on_progress)
+
+    def _run_mkvmerge_mux(
+        self,
+        files: list[Path],
+        output_mkv: Path,
+        audio_sync_offsets: dict[Path, int],
+        on_output: Callable[[str], None] | None,
+        on_progress: Callable[[ProgressSample], None] | None,
+    ) -> None:
+        assert self._mkvmerge is not None  # noqa: S101 — narrowed by caller
+
         lang_re = re.compile(r"\[(\w{3})\]")
+        retry_note = " (--sync correction)" if audio_sync_offsets else ""
         cmd: list[str] = [str(self._mkvmerge), "-o", str(output_mkv)]
 
         # Find chapters file
@@ -313,10 +377,15 @@ class DiscDemuxer:
             if f.suffix.lower() == _CHAPTERS_EXT:
                 chapters_file = f
 
-        # Add track files, extract language from filename (eac3to puts [rus] etc.)
+        # Add track files. eac3to encodes language in the filename as
+        # ``[rus]`` etc.; --sync gets prefixed for audio tracks that need
+        # delay correction (single track per file → TID 0).
         for f in files:
             if f.suffix.lower() not in _MKV_TRACK_EXTS:
                 continue
+            delay = audio_sync_offsets.get(f)
+            if delay is not None:
+                cmd += ["--sync", f"0:{delay}"]
             lang_match = lang_re.search(f.name)
             if lang_match:
                 cmd += ["--language", f"0:{lang_match.group(1)}"]
@@ -328,7 +397,7 @@ class DiscDemuxer:
                 logger.info("Fixed mojibake in chapters file %s", chapters_file.name)
             cmd += ["--chapters", str(chapters_file)]
 
-        logger.info("Muxing demuxed tracks into %s", output_mkv.name)
+        logger.info("Muxing demuxed tracks into %s%s", output_mkv.name, retry_note)
         logger.debug("mkvmerge cmd: %s", " ".join(cmd))
 
         def _on_progress_line(line: str) -> bool:
@@ -344,6 +413,56 @@ class DiscDemuxer:
         )
         if rc not in (0, 1):  # mkvmerge returns 1 for warnings
             raise RuntimeError(f"mkvmerge failed (rc={rc}): {output[-500:]}")
+
+    def _compute_audio_sync_offsets(
+        self,
+        mkv_path: Path,
+        files: list[Path],
+    ) -> dict[Path, int]:
+        """Probe ``mkv_path`` and return audio-file → positive delay (ms)
+        for any audio track shorter than the video track by more than
+        ``_AUDIO_DESYNC_THRESHOLD_MS``. Empty dict when no fix is needed
+        or detection is not possible (no DURATION tags, probe error,
+        audio/source-file count mismatch).
+        """
+        assert self._prober is not None  # noqa: S101 — narrowed by caller
+        try:
+            data = self._prober.probe(mkv_path)
+        except Exception as exc:  # noqa: BLE001 — graceful degradation
+            logger.warning("desync probe failed for %s: %s", mkv_path.name, exc)
+            return {}
+
+        video_ms: int | None = None
+        audio_durations: list[int | None] = []
+        for s in data.get("streams", []):
+            ctype = s.get("codec_type")
+            dur = _parse_mkv_duration_tag(s.get("tags", {}).get("DURATION"))
+            if ctype == "video" and video_ms is None:
+                video_ms = dur
+            elif ctype == "audio":
+                audio_durations.append(dur)
+
+        if video_ms is None or not audio_durations:
+            return {}
+
+        audio_source_files = [
+            f for f in files if f.suffix.lower() in _AUDIO_EXTS
+        ]
+        if len(audio_source_files) != len(audio_durations):
+            logger.debug(
+                "audio file/stream count mismatch (%d vs %d); skip desync fix",
+                len(audio_source_files), len(audio_durations),
+            )
+            return {}
+
+        offsets: dict[Path, int] = {}
+        for f, a_ms in zip(audio_source_files, audio_durations, strict=True):
+            if a_ms is None:
+                continue
+            delta = video_ms - a_ms
+            if delta >= _AUDIO_DESYNC_THRESHOLD_MS:
+                offsets[f] = delta
+        return offsets
 
     @staticmethod
     def _find_done_files(demux_dir: Path, disc_label: str, title_num: int) -> list[Path]:

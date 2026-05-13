@@ -14,12 +14,14 @@ def _make_demuxer(
     dvd_port: MagicMock | None = None,
     mkvmerge_path: Path | None = None,
     pcm_transcoder: MagicMock | None = None,
+    prober: MagicMock | None = None,
 ) -> DiscDemuxer:
     return DiscDemuxer(
         bd_port=bd_port or MagicMock(),
         dvd_port=dvd_port or MagicMock(),
         mkvmerge_path=mkvmerge_path,
         pcm_transcoder=pcm_transcoder,
+        prober=prober,
     )
 
 
@@ -418,6 +420,325 @@ class TestMuxToMkv:
             demuxer._mux_to_mkv([video], output_mkv, on_output=on_output)
 
         assert mock_run.call_args[1]["on_output"] is on_output
+
+
+def _probe_with_durations(
+    *,
+    video_dur: str | None,
+    audio_durs: list[str | None],
+) -> MagicMock:
+    """Return a MagicMock prober whose `probe()` yields the given track
+    DURATION tag strings (e.g. "01:35:48.750000000"). None means "tag
+    absent for that track".
+    """
+    streams: list[dict[str, object]] = []
+    if video_dur is not None:
+        streams.append({"codec_type": "video", "tags": {"DURATION": video_dur}})
+    else:
+        streams.append({"codec_type": "video", "tags": {}})
+    for d in audio_durs:
+        if d is not None:
+            streams.append({"codec_type": "audio", "tags": {"DURATION": d}})
+        else:
+            streams.append({"codec_type": "audio", "tags": {}})
+    prober = MagicMock()
+    prober.probe.return_value = {"streams": streams}
+    return prober
+
+
+class TestMuxToMkvSyncCorrection:
+    """When the muxed MKV shows audio shorter than video by more than a
+    threshold (typical of multi-segment BD titles whose intro segment lacks
+    PCM audio), `_mux_to_mkv` must re-run mkvmerge with `--sync` to push
+    each audio track later in the timeline by the missing-prefix duration.
+    """
+
+    def _build(
+        self,
+        tmp_path: Path,
+        *,
+        video_dur: str | None,
+        audio_durs: list[str | None],
+        audio_filenames: list[str] | None = None,
+    ) -> tuple[DiscDemuxer, list[Path], Path]:
+        prober = _probe_with_durations(video_dur=video_dur, audio_durs=audio_durs)
+        demuxer = _make_demuxer(mkvmerge_path=Path("/usr/bin/mkvmerge"), prober=prober)
+        video = tmp_path / "video.h264"
+        video.write_bytes(b"video")
+        names = audio_filenames or [f"audio{i}.flac" for i in range(len(audio_durs))]
+        audio_files = []
+        for name in names:
+            p = tmp_path / name
+            p.write_bytes(b"audio")
+            audio_files.append(p)
+        output_mkv = tmp_path / "out.mkv"
+        return demuxer, [video, *audio_files], output_mkv
+
+    def test_remux_when_audio_significantly_shorter(self, tmp_path: Path) -> None:
+        """Video 5748750ms, audio 5744755ms → resync with --sync 0:3995."""
+        demuxer, files, output_mkv = self._build(
+            tmp_path,
+            video_dur="01:35:48.750000000",
+            audio_durs=["01:35:44.755000000"],
+        )
+
+        with patch("furnace.services.disc_demuxer.run_tool", return_value=(0, "")) as mock_run:
+            demuxer._mux_to_mkv(files, output_mkv)
+
+        assert mock_run.call_count == 2
+        second_cmd = mock_run.call_args_list[1][0][0]
+        sync_idx = second_cmd.index("--sync")
+        assert second_cmd[sync_idx + 1] == "0:3995"
+        # --sync must precede the audio file it applies to
+        audio_path = next(f for f in files if f.suffix == ".flac")
+        assert second_cmd.index(str(audio_path)) > sync_idx
+
+    def test_no_remux_when_durations_match(self, tmp_path: Path) -> None:
+        demuxer, files, output_mkv = self._build(
+            tmp_path,
+            video_dur="01:35:48.750000000",
+            audio_durs=["01:35:48.750000000"],
+        )
+
+        with patch("furnace.services.disc_demuxer.run_tool", return_value=(0, "")) as mock_run:
+            demuxer._mux_to_mkv(files, output_mkv)
+
+        assert mock_run.call_count == 1
+
+    def test_no_remux_when_gap_below_threshold(self, tmp_path: Path) -> None:
+        """100ms gap is within natural BD audio end-trim — no correction."""
+        demuxer, files, output_mkv = self._build(
+            tmp_path,
+            video_dur="00:30:00.100000000",
+            audio_durs=["00:30:00.000000000"],
+        )
+
+        with patch("furnace.services.disc_demuxer.run_tool", return_value=(0, "")) as mock_run:
+            demuxer._mux_to_mkv(files, output_mkv)
+
+        assert mock_run.call_count == 1
+
+    def test_no_remux_when_audio_longer_than_video(self, tmp_path: Path) -> None:
+        """Negative delta — never resync (would shift audio backwards)."""
+        demuxer, files, output_mkv = self._build(
+            tmp_path,
+            video_dur="00:30:00.000000000",
+            audio_durs=["00:30:00.500000000"],
+        )
+
+        with patch("furnace.services.disc_demuxer.run_tool", return_value=(0, "")) as mock_run:
+            demuxer._mux_to_mkv(files, output_mkv)
+
+        assert mock_run.call_count == 1
+
+    def test_no_remux_when_prober_not_configured(self, tmp_path: Path) -> None:
+        """Without a prober, `_mux_to_mkv` keeps legacy behaviour (single mux)."""
+        demuxer = _make_demuxer(mkvmerge_path=Path("/usr/bin/mkvmerge"), prober=None)
+        video = tmp_path / "video.h264"
+        video.write_bytes(b"video")
+        audio = tmp_path / "audio.flac"
+        audio.write_bytes(b"audio")
+        output_mkv = tmp_path / "out.mkv"
+
+        with patch("furnace.services.disc_demuxer.run_tool", return_value=(0, "")) as mock_run:
+            demuxer._mux_to_mkv([video, audio], output_mkv)
+
+        assert mock_run.call_count == 1
+
+    def test_no_remux_when_probe_raises(self, tmp_path: Path) -> None:
+        """Probe failure degrades gracefully — no second mux, no exception."""
+        prober = MagicMock()
+        prober.probe.side_effect = RuntimeError("ffprobe blew up")
+        demuxer = _make_demuxer(mkvmerge_path=Path("/usr/bin/mkvmerge"), prober=prober)
+        video = tmp_path / "video.h264"
+        video.write_bytes(b"v")
+        audio = tmp_path / "audio.flac"
+        audio.write_bytes(b"a")
+        output_mkv = tmp_path / "out.mkv"
+
+        with patch("furnace.services.disc_demuxer.run_tool", return_value=(0, "")) as mock_run:
+            demuxer._mux_to_mkv([video, audio], output_mkv)
+
+        assert mock_run.call_count == 1
+
+    def test_no_remux_when_duration_tags_missing(self, tmp_path: Path) -> None:
+        """No DURATION tags at all — cannot detect, skip correction."""
+        demuxer, files, output_mkv = self._build(
+            tmp_path,
+            video_dur=None,
+            audio_durs=[None],
+        )
+
+        with patch("furnace.services.disc_demuxer.run_tool", return_value=(0, "")) as mock_run:
+            demuxer._mux_to_mkv(files, output_mkv)
+
+        assert mock_run.call_count == 1
+
+    def test_resync_applies_per_audio_track(self, tmp_path: Path) -> None:
+        """Multiple audio tracks all get --sync correction; both --sync and
+        --language precede each respective audio file in the command line.
+        """
+        demuxer, files, output_mkv = self._build(
+            tmp_path,
+            video_dur="01:35:48.750000000",
+            audio_durs=["01:35:44.755000000", "01:35:44.755000000"],
+            audio_filenames=["audio1 [rus].flac", "audio2 [eng].ac3"],
+        )
+
+        with patch("furnace.services.disc_demuxer.run_tool", return_value=(0, "")) as mock_run:
+            demuxer._mux_to_mkv(files, output_mkv)
+
+        assert mock_run.call_count == 2
+        cmd = mock_run.call_args_list[1][0][0]
+        sync_indices = [i for i, tok in enumerate(cmd) if tok == "--sync"]
+        lang_indices = [i for i, tok in enumerate(cmd) if tok == "--language"]
+        assert len(sync_indices) == 2
+        assert len(lang_indices) == 2
+        for i in sync_indices:
+            assert cmd[i + 1] == "0:3995"
+        # For each audio file, both --sync and --language must precede it
+        for name in ("audio1 [rus].flac", "audio2 [eng].ac3"):
+            file_idx = cmd.index(str(tmp_path / name))
+            preceding_syncs = [i for i in sync_indices if i < file_idx]
+            preceding_langs = [i for i in lang_indices if i < file_idx]
+            assert preceding_syncs
+            assert preceding_langs
+
+    def test_resync_only_audio_below_threshold_left_alone(self, tmp_path: Path) -> None:
+        """When one audio track is short and another matches video, only the
+        short one receives --sync."""
+        demuxer, files, output_mkv = self._build(
+            tmp_path,
+            video_dur="01:35:48.750000000",
+            audio_durs=["01:35:44.755000000", "01:35:48.750000000"],
+            audio_filenames=["short [rus].flac", "ok [eng].ac3"],
+        )
+
+        with patch("furnace.services.disc_demuxer.run_tool", return_value=(0, "")) as mock_run:
+            demuxer._mux_to_mkv(files, output_mkv)
+
+        cmd = mock_run.call_args_list[1][0][0]
+        sync_indices = [i for i, tok in enumerate(cmd) if tok == "--sync"]
+        assert len(sync_indices) == 1
+        short_path = tmp_path / "short [rus].flac"
+        ok_path = tmp_path / "ok [eng].ac3"
+        # --sync precedes the short file but does NOT precede the ok one
+        assert sync_indices[0] < cmd.index(str(short_path))
+        assert sync_indices[0] < cmd.index(str(ok_path))  # appears in cmd
+        # Verify no --sync between sync_indices[0]+2 and the ok file
+        between = cmd[sync_indices[0] + 2 : cmd.index(str(ok_path))]
+        assert "--sync" not in between
+
+    def test_subtitle_stream_does_not_break_detection(self, tmp_path: Path) -> None:
+        """Streams with codec_type other than video/audio (e.g. subtitle) are
+        ignored when computing offsets."""
+        prober = MagicMock()
+        prober.probe.return_value = {
+            "streams": [
+                {"codec_type": "video", "tags": {"DURATION": "01:35:48.750000000"}},
+                {"codec_type": "audio", "tags": {"DURATION": "01:35:44.755000000"}},
+                {"codec_type": "subtitle", "tags": {"DURATION": "00:30:00.000000000"}},
+            ],
+        }
+        demuxer = _make_demuxer(mkvmerge_path=Path("/usr/bin/mkvmerge"), prober=prober)
+        video = tmp_path / "video.h264"
+        video.write_bytes(b"v")
+        audio = tmp_path / "audio.flac"
+        audio.write_bytes(b"a")
+        subs = tmp_path / "subs.sup"
+        subs.write_bytes(b"s")
+        output_mkv = tmp_path / "out.mkv"
+
+        with patch("furnace.services.disc_demuxer.run_tool", return_value=(0, "")) as mock_run:
+            demuxer._mux_to_mkv([video, audio, subs], output_mkv)
+
+        assert mock_run.call_count == 2
+        cmd = mock_run.call_args_list[1][0][0]
+        sync_idx = cmd.index("--sync")
+        assert cmd[sync_idx + 1] == "0:3995"
+
+    def test_audio_with_missing_duration_tag_is_skipped(self, tmp_path: Path) -> None:
+        """When one audio stream has no DURATION tag, only the well-formed
+        one is considered. The unparseable track gets no --sync."""
+        demuxer, files, output_mkv = self._build(
+            tmp_path,
+            video_dur="01:35:48.750000000",
+            audio_durs=["01:35:44.755000000", None],
+            audio_filenames=["short [rus].flac", "untagged [eng].ac3"],
+        )
+
+        with patch("furnace.services.disc_demuxer.run_tool", return_value=(0, "")) as mock_run:
+            demuxer._mux_to_mkv(files, output_mkv)
+
+        assert mock_run.call_count == 2
+        cmd = mock_run.call_args_list[1][0][0]
+        sync_indices = [i for i, tok in enumerate(cmd) if tok == "--sync"]
+        # Only the first audio file gets --sync; the second (no tag) is left as-is
+        assert len(sync_indices) == 1
+        short_path = tmp_path / "short [rus].flac"
+        untagged_path = tmp_path / "untagged [eng].ac3"
+        assert sync_indices[0] < cmd.index(str(short_path))
+        between = cmd[sync_indices[0] + 2 : cmd.index(str(untagged_path))]
+        assert "--sync" not in between
+
+    def test_resync_skipped_when_file_stream_count_mismatch(self, tmp_path: Path) -> None:
+        """If mkvmerge produced fewer/more audio streams than source audio
+        files, we cannot map durations safely — skip the fix."""
+        # Two source audio files but probe shows only one audio stream
+        demuxer, files, output_mkv = self._build(
+            tmp_path,
+            video_dur="01:35:48.750000000",
+            audio_durs=["01:35:44.755000000"],
+            audio_filenames=["a.flac", "b.ac3"],
+        )
+
+        with patch("furnace.services.disc_demuxer.run_tool", return_value=(0, "")) as mock_run:
+            demuxer._mux_to_mkv(files, output_mkv)
+
+        assert mock_run.call_count == 1
+
+
+class TestParseMkvDurationTag:
+    """`_parse_mkv_duration_tag` converts mkvmerge's DURATION tag string
+    (HH:MM:SS.nnnnnnnnn) to integer milliseconds.
+    """
+
+    def test_typical_value(self) -> None:
+        from furnace.services.disc_demuxer import _parse_mkv_duration_tag
+        assert _parse_mkv_duration_tag("01:35:48.750000000") == 5748750
+
+    def test_subsecond_precision_rounds_to_ms(self) -> None:
+        from furnace.services.disc_demuxer import _parse_mkv_duration_tag
+        # 5744.755000000 → 5744755 ms (exact)
+        assert _parse_mkv_duration_tag("01:35:44.755000000") == 5744755
+
+    def test_short_fractional_part_is_left_aligned(self) -> None:
+        from furnace.services.disc_demuxer import _parse_mkv_duration_tag
+        # "00:00:01.5" should be 1500 ms, not 1000 + 5
+        assert _parse_mkv_duration_tag("00:00:01.5") == 1500
+
+    def test_no_fractional_part(self) -> None:
+        from furnace.services.disc_demuxer import _parse_mkv_duration_tag
+        # If the regex requires a dot, this may return None — accept either,
+        # but the typical mkvmerge tag always carries fractions.
+        result = _parse_mkv_duration_tag("00:00:01")
+        assert result in (None, 1000)
+
+    def test_none_input(self) -> None:
+        from furnace.services.disc_demuxer import _parse_mkv_duration_tag
+        assert _parse_mkv_duration_tag(None) is None
+
+    def test_empty_string(self) -> None:
+        from furnace.services.disc_demuxer import _parse_mkv_duration_tag
+        assert _parse_mkv_duration_tag("") is None
+
+    def test_garbage_input(self) -> None:
+        from furnace.services.disc_demuxer import _parse_mkv_duration_tag
+        assert _parse_mkv_duration_tag("not a duration") is None
+
+    def test_multi_hour(self) -> None:
+        from furnace.services.disc_demuxer import _parse_mkv_duration_tag
+        assert _parse_mkv_duration_tag("10:00:00.000000000") == 36_000_000
 
 
 class TestDemuxMuxingPath:
