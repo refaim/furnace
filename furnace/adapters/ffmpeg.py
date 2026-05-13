@@ -623,40 +623,22 @@ class FFmpegAdapter:
             corr_rb_rs=_pearson(rb, rs),
         )
 
-    def downmix_to_mono_wav(
+    def stereo_to_mono_wav(
         self,
         input_path: Path,
         stream_index: int,
-        channels: int,
         output_wav: Path,
         delay_ms: int,
     ) -> int:
-        """ffmpeg pan filter -> mono WAV. Bypasses eac3to.
+        """Average a stereo PCM stream to mono WAV via the ffmpeg ``pan`` filter.
 
-        Stereo sources are averaged (0.5*FL + 0.5*FR). Multichannel
-        sources use an ITU-R BS.775 / Dolby Lo downmix, normalized via
-        ``aformat=channel_layouts=<layout>`` and peak-protected via
-        ``alimiter=limit=0.99``. LFE is excluded per ITU standard.
+        Averaging two channels at 0.5 each cannot exceed unity for normalised PCM,
+        so no limiter is needed. Multichannel collapse is the caller's
+        responsibility (typically eac3to ``-downStereo``). Delay handling: if
+        ``delay_ms > 0`` an ``adelay`` filter is appended; if ``delay_ms < 0``
+        an ``atrim=start=<seconds>`` trims the leading audio; zero adds nothing.
         """
-        if channels == _CHANNELS_STEREO:
-            filters = ["pan=mono|c0=0.5*FL+0.5*FR"]
-        elif channels == _CHANNELS_5_1:
-            filters = [
-                "aformat=channel_layouts=5.1",
-                "pan=mono|c0=0.707*FC+0.5*FL+0.5*FR+0.354*BL+0.354*BR",
-                "alimiter=limit=0.99",
-            ]
-        elif channels == _CHANNELS_7_1:
-            filters = [
-                "aformat=channel_layouts=7.1",
-                (
-                    "pan=mono|c0=0.707*FC+0.5*FL+0.5*FR"
-                    "+0.354*SL+0.354*SR+0.354*BL+0.354*BR"
-                ),
-                "alimiter=limit=0.99",
-            ]
-        else:
-            raise ValueError(f"downmix_to_mono_wav: unsupported channels={channels}")
+        filters = ["pan=mono|c0=0.5*FL+0.5*FR"]
 
         if delay_ms > 0:
             filters.append(f"adelay={delay_ms}")

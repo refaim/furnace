@@ -148,7 +148,7 @@ class _MinimalAudioExtractor:
 
     Mirrors ``_MinimalProber`` — proves that the runtime_checkable Protocol
     accepts an independently-declared class with the expected surface, and
-    locks the signature of ``downmix_to_mono_wav`` (Task 10) in place.
+    locks the signature of ``stereo_to_mono_wav`` in place.
     """
 
     def extract_track(
@@ -169,39 +169,36 @@ class _MinimalAudioExtractor:
     ) -> int:
         return 0
 
-    def downmix_to_mono_wav(
+    def stereo_to_mono_wav(
         self,
         input_path: Path,  # noqa: ARG002
         stream_index: int,  # noqa: ARG002
-        channels: int,  # noqa: ARG002
         output_wav: Path,  # noqa: ARG002
         delay_ms: int,  # noqa: ARG002
     ) -> int:
         return 0
 
 
-def test_audio_extractor_has_downmix_to_mono_wav() -> None:
-    assert hasattr(AudioExtractor, "downmix_to_mono_wav")
-    assert callable(AudioExtractor.downmix_to_mono_wav)
+def test_audio_extractor_has_stereo_to_mono_wav() -> None:
+    assert hasattr(AudioExtractor, "stereo_to_mono_wav")
+    assert callable(AudioExtractor.stereo_to_mono_wav)
 
 
-def test_audio_extractor_downmix_to_mono_wav_signature() -> None:
-    sig = inspect.signature(AudioExtractor.downmix_to_mono_wav)
+def test_audio_extractor_stereo_to_mono_wav_signature() -> None:
+    sig = inspect.signature(AudioExtractor.stereo_to_mono_wav)
     params = sig.parameters
-    # self + five positional args, in fixed order
+    # self + four positional args, in fixed order
     assert list(params) == [
         "self",
         "input_path",
         "stream_index",
-        "channels",
         "output_wav",
         "delay_ms",
     ]
 
-    hints = typing.get_type_hints(AudioExtractor.downmix_to_mono_wav)
+    hints = typing.get_type_hints(AudioExtractor.stereo_to_mono_wav)
     assert hints["input_path"] is Path
     assert hints["stream_index"] is int
-    assert hints["channels"] is int
     assert hints["output_wav"] is Path
     assert hints["delay_ms"] is int
     assert hints["return"] is int
@@ -212,7 +209,7 @@ def test_minimal_audio_extractor_satisfies_runtime_checkable_protocol(
 ) -> None:
     stub = _MinimalAudioExtractor()
     assert isinstance(stub, AudioExtractor)
-    rc = stub.downmix_to_mono_wav(Path("/dev/null"), 1, 6, tmp_path / "out.wav", 0)
+    rc = stub.stereo_to_mono_wav(Path("/dev/null"), 1, tmp_path / "out.wav", 0)
     assert rc == 0
 
 
@@ -223,4 +220,4 @@ def test_minimal_audio_extractor_method_surface(tmp_path: Path) -> None:
     stub = _MinimalAudioExtractor()
     assert stub.extract_track(Path("/dev/null"), 0, tmp_path / "o.thd") == 0
     assert stub.ffmpeg_to_wav(Path("/dev/null"), 0, tmp_path / "o.wav") == 0
-    assert stub.downmix_to_mono_wav(Path("/dev/null"), 0, 2, tmp_path / "o.wav", -50) == 0
+    assert stub.stereo_to_mono_wav(Path("/dev/null"), 0, tmp_path / "o.wav", -50) == 0

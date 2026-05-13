@@ -17,6 +17,7 @@ import psutil
 from furnace import VERSION as FURNACE_VERSION
 from furnace.core.chapters import chapters_have_mojibake, write_ogm_chapters
 from furnace.core.models import (
+    STEREO_CHANNELS,
     AudioAction,
     AudioInstruction,
     DownmixMode,
@@ -508,30 +509,90 @@ class Executor:
 
         if instr.action == AudioAction.DECODE_ENCODE:
             if instr.downmix == DownmixMode.MONO:
-                # Planner guarantees channels is set (Task 12 rejects MONO on
-                # None-channel tracks). Bypass eac3to entirely: ffmpeg's pan
-                # filter produces an ITU-R BS.775 downmix for 5.1/7.1 (stereo
-                # averages L+R) and writes a mono WAV, which qaac64 then
-                # encodes to AAC.
                 if instr.channels is None:
                     raise RuntimeError(
                         f"MONO downmix without channel count for stream {track_idx}",
                     )
-                wav_path = temp_dir / f"audio_{track_idx}_mono.wav"
-                rc = self._audio_extractor.downmix_to_mono_wav(
-                    input_path=source_path,
-                    stream_index=track_idx,
-                    channels=instr.channels,
-                    output_wav=wav_path,
-                    delay_ms=instr.delay_ms,
+
+                if instr.channels == STEREO_CHANNELS:
+                    mono_wav = temp_dir / f"audio_{track_idx}_mono.wav"
+                    rc = self._audio_extractor.stereo_to_mono_wav(
+                        input_path=source_path,
+                        stream_index=track_idx,
+                        output_wav=mono_wav,
+                        delay_ms=instr.delay_ms,
+                    )
+                    if rc != 0:
+                        raise RuntimeError(f"stereo_to_mono_wav failed: rc={rc}")
+
+                    m4a_path = temp_dir / f"audio_{track_idx}.m4a"
+                    _, on_progress = self._make_progress_callback(total_s=None)
+                    rc = self._aac_encoder.encode_aac(
+                        mono_wav,
+                        m4a_path,
+                        on_progress=on_progress,
+                    )
+                    if rc != 0:
+                        raise RuntimeError(f"encode_aac failed: rc={rc}")
+                    return m4a_path
+
+                if _codec_supported_by_eac3to(instr.codec_name):
+                    extracted = temp_dir / f"audio_{track_idx}_raw{ext}"
+                    _, on_progress = self._make_progress_callback(
+                        total_s=job.duration_s or None,
+                    )
+                    rc = self._audio_extractor.extract_track(
+                        source_path,
+                        track_idx,
+                        extracted,
+                        on_progress=on_progress,
+                    )
+                    if rc != 0:
+                        raise RuntimeError(
+                            f"Audio extract (MONO multichannel) failed with rc={rc} for stream {track_idx}",
+                        )
+                else:
+                    extracted = temp_dir / f"audio_{track_idx}_pre.wav"
+                    _, on_progress = self._make_progress_callback(
+                        total_s=job.duration_s or None,
+                    )
+                    rc = self._audio_extractor.ffmpeg_to_wav(
+                        source_path,
+                        track_idx,
+                        extracted,
+                        on_progress=on_progress,
+                    )
+                    if rc != 0:
+                        raise RuntimeError(
+                            f"ffmpeg pre-decode (MONO multichannel) failed with rc={rc} for stream {track_idx}",
+                        )
+
+                stereo_wav = temp_dir / f"audio_{track_idx}_stereo.wav"
+                _, on_progress = self._make_progress_callback(total_s=None)
+                rc = self._audio_decoder.decode_lossless(
+                    extracted,
+                    stereo_wav,
+                    instr.delay_ms,
+                    on_progress=on_progress,
+                    downmix=DownmixMode.STEREO,
                 )
                 if rc != 0:
-                    raise RuntimeError(f"downmix_to_mono_wav failed: rc={rc}")
+                    raise RuntimeError(f"eac3to -downStereo failed: rc={rc}")
+
+                mono_wav = temp_dir / f"audio_{track_idx}_mono.wav"
+                rc = self._audio_extractor.stereo_to_mono_wav(
+                    input_path=stereo_wav,
+                    stream_index=0,
+                    output_wav=mono_wav,
+                    delay_ms=0,
+                )
+                if rc != 0:
+                    raise RuntimeError(f"stereo_to_mono_wav failed: rc={rc}")
 
                 m4a_path = temp_dir / f"audio_{track_idx}.m4a"
                 _, on_progress = self._make_progress_callback(total_s=None)
                 rc = self._aac_encoder.encode_aac(
-                    wav_path,
+                    mono_wav,
                     m4a_path,
                     on_progress=on_progress,
                 )

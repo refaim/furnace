@@ -147,21 +147,23 @@ class AudioExtractor(Protocol):
         """
         ...
 
-    def downmix_to_mono_wav(
+    def stereo_to_mono_wav(
         self,
         input_path: Path,
         stream_index: int,
-        channels: int,
         output_wav: Path,
         delay_ms: int,
     ) -> int:
-        """Produce a mono WAV from a 2/6/8-channel audio stream via ffmpeg's
-        pan filter. Multichannel sources use an ITU-R BS.775 / Dolby Lo
-        downmix (FC=0.707, FL/FR=0.5, surrounds=0.354) with alimiter peak
-        protection; LFE is excluded. Stereo averages L and R.
+        """Average a stereo source to a mono WAV via ffmpeg's
+        ``pan=mono|c0=0.5*FL+0.5*FR`` filter.
 
-        delay_ms is applied via -af adelay (pad leading silence) when positive
-        or by trimming when negative. Returns ffmpeg exit code.
+        ``delay_ms`` is applied via ``adelay`` (pad leading silence) when
+        positive or by ``atrim`` when negative. No limiter is used —
+        averaging cannot exceed unity for normalised PCM, since
+        ``|0.5L + 0.5R| <= max(|L|, |R|) <= 1.0``. Multichannel collapse
+        is the caller's responsibility (typically eac3to ``-downStereo``).
+
+        Returns the ffmpeg exit code.
         """
         ...
 
