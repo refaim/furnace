@@ -2,7 +2,8 @@
 
 ``run_tool`` is patched in every test — no real ffmpeg invocation. We only
 verify the command line the adapter builds (stereo pan formula, delay
-handling, exit-code propagation, log-path behaviour).
+handling, exit-code propagation, log-path behaviour, and the ``-progress
+pipe:1`` plumbing that drives the per-step progress bar).
 """
 
 from __future__ import annotations
@@ -14,6 +15,7 @@ from unittest.mock import patch
 import pytest
 
 from furnace.adapters.ffmpeg import FFmpegAdapter
+from furnace.core.progress import ProgressSample
 
 PAN_STEREO = "pan=mono|c0=0.5*FL+0.5*FR"
 
@@ -124,3 +126,128 @@ def test_log_path_uses_log_dir_when_set(
             delay_ms=0,
         )
     assert run_tool.call_args.kwargs["log_path"] == tmp_path / "ffmpeg_mono_s7.log"
+
+
+def test_command_has_progress_pipe(
+    adapter: FFmpegAdapter, tmp_path: Path,
+) -> None:
+    """``-progress pipe:1`` is on the command so the per-step progress bar
+    advances during the pan filter step (matches extract_track / ffmpeg_to_wav).
+    """
+    with patch("furnace.adapters.ffmpeg.run_tool") as run_tool:
+        run_tool.return_value = (0, "")
+        adapter.stereo_to_mono_wav(
+            input_path=tmp_path / "a.mkv",
+            stream_index=1,
+            output_wav=tmp_path / "out.wav",
+            delay_ms=0,
+        )
+    cmd: list[str] = run_tool.call_args[0][0]
+    assert "-progress" in cmd
+    assert cmd[cmd.index("-progress") + 1] == "pipe:1"
+
+
+def test_passes_on_progress_line_hook_to_run_tool(
+    adapter: FFmpegAdapter, tmp_path: Path,
+) -> None:
+    """A callable hook is supplied to run_tool, parallel to extract_track and
+    ffmpeg_to_wav. The hook consumes ``-progress`` key=value lines so they
+    do not flood the TUI log.
+    """
+    with patch("furnace.adapters.ffmpeg.run_tool") as run_tool:
+        run_tool.return_value = (0, "")
+        adapter.stereo_to_mono_wav(
+            input_path=tmp_path / "a.mkv",
+            stream_index=1,
+            output_wav=tmp_path / "out.wav",
+            delay_ms=0,
+        )
+    hook = run_tool.call_args.kwargs.get("on_progress_line")
+    assert hook is not None
+    assert callable(hook)
+
+
+def test_on_progress_callback_fires_on_progress_block(
+    adapter: FFmpegAdapter, tmp_path: Path,
+) -> None:
+    """When the caller supplies ``on_progress``, the hook feeds it a
+    ProgressSample at the end of each ``-progress`` block.
+    """
+    samples: list[ProgressSample] = []
+
+    def cb(s: ProgressSample) -> None:
+        samples.append(s)
+
+    captured: dict[str, Any] = {}
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> tuple[int, str]:
+        captured.update(kwargs)
+        return (0, "")
+
+    with patch("furnace.adapters.ffmpeg.run_tool", side_effect=fake_run):
+        adapter.stereo_to_mono_wav(
+            input_path=tmp_path / "a.mkv",
+            stream_index=1,
+            output_wav=tmp_path / "out.wav",
+            delay_ms=0,
+            on_progress=cb,
+        )
+
+    hook = captured["on_progress_line"]
+    # Feed a synthetic ffmpeg `-progress` block.
+    hook("out_time_us=1000000")
+    hook("speed=1.5x")
+    hook("fps=24")
+    hook("progress=continue")
+    assert len(samples) == 1
+
+
+def test_on_progress_line_returns_true_for_kv_false_otherwise(
+    adapter: FFmpegAdapter, tmp_path: Path,
+) -> None:
+    """The hook consumes key=value lines (returns True) and forwards non-kv
+    lines (returns False) to the _on_output sink.
+    """
+    captured: dict[str, Any] = {}
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> tuple[int, str]:
+        captured.update(kwargs)
+        return (0, "")
+
+    with patch("furnace.adapters.ffmpeg.run_tool", side_effect=fake_run):
+        adapter.stereo_to_mono_wav(
+            input_path=tmp_path / "a.mkv",
+            stream_index=1,
+            output_wav=tmp_path / "out.wav",
+            delay_ms=0,
+        )
+
+    hook = captured["on_progress_line"]
+    assert hook("frame=42") is True
+    assert hook("Estimating duration from bitrate") is False
+
+
+def test_on_progress_not_called_when_callback_none(
+    adapter: FFmpegAdapter, tmp_path: Path,
+) -> None:
+    """No on_progress: the hook still parses progress blocks but does not
+    raise; the no-callback branch is exercised.
+    """
+    captured: dict[str, Any] = {}
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> tuple[int, str]:
+        captured.update(kwargs)
+        return (0, "")
+
+    with patch("furnace.adapters.ffmpeg.run_tool", side_effect=fake_run):
+        adapter.stereo_to_mono_wav(
+            input_path=tmp_path / "a.mkv",
+            stream_index=1,
+            output_wav=tmp_path / "out.wav",
+            delay_ms=0,
+        )
+
+    hook = captured["on_progress_line"]
+    # No callback supplied; feeding a full block must not raise.
+    hook("out_time_us=1000000")
+    hook("progress=continue")

@@ -175,6 +175,7 @@ class _MinimalAudioExtractor:
         stream_index: int,  # noqa: ARG002
         output_wav: Path,  # noqa: ARG002
         delay_ms: int,  # noqa: ARG002
+        on_progress: Callable[[ProgressSample], None] | None = None,  # noqa: ARG002
     ) -> int:
         return 0
 
@@ -187,13 +188,14 @@ def test_audio_extractor_has_stereo_to_mono_wav() -> None:
 def test_audio_extractor_stereo_to_mono_wav_signature() -> None:
     sig = inspect.signature(AudioExtractor.stereo_to_mono_wav)
     params = sig.parameters
-    # self + four positional args, in fixed order
+    # self + four positional args + optional on_progress callback
     assert list(params) == [
         "self",
         "input_path",
         "stream_index",
         "output_wav",
         "delay_ms",
+        "on_progress",
     ]
 
     hints = typing.get_type_hints(AudioExtractor.stereo_to_mono_wav)

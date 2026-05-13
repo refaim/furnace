@@ -405,6 +405,35 @@ class TestDecodeEncodeMonoDownmix:
         mocks.audio_extractor.stereo_to_mono_wav.assert_called_once()
         mocks.aac_encoder.encode_aac.assert_called_once()
 
+    def test_stereo_direct_passes_on_progress_to_stereo_to_mono(
+        self, executor_with_mocks: tuple[Executor, SimpleNamespace], tmp_path: Path,
+    ) -> None:
+        """Stereo source wires on_progress to stereo_to_mono_wav so the
+        per-step bar advances during the ffmpeg pan step."""
+        executor, mocks = executor_with_mocks
+        mocks.audio_extractor.stereo_to_mono_wav.return_value = 0
+
+        instr = _instr("ac3", downmix=DownmixMode.MONO, channels=2)
+        executor._process_audio_track(instr, tmp_path, _job())
+
+        mono_call = mocks.audio_extractor.stereo_to_mono_wav.call_args
+        assert mono_call.kwargs.get("on_progress") is not None
+        assert callable(mono_call.kwargs["on_progress"])
+
+    def test_multichannel_passes_on_progress_to_stereo_to_mono(
+        self, executor_with_mocks: tuple[Executor, SimpleNamespace], tmp_path: Path,
+    ) -> None:
+        """Multichannel post-eac3to step also wires on_progress."""
+        executor, mocks = executor_with_mocks
+        mocks.audio_extractor.stereo_to_mono_wav.return_value = 0
+
+        instr = _instr("dts", downmix=DownmixMode.MONO, channels=6)
+        executor._process_audio_track(instr, tmp_path, _job())
+
+        mono_call = mocks.audio_extractor.stereo_to_mono_wav.call_args
+        assert mono_call.kwargs.get("on_progress") is not None
+        assert callable(mono_call.kwargs["on_progress"])
+
     def test_mono_raises_when_channels_none(
         self, executor_with_mocks: tuple[Executor, SimpleNamespace], tmp_path: Path,
     ) -> None:

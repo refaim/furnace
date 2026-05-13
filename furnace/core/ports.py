@@ -153,6 +153,7 @@ class AudioExtractor(Protocol):
         stream_index: int,
         output_wav: Path,
         delay_ms: int,
+        on_progress: Callable[[ProgressSample], None] | None = None,
     ) -> int:
         """Average a stereo source to a mono WAV via ffmpeg's
         ``pan=mono|c0=0.5*FL+0.5*FR`` filter.
@@ -162,6 +163,11 @@ class AudioExtractor(Protocol):
         averaging cannot exceed unity for normalised PCM, since
         ``|0.5L + 0.5R| <= max(|L|, |R|) <= 1.0``. Multichannel collapse
         is the caller's responsibility (typically eac3to ``-downStereo``).
+
+        ``on_progress`` receives a ``ProgressSample`` per ``-progress pipe:1``
+        block; matches the contract of the peer ``extract_track`` and
+        ``ffmpeg_to_wav`` methods so the run TUI's progress bar advances
+        during the ffmpeg pan step.
 
         Returns the ffmpeg exit code.
         """

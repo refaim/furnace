@@ -86,14 +86,35 @@ _AUDIO_STEP_TEMPLATES: dict[AudioAction, str] = {
 }
 
 
+_DOWNMIX_TARGET_CHANNELS: dict[DownmixMode, int] = {
+    DownmixMode.MONO: 1,
+    DownmixMode.STEREO: 2,
+    DownmixMode.DOWN6: 6,
+}
+
+
 def _audio_step_label(instr: AudioInstruction, index: int, total: int) -> str:
-    """Build a human-readable step label for an audio track."""
+    """Build a human-readable step label for an audio track.
+
+    Recode actions with an active downmix surface the layout arrow so the
+    user sees the channel change (e.g. ``Recode audio (DTS 5.1 -> AAC 1.0)``).
+    Without a downmix the bare codec arrow is enough.
+    """
     codec = instr.codec_name.upper()
     ch = ""
     if instr.channels:
         ch = " " + _CH_LAYOUT_MAP.get(instr.channels, f"{instr.channels}ch")
 
     num = f" {index + 1}" if total > 1 else ""
+
+    if (
+        instr.action in (AudioAction.DECODE_ENCODE, AudioAction.FFMPEG_ENCODE)
+        and instr.downmix is not None
+    ):
+        tgt_ch = _DOWNMIX_TARGET_CHANNELS[instr.downmix]
+        tgt_layout = _CH_LAYOUT_MAP.get(tgt_ch, f"{tgt_ch}ch")
+        return f"Recode audio{num} ({codec}{ch} -> AAC {tgt_layout})"
+
     return _AUDIO_STEP_TEMPLATES[instr.action].format(num=num, codec=codec, ch=ch)
 
 
@@ -159,11 +180,14 @@ def _build_source_text(job: Job) -> str:
 
 
 def _target_channels(instr: AudioInstruction) -> int | None:
-    """Return the number of channels in the output after any downmix."""
-    if instr.downmix == DownmixMode.STEREO:
-        return 2
-    if instr.downmix == DownmixMode.DOWN6:
-        return 6
+    """Return the number of channels in the output after any downmix.
+
+    Single source of truth: ``_DOWNMIX_TARGET_CHANNELS``. Loud-fails (KeyError)
+    on a future ``DownmixMode`` value that is not yet mapped — same contract
+    as ``_audio_step_label``.
+    """
+    if instr.downmix is not None:
+        return _DOWNMIX_TARGET_CHANNELS[instr.downmix]
     return instr.channels
 
 

@@ -515,16 +515,28 @@ class Executor:
                     )
 
                 if instr.channels == STEREO_CHANNELS:
+                    if self._progress is not None:
+                        self._progress.add_tool_line(
+                            f"[furnace] Averaging audio stream {track_idx} to mono with ffmpeg",
+                        )
                     mono_wav = temp_dir / f"audio_{track_idx}_mono.wav"
+                    _, on_progress = self._make_progress_callback(
+                        total_s=job.duration_s or None,
+                    )
                     rc = self._audio_extractor.stereo_to_mono_wav(
                         input_path=source_path,
                         stream_index=track_idx,
                         output_wav=mono_wav,
                         delay_ms=instr.delay_ms,
+                        on_progress=on_progress,
                     )
                     if rc != 0:
                         raise RuntimeError(f"stereo_to_mono_wav failed: rc={rc}")
 
+                    if self._progress is not None:
+                        self._progress.add_tool_line(
+                            f"[furnace] Encoding AAC for stream {track_idx} with qaac64",
+                        )
                     m4a_path = temp_dir / f"audio_{track_idx}.m4a"
                     _, on_progress = self._make_progress_callback(total_s=None)
                     rc = self._aac_encoder.encode_aac(
@@ -537,6 +549,10 @@ class Executor:
                     return m4a_path
 
                 if _codec_supported_by_eac3to(instr.codec_name):
+                    if self._progress is not None:
+                        self._progress.add_tool_line(
+                            f"[furnace] Extracting audio stream {track_idx} for MONO downmix",
+                        )
                     extracted = temp_dir / f"audio_{track_idx}_raw{ext}"
                     _, on_progress = self._make_progress_callback(
                         total_s=job.duration_s or None,
@@ -552,6 +568,11 @@ class Executor:
                             f"Audio extract (MONO multichannel) failed with rc={rc} for stream {track_idx}",
                         )
                 else:
+                    if self._progress is not None:
+                        self._progress.add_tool_line(
+                            f"[furnace] Pre-decoding audio stream {track_idx} with ffmpeg for MONO downmix "
+                            f"(source codec {instr.codec_name} not readable by eac3to)",
+                        )
                     extracted = temp_dir / f"audio_{track_idx}_pre.wav"
                     _, on_progress = self._make_progress_callback(
                         total_s=job.duration_s or None,
@@ -567,6 +588,10 @@ class Executor:
                             f"ffmpeg pre-decode (MONO multichannel) failed with rc={rc} for stream {track_idx}",
                         )
 
+                if self._progress is not None:
+                    self._progress.add_tool_line(
+                        f"[furnace] Downmixing audio stream {track_idx} to stereo with eac3to",
+                    )
                 stereo_wav = temp_dir / f"audio_{track_idx}_stereo.wav"
                 _, on_progress = self._make_progress_callback(total_s=None)
                 rc = self._audio_decoder.decode_lossless(
@@ -579,16 +604,26 @@ class Executor:
                 if rc != 0:
                     raise RuntimeError(f"eac3to -downStereo failed: rc={rc}")
 
+                if self._progress is not None:
+                    self._progress.add_tool_line(
+                        f"[furnace] Averaging audio stream {track_idx} to mono with ffmpeg",
+                    )
                 mono_wav = temp_dir / f"audio_{track_idx}_mono.wav"
+                _, on_progress = self._make_progress_callback(total_s=None)
                 rc = self._audio_extractor.stereo_to_mono_wav(
                     input_path=stereo_wav,
                     stream_index=0,
                     output_wav=mono_wav,
                     delay_ms=0,
+                    on_progress=on_progress,
                 )
                 if rc != 0:
                     raise RuntimeError(f"stereo_to_mono_wav failed: rc={rc}")
 
+                if self._progress is not None:
+                    self._progress.add_tool_line(
+                        f"[furnace] Encoding AAC for stream {track_idx} with qaac64",
+                    )
                 m4a_path = temp_dir / f"audio_{track_idx}.m4a"
                 _, on_progress = self._make_progress_callback(total_s=None)
                 rc = self._aac_encoder.encode_aac(

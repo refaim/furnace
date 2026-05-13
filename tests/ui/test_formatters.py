@@ -186,6 +186,60 @@ class TestAudioStepLabel:
         result = _audio_step_label(instr, 1, 3)
         assert result == "Denorm audio 2 (DTS 5.1)"
 
+    def test_decode_encode_with_mono_downmix_shows_layout_arrow(self) -> None:
+        """MONO downmix surfaces the layout arrow so the user sees the
+        channel change (was missing in 1.15.0 — bare 'codec -> AAC' hid it).
+        """
+        instr = make_audio_instruction(
+            action=AudioAction.DECODE_ENCODE,
+            codec_name="dts",
+            channels=6,
+            downmix=DownmixMode.MONO,
+        )
+        result = _audio_step_label(instr, 0, 1)
+        assert result == "Recode audio (DTS 5.1 -> AAC 1.0)"
+
+    def test_decode_encode_with_stereo_downmix_shows_layout_arrow(self) -> None:
+        instr = make_audio_instruction(
+            action=AudioAction.DECODE_ENCODE,
+            codec_name="truehd",
+            channels=8,
+            downmix=DownmixMode.STEREO,
+        )
+        result = _audio_step_label(instr, 0, 1)
+        assert result == "Recode audio (TRUEHD 7.1 -> AAC 2.0)"
+
+    def test_decode_encode_with_down6_downmix_shows_layout_arrow(self) -> None:
+        instr = make_audio_instruction(
+            action=AudioAction.DECODE_ENCODE,
+            codec_name="truehd",
+            channels=8,
+            downmix=DownmixMode.DOWN6,
+        )
+        result = _audio_step_label(instr, 0, 1)
+        assert result == "Recode audio (TRUEHD 7.1 -> AAC 5.1)"
+
+    def test_decode_encode_no_downmix_keeps_bare_arrow(self) -> None:
+        """Regression: without an active downmix the label stays terse."""
+        instr = make_audio_instruction(
+            action=AudioAction.DECODE_ENCODE,
+            codec_name="dts",
+            channels=6,
+            downmix=None,
+        )
+        result = _audio_step_label(instr, 0, 1)
+        assert result == "Recode audio (DTS -> AAC)"
+
+    def test_ffmpeg_encode_with_mono_downmix_shows_layout_arrow(self) -> None:
+        instr = make_audio_instruction(
+            action=AudioAction.FFMPEG_ENCODE,
+            codec_name="opus",
+            channels=6,
+            downmix=DownmixMode.MONO,
+        )
+        result = _audio_step_label(instr, 0, 1)
+        assert result == "Recode audio (OPUS 5.1 -> AAC 1.0)"
+
 
 class TestSubStepLabel:
     def test_copy_single_track(self) -> None:
@@ -430,6 +484,21 @@ class TestBuildTargetText:
         text = _build_target_text(job)
         assert "2.0" in text
         assert "7.1" not in text
+
+    def test_downmix_mono_shows_1_0(self) -> None:
+        """MONO downmix surfaces as '1.0' in the run TUI Target panel
+        (regression in 1.15.0: _target_channels fell through to source count).
+        """
+        audio = [make_audio_instruction(
+            action=AudioAction.DECODE_ENCODE,
+            codec_name="dts",
+            channels=6,
+            downmix=DownmixMode.MONO,
+        )]
+        job = make_job(audio=audio)
+        text = _build_target_text(job)
+        assert "1.0" in text
+        assert "5.1" not in text
 
     def test_no_crop_uses_source_dimensions(self) -> None:
         vp = make_video_params(source_width=3840, source_height=2160, cq=31)

@@ -629,6 +629,7 @@ class FFmpegAdapter:
         stream_index: int,
         output_wav: Path,
         delay_ms: int,
+        on_progress: Callable[[ProgressSample], None] | None = None,
     ) -> int:
         """Average a stereo PCM stream to mono WAV via the ffmpeg ``pan`` filter.
 
@@ -637,6 +638,11 @@ class FFmpegAdapter:
         responsibility (typically eac3to ``-downStereo``). Delay handling: if
         ``delay_ms > 0`` an ``adelay`` filter is appended; if ``delay_ms < 0``
         an ``atrim=start=<seconds>`` trims the leading audio; zero adds nothing.
+
+        ``-progress pipe:1`` is enabled and consumed by ``_on_progress_line``;
+        ffmpeg's stderr (warnings/errors) still flows to ``self._on_output`` and
+        ends up in the TUI log. ``on_progress`` receives a ``ProgressSample``
+        per progress block so the per-step bar advances.
         """
         filters = ["pan=mono|c0=0.5*FL+0.5*FR"]
 
@@ -657,8 +663,32 @@ class FFmpegAdapter:
             "-ac", "1",
             "-f", "wav",
             "-rf64", "auto",
+            "-progress", "pipe:1",
             "-y", str(output_wav),
         ]
         log_path = self._log_dir / f"ffmpeg_mono_s{stream_index}.log" if self._log_dir else None
-        rc, _out = run_tool(cmd, on_output=self._on_output, log_path=log_path)
+
+        kv_buf: dict[str, str] = {}
+
+        def _on_progress_line(line: str) -> bool:
+            # Every line of `-progress pipe:1` output is a `key=value` pair.
+            # Consume (return True) to keep it out of the log and the TUI.
+            if "=" not in line:
+                return False
+            key, _, val = line.partition("=")
+            key = key.strip()
+            kv_buf[key] = val.strip()
+            if key == "progress":
+                sample = _parse_ffmpeg_progress_block(kv_buf)
+                kv_buf.clear()
+                if sample is not None and on_progress is not None:
+                    on_progress(sample)
+            return True
+
+        rc, _out = run_tool(
+            cmd,
+            on_output=self._on_output,
+            on_progress_line=_on_progress_line,
+            log_path=log_path,
+        )
         return rc
