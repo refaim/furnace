@@ -6,8 +6,8 @@ import pytest
 
 from furnace.core.detect import (
     VideoSystem,
+    aggregate_crop,
     check_unsupported_codecs,
-    cluster_crop_values,
     detect_forced_subtitles,
     detect_hdr,
     hdr_transfer_for_cropdetect,
@@ -534,81 +534,101 @@ class TestIsDvdResolution:
 
 
 # ---------------------------------------------------------------------------
-# test_cluster_crop_values
+# test_aggregate_crop
 # ---------------------------------------------------------------------------
 
-class TestClusterCropValues:
+class TestAggregateCrop:
     def test_all_identical(self) -> None:
-        """All values the same -> cluster = all, median = that value."""
+        """All values the same -> that value."""
         crops = [CropRect(688, 432, 14, 72)] * 10
-        median, size = cluster_crop_values(crops)
-        assert median == CropRect(688, 432, 14, 72)
-        assert size == 10
-
-    def test_within_tolerance(self) -> None:
-        """Values within +-16 -> single cluster, median correct."""
-        crops = [
-            CropRect(688, 432, 14, 72),
-            CropRect(690, 434, 14, 70),
-            CropRect(686, 430, 16, 74),
-            CropRect(688, 432, 14, 72),
-            CropRect(692, 436, 12, 68),
-        ]
-        median, size = cluster_crop_values(crops, tolerance=16)
-        assert size == 5
-        # Median of each coordinate (sorted[len//2]):
-        # w: sorted [686,688,688,690,692] -> index 2 -> 688
-        # h: sorted [430,432,432,434,436] -> index 2 -> 432
-        # x: sorted [12,14,14,14,16] -> index 2 -> 14
-        # y: sorted [68,70,72,72,74] -> index 2 -> 72
-        assert median == CropRect(688, 432, 14, 72)
-
-    def test_two_distinct_groups(self) -> None:
-        """Two groups far apart -> largest cluster wins."""
-        group_a = [CropRect(688, 432, 14, 72)] * 6
-        group_b = [CropRect(720, 480, 0, 0)] * 4
-        crops = group_a + group_b
-        median, size = cluster_crop_values(crops, tolerance=16)
-        assert size == 6
-        assert median == CropRect(688, 432, 14, 72)
+        assert aggregate_crop(crops) == CropRect(688, 432, 14, 72)
 
     def test_single_value(self) -> None:
-        """Single crop -> cluster size 1."""
-        crops = [CropRect(704, 576, 0, 0)]
-        median, size = cluster_crop_values(crops)
-        assert size == 1
-        assert median == CropRect(704, 576, 0, 0)
+        """Single crop -> itself."""
+        assert aggregate_crop([CropRect(704, 576, 0, 0)]) == CropRect(704, 576, 0, 0)
 
-    def test_tolerance_boundary_included(self) -> None:
-        """Values exactly at tolerance distance are included."""
-        crops = [
-            CropRect(688, 432, 14, 72),
-            CropRect(704, 432, 14, 72),  # w differs by exactly 16
-        ]
-        _median, size = cluster_crop_values(crops, tolerance=16)
-        assert size == 2
+    def test_per_edge_median_independent_axes(self) -> None:
+        """Noisy vertical axis must not discard a rock-solid horizontal one.
 
-    def test_tolerance_boundary_excluded(self) -> None:
-        """Values at tolerance+1 are excluded."""
+        Regression for Batman: The Animated Series 4:3-in-16:9 pillarbox
+        upscales. cropdetect nails the left/right bars (x=248, x+w=1672) on
+        every sample, but dark scenes make it over-crop top/bottom, so h/y
+        scatter. Joint 4D clustering split the votes and returned None; the
+        per-edge median recovers the true 1424:1072:248:4 because each edge
+        has a clear majority on its own.
+        """
         crops = [
-            CropRect(688, 432, 14, 72),
-            CropRect(705, 432, 14, 72),  # w differs by 17
+            CropRect(1424, 1072, 248, 4),
+            CropRect(1424, 976, 248, 100),
+            CropRect(1424, 928, 248, 74),
+            CropRect(1424, 1072, 248, 4),
+            CropRect(1424, 1072, 248, 4),
+            CropRect(1104, 1072, 408, 4),
+            CropRect(1408, 848, 246, 228),
+            CropRect(1408, 800, 248, 4),
+            CropRect(1424, 1072, 248, 4),
+            CropRect(1424, 1072, 248, 4),
         ]
-        _median, size = cluster_crop_values(crops, tolerance=16)
-        assert size == 1
+        assert aggregate_crop(crops) == CropRect(1424, 1072, 248, 4)
 
-    def test_median_even_count(self) -> None:
-        """Even number of values -> upper-middle (sorted[len//2])."""
+    def test_outliers_below_half_are_ignored(self) -> None:
+        """A minority of over-cropped samples does not move the median."""
         crops = [
-            CropRect(686, 432, 14, 72),
-            CropRect(688, 432, 14, 72),
-            CropRect(690, 432, 14, 72),
-            CropRect(692, 432, 14, 72),
+            CropRect(1424, 1080, 248, 0),
+            CropRect(1424, 1080, 248, 0),
+            CropRect(1424, 1080, 248, 0),
+            CropRect(1000, 800, 460, 140),  # one dark-scene over-crop
         ]
-        median, size = cluster_crop_values(crops, tolerance=16)
-        assert size == 4
-        # sorted w: [686,688,690,692], index 4//2=2 -> 690
-        assert median.w == 690
+        # left edges sorted [248,248,248,460] idx 2 -> 248
+        # right edges (x+w) sorted [1460,1672,1672,1672] idx 2 -> 1672 -> w=1424
+        # top edges sorted [0,0,0,140] idx 2 -> 0
+        # bottom edges (y+h) sorted [940,1080,1080,1080] idx 2 -> 1080 -> h=1080
+        assert aggregate_crop(crops) == CropRect(1424, 1080, 248, 0)
+
+    def test_all_full_frame_returns_full_frame(self) -> None:
+        """No bars on any sample -> full frame, so the planner drops the crop.
+
+        With the >50% reliability gate gone, this is the contract that keeps
+        bar-free content from being cropped: aggregate_crop returns the exact
+        source rectangle, which the planner's full-frame check discards.
+        """
+        crops = [CropRect(1920, 1080, 0, 0)] * 10
+        assert aggregate_crop(crops) == CropRect(1920, 1080, 0, 0)
+
+    def test_dimensions_never_negative_with_varying_bars(self) -> None:
+        """Bars varying on both axes still yield w,h >= 0 (pointwise order).
+
+        Even when left/right (and top/bottom) bar widths differ wildly across
+        samples, median(x) <= median(x+w) holds because x <= x+w per sample,
+        so the result can never invert into a negative dimension.
+        """
+        crops = [
+            CropRect(1600, 1000, 160, 40),  # narrow left/right, thin top/bottom
+            CropRect(1000, 1080, 460, 0),   # wide left, no top/bottom
+            CropRect(1400, 600, 260, 240),  # mid left, thick top/bottom
+        ]
+        # left x sorted [160,260,460] idx 1 -> 260
+        # right x+w sorted [1460,1660,1760] idx 1 -> 1660 -> w=1400
+        # top y sorted [0,40,240] idx 1 -> 40
+        # bottom y+h sorted [840,1040,1080] idx 1 -> 1040 -> h=1000
+        result = aggregate_crop(crops)
+        assert result == CropRect(1400, 1000, 260, 40)
+        assert result.w >= 0
+        assert result.h >= 0
+
+    def test_even_count_uses_upper_median_per_edge(self) -> None:
+        """Even sample count -> upper-middle (sorted[len//2]) on each edge."""
+        crops = [
+            CropRect(686, 430, 10, 20),
+            CropRect(688, 432, 12, 22),
+            CropRect(690, 434, 14, 24),
+            CropRect(692, 436, 16, 26),
+        ]
+        # left x sorted [10,12,14,16] idx 2 -> 14
+        # right x+w sorted [696,700,704,708] idx 2 -> 704 -> w=690
+        # top y sorted [20,22,24,26] idx 2 -> 24
+        # bottom y+h sorted [450,454,458,462] idx 2 -> 458 -> h=434
+        assert aggregate_crop(crops) == CropRect(690, 434, 14, 24)
 
 
 # ---------------------------------------------------------------------------

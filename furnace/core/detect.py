@@ -232,37 +232,35 @@ def hdr_transfer_for_cropdetect(color_transfer: str | None) -> str | None:
     return color_transfer if color_transfer in _HDR_TRANSFERS else None
 
 
-def cluster_crop_values(
-    crops: list[CropRect],
-    tolerance: int = 16,
-) -> tuple[CropRect, int]:
-    """Find largest cluster of similar crop values.
+def aggregate_crop(crops: list[CropRect]) -> CropRect:
+    """Combine per-sample cropdetect results into a single crop rectangle.
 
-    Two CropRect values are 'close' if all 4 coordinates differ by at most
-    *tolerance* pixels.  Returns (per-coordinate median of cluster, cluster size).
+    cropdetect noise is one-sided: a black bar is always black, but content
+    can be transiently dark, so a detected bar is never *smaller* than the
+    true bar -- only equal or larger when a dark scene fools the detector.
+    The robust estimator is therefore the median taken on each content-box
+    edge independently (left/right/top/bottom), not a joint 4-coordinate
+    cluster: a noisy axis (e.g. letterbox flicker on dark frames) no longer
+    fragments the votes for a rock-solid axis (e.g. a constant pillarbox),
+    so a stable left/right crop survives even when top/bottom is unreliable.
+
+    Each edge takes the upper median (``sorted[len // 2]``) of the observed
+    edge positions -- every returned value is a real cropdetect sample, so no
+    averaging is introduced.
+
+    ``w`` and ``h`` are guaranteed non-negative: each sample has ``x <= x+w``
+    and ``y <= y+h``, and pointwise ordering is preserved by order statistics,
+    so ``median(x) <= median(x+w)`` and ``median(y) <= median(y+h)``.
+
+    Requires a non-empty list.
     """
-    best_members: list[CropRect] = []
-
-    for anchor in crops:
-        members = [
-            c
-            for c in crops
-            if (
-                abs(c.w - anchor.w) <= tolerance
-                and abs(c.h - anchor.h) <= tolerance
-                and abs(c.x - anchor.x) <= tolerance
-                and abs(c.y - anchor.y) <= tolerance
-            )
-        ]
-        if len(members) > len(best_members):
-            best_members = members
-
-    ws = sorted(c.w for c in best_members)
-    hs = sorted(c.h for c in best_members)
-    xs = sorted(c.x for c in best_members)
-    ys = sorted(c.y for c in best_members)
-    mid = len(best_members) // 2
-    return CropRect(w=ws[mid], h=hs[mid], x=xs[mid], y=ys[mid]), len(best_members)
+    lefts = sorted(c.x for c in crops)
+    rights = sorted(c.x + c.w for c in crops)
+    tops = sorted(c.y for c in crops)
+    bottoms = sorted(c.y + c.h for c in crops)
+    mid = len(crops) // 2
+    left, right, top, bottom = lefts[mid], rights[mid], tops[mid], bottoms[mid]
+    return CropRect(w=right - left, h=bottom - top, x=left, y=top)
 
 
 _INTERLACED_FIELD_ORDERS = {"tt", "bb"}

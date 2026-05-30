@@ -12,7 +12,7 @@ from typing import Any
 import numpy as np
 
 from furnace.core.audio_profile import AudioMetrics
-from furnace.core.detect import cluster_crop_values
+from furnace.core.detect import aggregate_crop
 from furnace.core.models import CropRect
 from furnace.core.progress import ProgressSample
 
@@ -217,8 +217,10 @@ class FFmpegAdapter:
     ) -> CropRect | None:
         """Run cropdetect at multiple points across the timeline.
 
-        Returns the median crop of the dominant cluster only if the cluster
-        contains >50 % of samples.  Returns None otherwise.
+        Returns the per-edge median crop across all samples (see
+        ``aggregate_crop``), or None if no sample produced a crop at all.
+        Whether the result counts as "no black bars" (crop equals the full
+        frame) is decided downstream by the planner.
 
         ``hdr_transfer`` is the source's color transfer ('smpte2084' or
         'arib-std-b67') when the input needs HDR tonemapping before
@@ -312,20 +314,7 @@ class FFmpegAdapter:
         if not crop_values:
             return None
 
-        median_crop, cluster_size = cluster_crop_values(crop_values)
-        if cluster_size <= len(crop_values) // 2:
-            logger.info(
-                "Crop not reliable: cluster %d:%d:%d:%d has %d/%d samples",
-                median_crop.w,
-                median_crop.h,
-                median_crop.x,
-                median_crop.y,
-                cluster_size,
-                len(crop_values),
-            )
-            return None
-
-        return median_crop
+        return aggregate_crop(crop_values)
 
     def get_encoder_tag(self, path: Path) -> str | None:
         """Read format.tags.ENCODER from probe output."""

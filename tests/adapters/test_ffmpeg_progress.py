@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from furnace.adapters.ffmpeg import FFmpegAdapter, _parse_ffmpeg_progress_block
+from furnace.core.models import CropRect
 from furnace.core.progress import ProgressSample
 
 
@@ -145,11 +146,14 @@ class TestDetectCrop:
             assert "yadif" in cmd[vf_idx + 1]
 
 
-class TestDetectCropUnreliableCluster:
-    def test_detect_crop_unreliable_returns_none(self) -> None:
-        """When no dominant cluster (50% threshold not met), returns None."""
+class TestDetectCropAggregation:
+    def test_detect_crop_returns_per_edge_median(self) -> None:
+        """Varying samples are combined per edge (no all-or-nothing gate).
+
+        Each call returns a different crop; detect_crop must still return the
+        per-edge median crop rather than giving up. See aggregate_crop.
+        """
         adapter = _adapter()
-        # Return wildly different crops for each sample point so no cluster dominates
         call_idx = 0
         crops = [
             "crop=1920:800:0:140",
@@ -174,9 +178,11 @@ class TestDetectCropUnreliableCluster:
 
         with patch("furnace.adapters.ffmpeg.subprocess.run", side_effect=varying_run):
             crop = adapter.detect_crop(Path("v.mkv"), duration_s=100.0)
-        # With evenly distributed different crops, no cluster dominates
-        # Result depends on cluster_crop_values, but the test verifies the branch runs
-        assert crop is None or crop.w > 0  # either None or valid CropRect
+        # left x sorted [0,0,0,50,50,50,100,100,100,100] idx 5 -> 50
+        # right x+w sorted [550,550,550,900,900,900,1100,1920,1920,1920] idx 5 -> 900
+        # top y sorted [50,50,50,100,100,100,140,140,140,200] idx 5 -> 100
+        # bottom y+h sorted [350,350,350,700,700,700,700,940,940,940] idx 5 -> 700
+        assert crop == CropRect(w=850, h=600, x=50, y=100)
 
 
 class TestGetEncoderTag:
