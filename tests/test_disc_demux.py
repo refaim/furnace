@@ -15,6 +15,7 @@ def _make_demuxer(
     mkvmerge_path: Path | None = None,
     pcm_transcoder: MagicMock | None = None,
     prober: MagicMock | None = None,
+    audio_analyzer: MagicMock | None = None,
 ) -> DiscDemuxer:
     return DiscDemuxer(
         bd_port=bd_port or MagicMock(),
@@ -22,7 +23,22 @@ def _make_demuxer(
         mkvmerge_path=mkvmerge_path,
         pcm_transcoder=pcm_transcoder,
         prober=prober,
+        audio_analyzer=audio_analyzer,
     )
+
+
+def _silence_analyzer() -> MagicMock:
+    """AudioAnalyzer mock reporting any audio as silent first second (intro gap)."""
+    a = MagicMock()
+    a.first_second_rms_db.return_value = -100.0
+    return a
+
+
+def _loud_analyzer() -> MagicMock:
+    """AudioAnalyzer mock reporting loud first second (outro gap, sync skipped)."""
+    a = MagicMock()
+    a.first_second_rms_db.return_value = -20.0
+    return a
 
 
 class TestDiscDetection:
@@ -460,9 +476,14 @@ class TestMuxToMkvSyncCorrection:
         video_dur: str | None,
         audio_durs: list[str | None],
         audio_filenames: list[str] | None = None,
+        audio_analyzer: MagicMock | None = None,
     ) -> tuple[DiscDemuxer, list[Path], Path]:
         prober = _probe_with_durations(video_dur=video_dur, audio_durs=audio_durs)
-        demuxer = _make_demuxer(mkvmerge_path=Path("/usr/bin/mkvmerge"), prober=prober)
+        demuxer = _make_demuxer(
+            mkvmerge_path=Path("/usr/bin/mkvmerge"),
+            prober=prober,
+            audio_analyzer=audio_analyzer,
+        )
         video = tmp_path / "video.h264"
         video.write_bytes(b"video")
         names = audio_filenames or [f"audio{i}.flac" for i in range(len(audio_durs))]
@@ -475,11 +496,13 @@ class TestMuxToMkvSyncCorrection:
         return demuxer, [video, *audio_files], output_mkv
 
     def test_remux_when_audio_significantly_shorter(self, tmp_path: Path) -> None:
-        """Video 5748750ms, audio 5744755ms → resync with --sync 0:3995."""
+        """Intro-gap case: video 5748750ms, audio 5744755ms, first second of
+        audio is silence → analyzer signals intro gap → resync 0:3995."""
         demuxer, files, output_mkv = self._build(
             tmp_path,
             video_dur="01:35:48.750000000",
             audio_durs=["01:35:44.755000000"],
+            audio_analyzer=_silence_analyzer(),
         )
 
         with patch("furnace.services.disc_demuxer.run_tool", return_value=(0, "")) as mock_run:
@@ -575,14 +598,16 @@ class TestMuxToMkvSyncCorrection:
         assert mock_run.call_count == 1
 
     def test_resync_applies_per_audio_track(self, tmp_path: Path) -> None:
-        """Multiple audio tracks all get --sync correction; both --sync and
-        --language precede each respective audio file in the command line.
+        """Multiple intro-gap audio tracks all get --sync correction; both
+        --sync and --language precede each respective audio file in the
+        command line.
         """
         demuxer, files, output_mkv = self._build(
             tmp_path,
             video_dur="01:35:48.750000000",
             audio_durs=["01:35:44.755000000", "01:35:44.755000000"],
             audio_filenames=["audio1 [rus].flac", "audio2 [eng].ac3"],
+            audio_analyzer=_silence_analyzer(),
         )
 
         with patch("furnace.services.disc_demuxer.run_tool", return_value=(0, "")) as mock_run:
@@ -605,13 +630,14 @@ class TestMuxToMkvSyncCorrection:
             assert preceding_langs
 
     def test_resync_only_audio_below_threshold_left_alone(self, tmp_path: Path) -> None:
-        """When one audio track is short and another matches video, only the
-        short one receives --sync."""
+        """When one audio track is short (intro gap) and another matches
+        video, only the short one receives --sync."""
         demuxer, files, output_mkv = self._build(
             tmp_path,
             video_dur="01:35:48.750000000",
             audio_durs=["01:35:44.755000000", "01:35:48.750000000"],
             audio_filenames=["short [rus].flac", "ok [eng].ac3"],
+            audio_analyzer=_silence_analyzer(),
         )
 
         with patch("furnace.services.disc_demuxer.run_tool", return_value=(0, "")) as mock_run:
@@ -640,7 +666,11 @@ class TestMuxToMkvSyncCorrection:
                 {"codec_type": "subtitle", "tags": {"DURATION": "00:30:00.000000000"}},
             ],
         }
-        demuxer = _make_demuxer(mkvmerge_path=Path("/usr/bin/mkvmerge"), prober=prober)
+        demuxer = _make_demuxer(
+            mkvmerge_path=Path("/usr/bin/mkvmerge"),
+            prober=prober,
+            audio_analyzer=_silence_analyzer(),
+        )
         video = tmp_path / "video.h264"
         video.write_bytes(b"v")
         audio = tmp_path / "audio.flac"
@@ -665,6 +695,7 @@ class TestMuxToMkvSyncCorrection:
             video_dur="01:35:48.750000000",
             audio_durs=["01:35:44.755000000", None],
             audio_filenames=["short [rus].flac", "untagged [eng].ac3"],
+            audio_analyzer=_silence_analyzer(),
         )
 
         with patch("furnace.services.disc_demuxer.run_tool", return_value=(0, "")) as mock_run:
@@ -690,12 +721,187 @@ class TestMuxToMkvSyncCorrection:
             video_dur="01:35:48.750000000",
             audio_durs=["01:35:44.755000000"],
             audio_filenames=["a.flac", "b.ac3"],
+            audio_analyzer=_silence_analyzer(),
         )
 
         with patch("furnace.services.disc_demuxer.run_tool", return_value=(0, "")) as mock_run:
             demuxer._mux_to_mkv(files, output_mkv)
 
         assert mock_run.call_count == 1
+
+    # --- audio analyzer gap-direction classification (1.16+) ---
+
+    def test_no_remux_outro_gap_detected_via_loud_first_second(
+        self, tmp_path: Path,
+    ) -> None:
+        """Audio short by 3s but first second is LOUD → outro-gap (end-credits
+        without dub). Applying --sync would shift dub 3s late on whole film,
+        which is the ``О чём говорят мужчины`` regression. Skip --sync.
+        """  # noqa: RUF002 — Cyrillic film title is intentional
+        demuxer, files, output_mkv = self._build(
+            tmp_path,
+            video_dur="01:35:48.750000000",
+            audio_durs=["01:35:44.755000000"],
+            audio_analyzer=_loud_analyzer(),
+        )
+
+        with patch("furnace.services.disc_demuxer.run_tool", return_value=(0, "")) as mock_run:
+            demuxer._mux_to_mkv(files, output_mkv)
+
+        assert mock_run.call_count == 1
+
+    def test_no_remux_when_audio_analyzer_not_configured(
+        self, tmp_path: Path,
+    ) -> None:
+        """Without an audio_analyzer we cannot classify gap direction.
+        Safe default: do NOT apply --sync (avoids the outro-gap regression).
+        """
+        demuxer, files, output_mkv = self._build(
+            tmp_path,
+            video_dur="01:35:48.750000000",
+            audio_durs=["01:35:44.755000000"],
+            audio_analyzer=None,
+        )
+
+        with patch("furnace.services.disc_demuxer.run_tool", return_value=(0, "")) as mock_run:
+            demuxer._mux_to_mkv(files, output_mkv)
+
+        assert mock_run.call_count == 1
+
+    def test_no_remux_when_analyzer_returns_none(self, tmp_path: Path) -> None:
+        """analyzer.first_second_rms_db returning None (decode failure) →
+        cannot classify → safe default = skip --sync."""
+        analyzer = MagicMock()
+        analyzer.first_second_rms_db.return_value = None
+        demuxer, files, output_mkv = self._build(
+            tmp_path,
+            video_dur="01:35:48.750000000",
+            audio_durs=["01:35:44.755000000"],
+            audio_analyzer=analyzer,
+        )
+
+        with patch("furnace.services.disc_demuxer.run_tool", return_value=(0, "")) as mock_run:
+            demuxer._mux_to_mkv(files, output_mkv)
+
+        assert mock_run.call_count == 1
+        analyzer.first_second_rms_db.assert_called_once()
+
+    def test_no_remux_when_analyzer_raises(self, tmp_path: Path) -> None:
+        """If analyzer raises (e.g. ffmpeg crashed), gap-direction is unknown.
+        Safe default: skip --sync rather than corrupt the timeline."""
+        analyzer = MagicMock()
+        analyzer.first_second_rms_db.side_effect = RuntimeError("ffmpeg blew up")
+        demuxer, files, output_mkv = self._build(
+            tmp_path,
+            video_dur="01:35:48.750000000",
+            audio_durs=["01:35:44.755000000"],
+            audio_analyzer=analyzer,
+        )
+
+        with patch("furnace.services.disc_demuxer.run_tool", return_value=(0, "")) as mock_run:
+            demuxer._mux_to_mkv(files, output_mkv)
+
+        assert mock_run.call_count == 1
+
+    def test_mixed_gap_direction_only_intro_track_resyncs(
+        self, tmp_path: Path,
+    ) -> None:
+        """Two short audio tracks: one is intro-gap (silent first sec), the
+        other is outro-gap (loud first sec). Only intro-gap track gets --sync.
+        """
+        analyzer = MagicMock()
+        # First analyzer call (audio1 short [rus]) → silence (intro gap)
+        # Second call (audio2 [eng]) → loud (outro gap)
+        analyzer.first_second_rms_db.side_effect = [-100.0, -20.0]
+        demuxer, files, output_mkv = self._build(
+            tmp_path,
+            video_dur="01:35:48.750000000",
+            audio_durs=["01:35:44.755000000", "01:35:44.755000000"],
+            audio_filenames=["intro_gap [rus].flac", "outro_gap [eng].ac3"],
+            audio_analyzer=analyzer,
+        )
+
+        with patch("furnace.services.disc_demuxer.run_tool", return_value=(0, "")) as mock_run:
+            demuxer._mux_to_mkv(files, output_mkv)
+
+        assert mock_run.call_count == 2
+        cmd = mock_run.call_args_list[1][0][0]
+        sync_indices = [i for i, tok in enumerate(cmd) if tok == "--sync"]
+        assert len(sync_indices) == 1
+
+        intro_path = tmp_path / "intro_gap [rus].flac"
+        outro_path = tmp_path / "outro_gap [eng].ac3"
+        # --sync precedes intro file, but no --sync between sync_indices[0]+2
+        # and the outro file (which comes later in the command)
+        intro_idx_in_cmd = cmd.index(str(intro_path))
+        outro_idx_in_cmd = cmd.index(str(outro_path))
+        assert sync_indices[0] < intro_idx_in_cmd
+        between = cmd[sync_indices[0] + 2 : outro_idx_in_cmd]
+        assert "--sync" not in between
+
+    def test_analyzer_threshold_boundary_exactly_minus_50_is_outro_gap(
+        self, tmp_path: Path,
+    ) -> None:
+        """RMS exactly at the threshold is treated as ``loud enough`` →
+        outro gap → skip --sync. (Conservative: tie goes to skipping, since
+        the cost of a wrong --sync is whole-film desync.)"""
+        analyzer = MagicMock()
+        analyzer.first_second_rms_db.return_value = -50.0
+        demuxer, files, output_mkv = self._build(
+            tmp_path,
+            video_dur="01:35:48.750000000",
+            audio_durs=["01:35:44.755000000"],
+            audio_analyzer=analyzer,
+        )
+
+        with patch("furnace.services.disc_demuxer.run_tool", return_value=(0, "")) as mock_run:
+            demuxer._mux_to_mkv(files, output_mkv)
+
+        assert mock_run.call_count == 1
+
+    def test_analyzer_threshold_boundary_minus_50_001_is_intro_gap(
+        self, tmp_path: Path,
+    ) -> None:
+        """RMS just below the threshold (-50.001 dB) → silence → intro gap →
+        apply --sync."""
+        analyzer = MagicMock()
+        analyzer.first_second_rms_db.return_value = -50.001
+        demuxer, files, output_mkv = self._build(
+            tmp_path,
+            video_dur="01:35:48.750000000",
+            audio_durs=["01:35:44.755000000"],
+            audio_analyzer=analyzer,
+        )
+
+        with patch("furnace.services.disc_demuxer.run_tool", return_value=(0, "")) as mock_run:
+            demuxer._mux_to_mkv(files, output_mkv)
+
+        assert mock_run.call_count == 2
+        cmd = mock_run.call_args_list[1][0][0]
+        assert "--sync" in cmd
+
+    def test_analyzer_only_invoked_for_short_audio_tracks(
+        self, tmp_path: Path,
+    ) -> None:
+        """If an audio track matches video duration, analyzer is NOT called
+        for it (no gap to classify). Only short tracks trigger analysis."""
+        analyzer = MagicMock()
+        analyzer.first_second_rms_db.return_value = -100.0
+        demuxer, files, output_mkv = self._build(
+            tmp_path,
+            video_dur="01:35:48.750000000",
+            audio_durs=["01:35:48.750000000", "01:35:44.755000000"],
+            audio_filenames=["full [rus].flac", "short [eng].ac3"],
+            audio_analyzer=analyzer,
+        )
+
+        with patch("furnace.services.disc_demuxer.run_tool", return_value=(0, "")):
+            demuxer._mux_to_mkv(files, output_mkv)
+
+        # Analyzer called once — only for the short track
+        assert analyzer.first_second_rms_db.call_count == 1
+        called_path = analyzer.first_second_rms_db.call_args[0][0]
+        assert called_path.name == "short [eng].ac3"
 
 
 class TestParseMkvDurationTag:

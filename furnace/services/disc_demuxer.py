@@ -10,7 +10,13 @@ from furnace.adapters._subprocess import run_tool
 from furnace.adapters.mkvmerge import _parse_mkvmerge_progress_line
 from furnace.core.chapters import fix_chapters_file
 from furnace.core.models import DiscSource, DiscTitle, DiscType
-from furnace.core.ports import DiscDemuxerPort, PcmTranscoder, PlanReporter, Prober
+from furnace.core.ports import (
+    AudioAnalyzer,
+    DiscDemuxerPort,
+    PcmTranscoder,
+    PlanReporter,
+    Prober,
+)
 from furnace.core.progress import ProgressSample
 
 logger = logging.getLogger(__name__)
@@ -43,6 +49,14 @@ _CHAPTERS_EXT = ".txt"
 # Minimum audio-vs-video duration gap (ms) that triggers --sync correction.
 # Below this, the gap falls within natural BD audio end-trim and is ignored.
 _AUDIO_DESYNC_THRESHOLD_MS = 500
+# RMS threshold for treating the first second of an extracted audio file as
+# silence. Below → the gap is at the start (intro segment without dub) and
+# ``--sync`` correction is appropriate. At or above → the audio carries real
+# content from sample 0, so the gap must be at the end (outro/credits without
+# dub); applying ``--sync`` would shift the whole timeline late by the gap
+# duration. -50 dB sits well below any plausible dub onset and well above
+# the noise floor of every codec we extract.
+_INTRO_SILENCE_THRESHOLD_DB = -50.0
 
 _DURATION_TAG_RE = re.compile(r"^(\d+):(\d{2}):(\d{2})(?:\.(\d{1,9}))?$")
 
@@ -74,6 +88,7 @@ class DiscDemuxer:
         mkvmerge_path: Path | None = None,
         pcm_transcoder: PcmTranscoder | None = None,
         prober: Prober | None = None,
+        audio_analyzer: AudioAnalyzer | None = None,
     ) -> None:
         self._ports: dict[DiscType, DiscDemuxerPort] = {
             DiscType.BLURAY: bd_port,
@@ -82,6 +97,7 @@ class DiscDemuxer:
         self._mkvmerge = mkvmerge_path
         self._pcm_transcoder = pcm_transcoder
         self._prober = prober
+        self._audio_analyzer = audio_analyzer
 
     def _port_for(self, disc: DiscSource) -> DiscDemuxerPort:
         return self._ports[disc.disc_type]
@@ -421,9 +437,14 @@ class DiscDemuxer:
     ) -> dict[Path, int]:
         """Probe ``mkv_path`` and return audio-file → positive delay (ms)
         for any audio track shorter than the video track by more than
-        ``_AUDIO_DESYNC_THRESHOLD_MS``. Empty dict when no fix is needed
-        or detection is not possible (no DURATION tags, probe error,
-        audio/source-file count mismatch).
+        ``_AUDIO_DESYNC_THRESHOLD_MS`` **and** confirmed by audio-content
+        analysis to have the gap at the START (intro segment without dub).
+
+        Returns an empty dict when no fix is needed, when detection is not
+        possible (no DURATION tags, probe error, audio/source-file count
+        mismatch), or when there is no ``audio_analyzer`` to classify gap
+        direction (safe default: do nothing rather than risk shifting an
+        outro-gap track late by the missing-prefix duration).
         """
         assert self._prober is not None  # noqa: S101 — narrowed by caller
         try:
@@ -460,9 +481,65 @@ class DiscDemuxer:
             if a_ms is None:
                 continue
             delta = video_ms - a_ms
-            if delta >= _AUDIO_DESYNC_THRESHOLD_MS:
-                offsets[f] = delta
+            if delta < _AUDIO_DESYNC_THRESHOLD_MS:
+                continue
+            if not self._is_intro_gap(f, delta):
+                continue
+            offsets[f] = delta
         return offsets
+
+    def _is_intro_gap(self, audio_file: Path, delta_ms: int) -> bool:
+        """Decide whether a duration-mismatched audio file's missing data
+        is at the START (intro segment, ``--sync`` appropriate) versus the
+        END (outro/credits, ``--sync`` would mis-shift the whole timeline).
+
+        Method: probe the first second of the extracted audio. Silence
+        (RMS below ``_INTRO_SILENCE_THRESHOLD_DB``) means the dub stream
+        itself opens with the intro pad, so the gap that confused mkvmerge
+        was indeed at the start. A loud first second means the dub starts
+        immediately and the gap must be at the end.
+
+        Returns ``False`` (skip ``--sync``) on any uncertainty: no
+        analyzer wired up, analyzer raises, analyzer returns ``None``,
+        or RMS sits at/above the threshold. The cost of a wrong
+        ``--sync`` (whole-film desync) is far higher than the cost of
+        leaving a true intro gap unfixed (audio just starts at PTS 0
+        instead of after the intro — typically inaudible).
+        """
+        if self._audio_analyzer is None:
+            logger.info(
+                "audio %s shorter than video by %dms; no analyzer available, "
+                "skipping --sync (safe default)",
+                audio_file.name, delta_ms,
+            )
+            return False
+        try:
+            rms_db = self._audio_analyzer.first_second_rms_db(audio_file)
+        except Exception as exc:  # noqa: BLE001 — graceful degradation
+            logger.warning(
+                "audio analyzer raised for %s: %s; skipping --sync",
+                audio_file.name, exc,
+            )
+            return False
+        if rms_db is None:
+            logger.info(
+                "audio analyzer could not classify %s; skipping --sync",
+                audio_file.name,
+            )
+            return False
+        if rms_db >= _INTRO_SILENCE_THRESHOLD_DB:
+            logger.info(
+                "audio %s first-second RMS %.1f dB indicates outro gap; "
+                "skipping --sync to avoid whole-timeline desync",
+                audio_file.name, rms_db,
+            )
+            return False
+        logger.info(
+            "audio %s first-second RMS %.1f dB indicates intro gap; "
+            "applying --sync 0:%d",
+            audio_file.name, rms_db, delta_ms,
+        )
+        return True
 
     @staticmethod
     def _find_done_files(demux_dir: Path, disc_label: str, title_num: int) -> list[Path]:

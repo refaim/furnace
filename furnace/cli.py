@@ -420,6 +420,7 @@ def plan(
             mkvmerge_path=cfg.mkvmerge,
             pcm_transcoder=eac3to_adapter,
             prober=ffmpeg_adapter,
+            audio_analyzer=ffmpeg_adapter,
         )
 
         detected_discs = disc_demuxer.detect(source)

@@ -175,6 +175,23 @@ class AudioExtractor(Protocol):
 
 
 @runtime_checkable
+class AudioAnalyzer(Protocol):
+    """Probe an audio file's first second of content. Used by DiscDemuxer
+    to classify which side of an audio/video duration mismatch carries the
+    silent gap (intro vs. outro), so ``--sync`` correction can be applied
+    only when the gap really is at the start. Implemented by FFmpegAdapter.
+    """
+
+    def first_second_rms_db(self, audio_file: Path) -> float | None:
+        """Return RMS level (dB) of the first second of decoded audio, or
+        ``None`` if the value cannot be determined (decode error, missing
+        ffmpeg, unparseable output). Caller must treat ``None`` as
+        ``cannot classify`` and fall back to the safe behaviour.
+        """
+        ...
+
+
+@runtime_checkable
 class AudioDecoder(Protocol):
     """Denormalization and lossless audio decoding via eac3to.
     Implemented by Eac3toAdapter."""
