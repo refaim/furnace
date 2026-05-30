@@ -426,6 +426,105 @@ class TestPlanDryRun:
         call_kwargs = mock_planner_cls.return_value.create_plan.call_args.kwargs
         assert call_kwargs["copy_video"] is False
 
+    def test_force_flag_forwarded(self, tmp_path: Path) -> None:
+        """--force flag is forwarded to the Analyzer."""
+        source = tmp_path / "src"
+        source.mkdir()
+        output = tmp_path / "out"
+
+        cfg = _make_tool_paths(tmp_path)
+        plan_obj = make_plan(jobs=[])
+
+        with (
+            patch("furnace.cli.load_config", return_value=cfg),
+            patch("furnace.cli._setup_logging"),
+            patch("furnace.cli.FFmpegAdapter"),
+            patch("furnace.cli.MpvAdapter"),
+            patch("furnace.cli.Eac3toAdapter"),
+            patch("furnace.cli.MakemkvAdapter"),
+            patch("furnace.cli.DiscDemuxer") as mock_demuxer_cls,
+            patch("furnace.cli.Scanner") as mock_scanner_cls,
+            patch("furnace.cli.Analyzer") as mock_analyzer_cls,
+            patch("furnace.cli.PlannerService") as mock_planner_cls,
+        ):
+            mock_demuxer_cls.return_value.detect.return_value = []
+            mock_scanner_cls.return_value.scan.return_value = []
+            mock_planner_cls.return_value.create_plan.return_value = plan_obj
+
+            result = runner.invoke(
+                app,
+                ["plan", str(source), "-o", str(output), "-al", "eng", "-sl", "eng", "--dry-run", "--force"],
+            )
+
+        assert result.exit_code == 0, result.output
+        assert mock_analyzer_cls.call_args.kwargs["force"] is True
+
+    def test_force_short_flag_forwarded(self, tmp_path: Path) -> None:
+        """-f short flag is forwarded to the Analyzer."""
+        source = tmp_path / "src"
+        source.mkdir()
+        output = tmp_path / "out"
+
+        cfg = _make_tool_paths(tmp_path)
+        plan_obj = make_plan(jobs=[])
+
+        with (
+            patch("furnace.cli.load_config", return_value=cfg),
+            patch("furnace.cli._setup_logging"),
+            patch("furnace.cli.FFmpegAdapter"),
+            patch("furnace.cli.MpvAdapter"),
+            patch("furnace.cli.Eac3toAdapter"),
+            patch("furnace.cli.MakemkvAdapter"),
+            patch("furnace.cli.DiscDemuxer") as mock_demuxer_cls,
+            patch("furnace.cli.Scanner") as mock_scanner_cls,
+            patch("furnace.cli.Analyzer") as mock_analyzer_cls,
+            patch("furnace.cli.PlannerService") as mock_planner_cls,
+        ):
+            mock_demuxer_cls.return_value.detect.return_value = []
+            mock_scanner_cls.return_value.scan.return_value = []
+            mock_planner_cls.return_value.create_plan.return_value = plan_obj
+
+            result = runner.invoke(
+                app,
+                ["plan", str(source), "-o", str(output), "-al", "eng", "-sl", "eng", "--dry-run", "-f"],
+            )
+
+        assert result.exit_code == 0, result.output
+        assert mock_analyzer_cls.call_args.kwargs["force"] is True
+
+    def test_force_defaults_false(self, tmp_path: Path) -> None:
+        """Without the flag, force defaults to False on the Analyzer."""
+        source = tmp_path / "src"
+        source.mkdir()
+        output = tmp_path / "out"
+
+        cfg = _make_tool_paths(tmp_path)
+        plan_obj = make_plan(jobs=[])
+
+        with (
+            patch("furnace.cli.load_config", return_value=cfg),
+            patch("furnace.cli._setup_logging"),
+            patch("furnace.cli.FFmpegAdapter"),
+            patch("furnace.cli.MpvAdapter"),
+            patch("furnace.cli.Eac3toAdapter"),
+            patch("furnace.cli.MakemkvAdapter"),
+            patch("furnace.cli.DiscDemuxer") as mock_demuxer_cls,
+            patch("furnace.cli.Scanner") as mock_scanner_cls,
+            patch("furnace.cli.Analyzer") as mock_analyzer_cls,
+            patch("furnace.cli.PlannerService") as mock_planner_cls,
+        ):
+            mock_demuxer_cls.return_value.detect.return_value = []
+            mock_scanner_cls.return_value.scan.return_value = []
+            mock_planner_cls.return_value.create_plan.return_value = plan_obj
+
+            result = runner.invoke(
+                app,
+                ["plan", str(source), "-o", str(output), "-al", "eng", "-sl", "eng", "--dry-run"],
+            )
+
+        assert result.exit_code == 0, result.output
+        assert mock_analyzer_cls.call_args.kwargs["force"] is False
+
 
 # ---------------------------------------------------------------------------
 # plan (non-dry-run) — save_plan path

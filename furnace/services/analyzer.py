@@ -80,9 +80,10 @@ def _format_analyze_summary(
 
 
 class Analyzer:
-    def __init__(self, prober: Prober, reporter: PlanReporter | None = None) -> None:
+    def __init__(self, prober: Prober, reporter: PlanReporter | None = None, *, force: bool = False) -> None:
         self._prober = prober
         self._reporter = reporter
+        self._force = force
 
     def _forward_progress(self, sample: ProgressSample) -> None:
         """Adapter callback: forward fraction-bearing samples to ``analyze_progress``.
@@ -107,7 +108,7 @@ class Analyzer:
 
         # Check skip conditions on the output path
         encoder_tag = self._prober.get_encoder_tag(main_file)
-        skip, reason = should_skip_file(output_path, encoder_tag)
+        skip, reason = should_skip_file(output_path, encoder_tag, force=self._force)
         if skip:
             logger.info("Skipping %s: %s", name, reason)
             if self._reporter is not None:

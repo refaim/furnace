@@ -473,6 +473,28 @@ class TestAnalyzeEarlyReturns:
 
         assert result is None
 
+    def test_force_processes_furnace_tagged_file(self, tmp_path: Path) -> None:
+        """force=True -> a Furnace-tagged source is analyzed instead of skipped."""
+        scan_result = make_scan_result(tmp_path)
+        prober = make_prober(probe_data=_h264_probe_data(), encoder_tag="Furnace 1.17.0")
+
+        analyzer = Analyzer(prober=prober, force=True)
+        result = analyzer.analyze(scan_result)
+
+        assert result is not None
+
+    def test_force_processes_when_output_exists(self, tmp_path: Path) -> None:
+        """force=True -> an existing output no longer skips the file."""
+        scan_result = make_scan_result(tmp_path)
+        scan_result.output_path.parent.mkdir(parents=True, exist_ok=True)
+        scan_result.output_path.write_bytes(b"x")
+        prober = make_prober(probe_data=_h264_probe_data())
+
+        analyzer = Analyzer(prober=prober, force=True)
+        result = analyzer.analyze(scan_result)
+
+        assert result is not None
+
     def test_probe_raises_oserror(self, tmp_path: Path) -> None:
         """prober.probe raises OSError -> analyze returns None."""
         scan_result = make_scan_result(tmp_path)

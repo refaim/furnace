@@ -384,6 +384,9 @@ def plan(
     copy_video: bool = typer.Option(
         False, "--copy-video", "-cv", help="Copy eligible video streams verbatim instead of re-encoding"
     ),
+    force: bool = typer.Option(
+        False, "--force", "-f", help="Process files even if already encoded by Furnace or output exists"
+    ),
     config: Path | None = typer.Option(None, "--config", help="Path to config file"),
 ) -> None:
     """Scan source, show TUI for track selection, save JSON plan."""
@@ -397,7 +400,7 @@ def plan(
 
     logger.debug(
         "plan command started: source=%s output=%s audio_lang=%s sub_lang=%s names=%s "
-        "dry_run=%s vmaf=%s copy_video=%s",
+        "dry_run=%s vmaf=%s copy_video=%s force=%s",
         source,
         output,
         audio_lang,
@@ -406,6 +409,7 @@ def plan(
         dry_run,
         vmaf,
         copy_video,
+        force,
     )
 
     reporter = RichPlanReporter(source=source, output=output)
@@ -468,7 +472,7 @@ def plan(
         for mkv_path in demuxed_paths:
             reporter.scan_file(mkv_path.name)
 
-        analyzer = Analyzer(prober=ffmpeg_adapter, reporter=reporter)
+        analyzer = Analyzer(prober=ffmpeg_adapter, reporter=reporter, force=force)
         movies_with_paths: list[tuple[Movie, Path]] = []
         for sr in scan_results:
             try:

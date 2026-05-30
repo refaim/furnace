@@ -378,11 +378,17 @@ def detect_hdr(stream_data: dict[str, Any], side_data: list[dict[str, Any]] | No
 def should_skip_file(
     output_path: Path,
     encoder_tag: str | None,
+    *,
+    force: bool = False,
 ) -> tuple[bool, str]:
     """Return (skip, reason). Skip if:
     - output_path already exists, or
     - encoder_tag starts with 'Furnace'.
+
+    When ``force`` is True, never skip (both conditions are bypassed).
     """
+    if force:
+        return False, ""
     if output_path.exists():
         return True, f"output file already exists: {output_path}"
     if encoder_tag is not None and encoder_tag.startswith("Furnace"):

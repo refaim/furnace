@@ -406,6 +406,21 @@ class TestSkipLogic:
         skip, _reason = should_skip_file(output, "")
         assert skip is False
 
+    def test_force_bypasses_output_exists(self, tmp_path: Path) -> None:
+        """force=True -> do not skip even when the output file already exists."""
+        output = tmp_path / "output.mkv"
+        output.touch()
+        skip, reason = should_skip_file(output, None, force=True)
+        assert skip is False
+        assert reason == ""
+
+    def test_force_bypasses_furnace_tag(self, tmp_path: Path) -> None:
+        """force=True -> do not skip even when the source carries a Furnace tag."""
+        output = tmp_path / "output.mkv"
+        skip, reason = should_skip_file(output, "Furnace/1.17.0", force=True)
+        assert skip is False
+        assert reason == ""
+
 
 # ---------------------------------------------------------------------------
 # test_unknown_codec_check
