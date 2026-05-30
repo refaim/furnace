@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from furnace import VERSION as FURNACE_VERSION
+from furnace.core.audio_profile import Verdict
 from furnace.core.detect import (
     detect_video_system,
     hdr_transfer_for_cropdetect,
@@ -412,8 +413,10 @@ class PlannerService:
         track_type: TrackType,
     ) -> list[Track] | None:
         """If exactly one track per language -> auto-select.
-        For AUDIO only: additionally force TUI if any candidate has >2 channels
-        (so the user can configure downmix even on unambiguous files).
+        For AUDIO only: additionally force TUI if the fake-surround detector
+        flagged any candidate as fake or possibly fake (verdict != REAL), so the
+        user can pick a downmix. Tracks with no verdict (audio_profile=None) do
+        not trigger the TUI on their own.
         Returns None when the caller should invoke the track_selector.
         """
         if not candidates:
@@ -427,10 +430,11 @@ class PlannerService:
             if len(group) > 1:
                 return None
 
-        # X-A: for audio only, any candidate with more than stereo forces the TUI
+        # For audio only, a fake/suspicious detector verdict forces the TUI
         if track_type == TrackType.AUDIO:
             for track in candidates:
-                if track.channels is not None and track.channels > STEREO_CHANNELS:
+                profile = track.audio_profile
+                if profile is not None and profile.verdict != Verdict.REAL:
                     return None
 
         return candidates
