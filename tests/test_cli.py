@@ -327,6 +327,105 @@ class TestPlanDryRun:
         call_kwargs = mock_planner_cls.return_value.create_plan.call_args.kwargs
         assert call_kwargs["vmaf_enabled"] is True
 
+    def test_copy_video_flag_forwarded(self, tmp_path: Path) -> None:
+        """--copy-video flag is forwarded to planner.create_plan()."""
+        source = tmp_path / "src"
+        source.mkdir()
+        output = tmp_path / "out"
+
+        cfg = _make_tool_paths(tmp_path)
+        plan_obj = make_plan(jobs=[])
+
+        with (
+            patch("furnace.cli.load_config", return_value=cfg),
+            patch("furnace.cli._setup_logging"),
+            patch("furnace.cli.FFmpegAdapter"),
+            patch("furnace.cli.MpvAdapter"),
+            patch("furnace.cli.Eac3toAdapter"),
+            patch("furnace.cli.MakemkvAdapter"),
+            patch("furnace.cli.DiscDemuxer") as mock_demuxer_cls,
+            patch("furnace.cli.Scanner") as mock_scanner_cls,
+            patch("furnace.cli.PlannerService") as mock_planner_cls,
+        ):
+            mock_demuxer_cls.return_value.detect.return_value = []
+            mock_scanner_cls.return_value.scan.return_value = []
+            mock_planner_cls.return_value.create_plan.return_value = plan_obj
+
+            result = runner.invoke(
+                app,
+                ["plan", str(source), "-o", str(output), "-al", "eng", "-sl", "eng", "--dry-run", "--copy-video"],
+            )
+
+        assert result.exit_code == 0, result.output
+        call_kwargs = mock_planner_cls.return_value.create_plan.call_args.kwargs
+        assert call_kwargs["copy_video"] is True
+
+    def test_copy_video_short_flag_forwarded(self, tmp_path: Path) -> None:
+        """-cv short flag is forwarded to planner.create_plan()."""
+        source = tmp_path / "src"
+        source.mkdir()
+        output = tmp_path / "out"
+
+        cfg = _make_tool_paths(tmp_path)
+        plan_obj = make_plan(jobs=[])
+
+        with (
+            patch("furnace.cli.load_config", return_value=cfg),
+            patch("furnace.cli._setup_logging"),
+            patch("furnace.cli.FFmpegAdapter"),
+            patch("furnace.cli.MpvAdapter"),
+            patch("furnace.cli.Eac3toAdapter"),
+            patch("furnace.cli.MakemkvAdapter"),
+            patch("furnace.cli.DiscDemuxer") as mock_demuxer_cls,
+            patch("furnace.cli.Scanner") as mock_scanner_cls,
+            patch("furnace.cli.PlannerService") as mock_planner_cls,
+        ):
+            mock_demuxer_cls.return_value.detect.return_value = []
+            mock_scanner_cls.return_value.scan.return_value = []
+            mock_planner_cls.return_value.create_plan.return_value = plan_obj
+
+            result = runner.invoke(
+                app,
+                ["plan", str(source), "-o", str(output), "-al", "eng", "-sl", "eng", "--dry-run", "-cv"],
+            )
+
+        assert result.exit_code == 0, result.output
+        call_kwargs = mock_planner_cls.return_value.create_plan.call_args.kwargs
+        assert call_kwargs["copy_video"] is True
+
+    def test_copy_video_defaults_false(self, tmp_path: Path) -> None:
+        """Without the flag, copy_video defaults to False in create_plan()."""
+        source = tmp_path / "src"
+        source.mkdir()
+        output = tmp_path / "out"
+
+        cfg = _make_tool_paths(tmp_path)
+        plan_obj = make_plan(jobs=[])
+
+        with (
+            patch("furnace.cli.load_config", return_value=cfg),
+            patch("furnace.cli._setup_logging"),
+            patch("furnace.cli.FFmpegAdapter"),
+            patch("furnace.cli.MpvAdapter"),
+            patch("furnace.cli.Eac3toAdapter"),
+            patch("furnace.cli.MakemkvAdapter"),
+            patch("furnace.cli.DiscDemuxer") as mock_demuxer_cls,
+            patch("furnace.cli.Scanner") as mock_scanner_cls,
+            patch("furnace.cli.PlannerService") as mock_planner_cls,
+        ):
+            mock_demuxer_cls.return_value.detect.return_value = []
+            mock_scanner_cls.return_value.scan.return_value = []
+            mock_planner_cls.return_value.create_plan.return_value = plan_obj
+
+            result = runner.invoke(
+                app,
+                ["plan", str(source), "-o", str(output), "-al", "eng", "-sl", "eng", "--dry-run"],
+            )
+
+        assert result.exit_code == 0, result.output
+        call_kwargs = mock_planner_cls.return_value.create_plan.call_args.kwargs
+        assert call_kwargs["copy_video"] is False
+
 
 # ---------------------------------------------------------------------------
 # plan (non-dry-run) — save_plan path
@@ -934,6 +1033,9 @@ class TestRunExecutorClosure:
 
         mock_executor_cls.return_value.run.assert_called_once()
         mock_progress.stop.assert_called_once()
+        # The executor must be wired with a video_copier for passthrough jobs.
+        exec_kwargs = mock_executor_cls.call_args.kwargs
+        assert exec_kwargs["video_copier"] is not None
 
     def test_executor_fn_with_dovi_tool(self, tmp_path: Path) -> None:
         """When dovi_tool is set, DoviToolAdapter is created."""

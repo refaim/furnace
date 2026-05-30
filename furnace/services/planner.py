@@ -43,16 +43,22 @@ from furnace.core.rules import get_audio_action, get_subtitle_action
 logger = logging.getLogger(__name__)
 
 
-def _format_plan_summary(movie: Movie, job: Job) -> str:
+def _format_plan_summary(movie: Movie, job: Job, fallback_reason: str | None = None) -> str:
     """One-line per-movie summary shown after Plan completes for that movie.
 
-    Format: ``cq <CQ>, <SrcW>x<SrcH> to <DstW>x<DstH>[, deinterlace]``
+    - Passthrough jobs render ``passthrough (copy video)``.
+    - Encode jobs that *fell back* from a requested passthrough render
+      ``encode (<reason>), <encode summary>`` — e.g. ``encode (interlaced), ...``
+      or ``encode (DV P7 FEL), ...``.
+    - Plain encode jobs render ``cq <CQ>, <SrcW>x<SrcH> to <DstW>x<DstH>[, deinterlace]``.
 
     The ``DstWxDstH`` part is the *actual* encoded output (crop -> SAR ->
     mod-8 HEVC alignment), via :func:`final_output_dimensions`. The
     resolution separator is the word ``to`` (not ``->``) so it doesn't
     collide with the reporter's ``label -> status`` arrow.
     """
+    if job.video_params.passthrough:
+        return "passthrough (copy video)"
     src_w = movie.video.width
     src_h = movie.video.height
     dst_w, dst_h = final_output_dimensions(job.video_params)
@@ -62,7 +68,10 @@ def _format_plan_summary(movie: Movie, job: Job) -> str:
     ]
     if job.video_params.deinterlace:
         parts.append("deinterlace")
-    return ", ".join(parts)
+    encode_summary = ", ".join(parts)
+    if fallback_reason is not None:
+        return f"encode ({fallback_reason}), {encode_summary}"
+    return encode_summary
 
 
 _DV_PROFILE_FEL = 7  # Dolby Vision FEL (Full Enhancement Layer) — needs P7 -> P8.1 conversion
@@ -111,6 +120,7 @@ class PlannerService:
         dry_run: bool,
         sar_overrides: set[Path] | None = None,
         downmix_overrides: dict[tuple[Path, int], DownmixMode] | None = None,
+        copy_video: bool = False,
     ) -> Plan:
         """For each Movie:
         1. Skip logic
@@ -140,7 +150,7 @@ class PlannerService:
         for movie, output_path in movies:
             if self._reporter is not None:
                 self._reporter.plan_file_start(movie.main_file.name)
-            job = self._build_job(
+            job, fallback_reason = self._build_job(
                 movie,
                 output_path,
                 audio_lang_filter,
@@ -148,9 +158,13 @@ class PlannerService:
                 dry_run=dry_run,
                 sar_overrides=effective_sar_overrides,
                 downmix_overrides=effective_overrides,
+                copy_video=copy_video,
             )
             if self._reporter is not None:
-                summary = _format_plan_summary(movie, job)
+                # fallback_reason is the single source of truth from _build_job
+                # (interlaced / DV P7 FEL) when a requested passthrough had to
+                # fall back to a normal encode.
+                summary = _format_plan_summary(movie, job, fallback_reason)
                 self._reporter.plan_file_done(summary)
             jobs.append(job)
 
@@ -175,11 +189,21 @@ class PlannerService:
         dry_run: bool,
         sar_overrides: set[Path],
         downmix_overrides: dict[tuple[Path, int], DownmixMode],
-    ) -> Job:
-        """Build a single Job for a Movie."""
+        copy_video: bool = False,
+    ) -> tuple[Job, str | None]:
+        """Build a single Job for a Movie.
+
+        Returns ``(job, fallback_reason)``: ``fallback_reason`` is the reason a
+        requested passthrough had to fall back to a normal encode (``interlaced``
+        / ``DV P7 FEL``), or ``None`` for passthrough jobs and plain encodes.
+        """
+        # Decide passthrough eligibility up front: an eligible video stream is
+        # copied verbatim, so cropdetect is pointless and is skipped entirely.
+        passthrough, fallback_reason = self._classify_passthrough(movie.video, copy_video=copy_video)
+
         # Detect crop
         crop: CropRect | None = None
-        if not dry_run:
+        if not dry_run and not passthrough:
             try:
                 is_dvd = is_dvd_resolution(movie.video.width, movie.video.height)
                 if self._reporter is not None:
@@ -227,6 +251,7 @@ class PlannerService:
             crop,
             source_file=movie.main_file,
             sar_overrides=sar_overrides,
+            passthrough=passthrough,
         )
 
         # Auto-select audio tracks
@@ -306,7 +331,7 @@ class PlannerService:
         # Source files list
         source_files = [str(movie.main_file)] + [str(p) for p in movie.satellite_files]
 
-        return Job(
+        job = Job(
             id=str(uuid.uuid4()),
             source_files=source_files,
             output_file=str(output_path),
@@ -323,6 +348,7 @@ class PlannerService:
             output_size=None,
             duration_s=movie.video.duration_s,
         )
+        return job, fallback_reason
 
     def _filter_audio_tracks_by_lang(
         self,
@@ -409,6 +435,33 @@ class PlannerService:
 
         return candidates
 
+    def _classify_passthrough(
+        self,
+        video: VideoInfo,
+        *,
+        copy_video: bool,
+    ) -> tuple[bool, str | None]:
+        """Decide whether a source video can be passed through verbatim.
+
+        Returns ``(passthrough, fallback_reason)``:
+
+        - ``copy_video`` not requested -> ``(False, None)`` (normal encode).
+        - interlaced source -> ``(False, "interlaced")`` (must deinterlace).
+        - Dolby Vision Profile 7 FEL -> ``(False, "DV P7 FEL")`` (the
+          P7 -> P8.1 conversion requires a re-encode).
+        - otherwise -> ``(True, None)`` (copy the video stream verbatim).
+
+        HDR10+ is *not* handled here: it is rejected with a ``ValueError`` in
+        :meth:`_build_video_params`, exactly as for a normal encode.
+        """
+        if not copy_video:
+            return False, None
+        if video.interlaced:
+            return False, "interlaced"
+        if video.hdr.is_dolby_vision and video.hdr.dv_profile == _DV_PROFILE_FEL:
+            return False, "DV P7 FEL"
+        return True, None
+
     def _build_video_params(
         self,
         video: VideoInfo,
@@ -416,8 +469,18 @@ class PlannerService:
         *,
         source_file: Path,
         sar_overrides: set[Path],
+        passthrough: bool = False,
     ) -> VideoParams:
-        """CQ interpolation, GOP calc, colorspace determination, deinterlace detection."""
+        """CQ interpolation, GOP calc, colorspace determination, deinterlace detection.
+
+        When ``passthrough`` is set, the video stream is copied verbatim:
+        crop is forced off and deinterlace is disabled (``cq``/``gop`` become
+        inert), while colour/HDR/SAR fields stay populated for container flags.
+        """
+        # Passthrough copies the stream as-is: no crop, no deinterlace.
+        if passthrough:
+            crop = None
+
         # Use cropped area for CQ if crop is applied
         pixel_area = crop.w * crop.h if crop is not None else video.pixel_area
 
@@ -434,7 +497,7 @@ class PlannerService:
             has_hdr=has_hdr,
         )
 
-        deinterlace = video.interlaced
+        deinterlace = video.interlaced and not passthrough
 
         # HDR10+ guard (should be caught by analyzer, but double-check)
         if video.hdr.is_hdr10_plus:
@@ -446,7 +509,7 @@ class PlannerService:
             dv_mode = DvMode.TO_8_1 if video.hdr.dv_profile == _DV_PROFILE_FEL else DvMode.COPY
 
         # HDR metadata passthrough
-        hdr = video.hdr if (video.hdr.mastering_display or video.hdr.content_light) else None
+        hdr = video.hdr if has_hdr else None
 
         # SAR override: if the source file is flagged, force the DVD 4:3 SAR
         # (see DVD_SAR_NUM/DVD_SAR_DEN at module top for rationale).
@@ -476,6 +539,7 @@ class PlannerService:
             sar_num=sar_num,
             sar_den=sar_den,
             dv_mode=dv_mode,
+            passthrough=passthrough,
         )
 
     def _build_audio_instruction(

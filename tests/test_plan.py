@@ -516,6 +516,141 @@ class TestPlanDvModeRoundtrip:
 
 
 # ---------------------------------------------------------------------------
+# test_plan_passthrough_roundtrip
+# ---------------------------------------------------------------------------
+
+class TestPlanPassthroughRoundtrip:
+    def test_roundtrip_passthrough_true(self, tmp_path: Path) -> None:
+        """video_params.passthrough=True survives save -> load."""
+        vp = make_video_params(passthrough=True)
+        job = Job(
+            id="pt-job", source_files=["/src/pt.mkv"], output_file="/out/pt.mkv",
+            video_params=vp, audio=[], subtitles=[], attachments=[],
+            copy_chapters=False, chapters_source=None, status=JobStatus.PENDING, source_size=0,
+        )
+        plan = make_plan(jobs=[job])
+        plan_path = tmp_path / "plan.json"
+        save_plan(plan, plan_path)
+        loaded = load_plan(plan_path)
+        assert loaded.jobs[0].video_params.passthrough is True
+
+    def test_roundtrip_passthrough_false(self, tmp_path: Path) -> None:
+        """video_params.passthrough=False survives save -> load."""
+        plan = make_plan()
+        plan_path = tmp_path / "plan.json"
+        save_plan(plan, plan_path)
+        loaded = load_plan(plan_path)
+        assert loaded.jobs[0].video_params.passthrough is False
+
+    def test_legacy_plan_without_passthrough_key_defaults_false(self, tmp_path: Path) -> None:
+        """A plan JSON produced before passthrough existed must load with False."""
+        job_raw = {
+            "id": "legacy-job",
+            "source_files": ["/src/movie.mkv"],
+            "output_file": "/out/movie.mkv",
+            "video_params": {
+                "cq": 25, "crop": None, "deinterlace": False,
+                "color_matrix": "bt709", "color_range": "tv",
+                "color_transfer": "bt709", "color_primaries": "bt709",
+                "hdr": None, "gop": 120, "fps_num": 24, "fps_den": 1,
+                "source_width": 1920, "source_height": 1080,
+                "source_codec": "", "source_bitrate": 0,
+                "sar_num": 1, "sar_den": 1, "dv_mode": None,
+                # no 'passthrough' key — simulates legacy plan
+            },
+            "audio": [],
+            "subtitles": [],
+            "attachments": [],
+            "copy_chapters": False,
+            "chapters_source": None,
+            "status": "pending",
+            "error": None,
+            "vmaf_score": None,
+            "ssim_score": None,
+            "source_size": 0,
+            "output_size": None,
+        }
+        data = {
+            "version": "2",
+            "furnace_version": "0.1.0",
+            "created_at": "2026-01-01T00:00:00",
+            "source": "/src",
+            "destination": "/out",
+            "vmaf_enabled": False,
+            "jobs": [job_raw],
+        }
+        plan_path = tmp_path / "plan.json"
+        plan_path.write_text(json.dumps(data), encoding="utf-8")
+
+        loaded = load_plan(plan_path)
+
+        assert loaded.jobs[0].video_params.passthrough is False
+
+
+# ---------------------------------------------------------------------------
+# test_mixed_passthrough_encode_plan
+# ---------------------------------------------------------------------------
+
+class TestMixedPassthroughEncodePlan:
+    """A single plan may mix passthrough jobs and fallback-encode jobs.
+
+    Integration check for the ``--copy-video`` feature: a passthrough job
+    (video copied verbatim) and a fallback-encode job (e.g. interlaced source
+    that had to be re-encoded) must both serialize and reload intact in one
+    plan.
+    """
+
+    def test_mixed_plan_roundtrips(self, tmp_path: Path) -> None:
+        passthrough_vp = make_video_params(passthrough=True)
+        passthrough_job = Job(
+            id="pt-job",
+            source_files=["/src/clean.mkv"],
+            output_file="/out/clean.mkv",
+            video_params=passthrough_vp,
+            audio=[make_audio_instruction()],
+            subtitles=[],
+            attachments=[],
+            copy_chapters=False,
+            chapters_source=None,
+            status=JobStatus.PENDING,
+            source_size=0,
+        )
+
+        encode_vp = make_video_params(passthrough=False, deinterlace=True)
+        encode_job = Job(
+            id="enc-job",
+            source_files=["/src/interlaced.mkv"],
+            output_file="/out/interlaced.mkv",
+            video_params=encode_vp,
+            audio=[make_audio_instruction()],
+            subtitles=[],
+            attachments=[],
+            copy_chapters=False,
+            chapters_source=None,
+            status=JobStatus.PENDING,
+            source_size=0,
+        )
+
+        plan = make_plan(jobs=[passthrough_job, encode_job])
+        plan_path = tmp_path / "plan.json"
+
+        save_plan(plan, plan_path)
+        loaded = load_plan(plan_path)
+
+        assert len(loaded.jobs) == 2
+        loaded_pt = loaded.jobs[0]
+        loaded_enc = loaded.jobs[1]
+
+        assert loaded_pt.id == "pt-job"
+        assert loaded_pt.video_params.passthrough is True
+        assert loaded_pt.video_params.deinterlace is False
+
+        assert loaded_enc.id == "enc-job"
+        assert loaded_enc.video_params.passthrough is False
+        assert loaded_enc.video_params.deinterlace is True
+
+
+# ---------------------------------------------------------------------------
 # test_job_duration_s
 # ---------------------------------------------------------------------------
 

@@ -70,3 +70,9 @@ Enable VMAF + SSIM quality scoring (single pass):
 ```bash
 furnace plan D:\Movies -o E:\Encoded --audio-lang eng --sub-lang eng --vmaf
 ```
+
+Copy eligible video streams verbatim instead of re-encoding (audio still processed, container rebuilt):
+```bash
+furnace plan D:\Movies -o E:\Encoded --audio-lang eng --sub-lang eng --copy-video
+```
+Eligible streams are copied as-is (crop/deinterlace skipped); interlaced and Dolby Vision P7 FEL sources fall back to a normal encode, and the plan report shows `passthrough (copy video)` or `encode (<reason>)` per file.

@@ -84,8 +84,37 @@ def _parse_ffmpeg_progress_block(kv: dict[str, str]) -> ProgressSample | None:
     return ProgressSample(processed_s=processed_s, speed=speed)
 
 
+def _make_ffmpeg_progress_handler(
+    on_progress: Callable[[ProgressSample], None] | None,
+) -> Callable[[str], bool]:
+    """Build an ``on_progress_line`` hook for ffmpeg ``-progress pipe:1`` output.
+
+    Every line is a ``key=value`` pair; the hook accumulates them until a
+    ``progress=`` line closes the block, parses it via
+    :func:`_parse_ffmpeg_progress_block`, and forwards the sample to
+    ``on_progress``. Returns ``True`` for consumed ``key=value`` lines (kept out
+    of the log and the TUI) and ``False`` for anything else.
+    """
+    kv_buf: dict[str, str] = {}
+
+    def _on_progress_line(line: str) -> bool:
+        if "=" not in line:
+            return False
+        key, _, val = line.partition("=")
+        key = key.strip()
+        kv_buf[key] = val.strip()
+        if key == "progress":
+            sample = _parse_ffmpeg_progress_block(kv_buf)
+            kv_buf.clear()
+            if sample is not None and on_progress is not None:
+                on_progress(sample)
+        return True
+
+    return _on_progress_line
+
+
 class FFmpegAdapter:
-    """Implements Prober + AudioExtractor."""
+    """Implements Prober + AudioExtractor + VideoCopier."""
 
     def __init__(
         self,
@@ -401,6 +430,48 @@ class FFmpegAdapter:
         return side_data
 
     # ------------------------------------------------------------------
+    # VideoCopier
+    # ------------------------------------------------------------------
+
+    def copy_video(
+        self,
+        input_path: Path,
+        output_path: Path,
+        on_progress: Callable[[ProgressSample], None] | None = None,
+    ) -> int:
+        """ffmpeg -map 0:v:0 -c:v copy -progress pipe:1 output (passthrough).
+
+        loglevel=fatal: byte-for-byte copy emits the same cosmetic dts spam
+        as ``extract_track``. ``-progress pipe:1`` is parsed independently of
+        the loglevel by :func:`_make_ffmpeg_progress_handler`.
+        """
+        cmd = [
+            str(self._ffmpeg),
+            "-hide_banner",
+            "-loglevel",
+            "fatal",
+            "-i",
+            str(input_path),
+            "-map",
+            "0:v:0",
+            "-c:v",
+            "copy",
+            "-progress",
+            "pipe:1",
+            "-y",
+            str(output_path),
+        ]
+        log_path = self._log_dir / "ffmpeg_copy_video.log" if self._log_dir else None
+
+        rc, _out = run_tool(
+            cmd,
+            on_output=self._on_output,
+            on_progress_line=_make_ffmpeg_progress_handler(on_progress),
+            log_path=log_path,
+        )
+        return rc
+
+    # ------------------------------------------------------------------
     # AudioExtractor
     # ------------------------------------------------------------------
 
@@ -415,7 +486,7 @@ class FFmpegAdapter:
         # loglevel=fatal: -c copy is byte-copy, and ffmpeg's TrueHD "non
         # monotonically increasing dts" spam is logged at ERROR level despite
         # being cosmetic. -progress pipe:1 writes key=value blocks to stdout
-        # which is parsed by the on_progress_line hook below; it's independent
+        # which are parsed by _make_ffmpeg_progress_handler; it's independent
         # of the loglevel.
         cmd = [
             str(self._ffmpeg),
@@ -435,27 +506,10 @@ class FFmpegAdapter:
         ]
         log_path = self._log_dir / f"ffmpeg_extract_s{stream_index}.log" if self._log_dir else None
 
-        kv_buf: dict[str, str] = {}
-
-        def _on_progress_line(line: str) -> bool:
-            # Every line of `-progress pipe:1` output is a `key=value` pair.
-            # Consume (return True) to keep it out of the log and the TUI.
-            if "=" not in line:
-                return False
-            key, _, val = line.partition("=")
-            key = key.strip()
-            kv_buf[key] = val.strip()
-            if key == "progress":
-                sample = _parse_ffmpeg_progress_block(kv_buf)
-                kv_buf.clear()
-                if sample is not None and on_progress is not None:
-                    on_progress(sample)
-            return True
-
         rc, _out = run_tool(
             cmd,
             on_output=self._on_output,
-            on_progress_line=_on_progress_line,
+            on_progress_line=_make_ffmpeg_progress_handler(on_progress),
             log_path=log_path,
         )
         return rc
@@ -488,25 +542,10 @@ class FFmpegAdapter:
         ]
         log_path = self._log_dir / f"ffmpeg_to_wav_s{stream_index}.log" if self._log_dir else None
 
-        kv_buf: dict[str, str] = {}
-
-        def _on_progress_line(line: str) -> bool:
-            if "=" not in line:
-                return False
-            key, _, val = line.partition("=")
-            key = key.strip()
-            kv_buf[key] = val.strip()
-            if key == "progress":
-                sample = _parse_ffmpeg_progress_block(kv_buf)
-                kv_buf.clear()
-                if sample is not None and on_progress is not None:
-                    on_progress(sample)
-            return True
-
         rc, _out = run_tool(
             cmd,
             on_output=self._on_output,
-            on_progress_line=_on_progress_line,
+            on_progress_line=_make_ffmpeg_progress_handler(on_progress),
             log_path=log_path,
         )
         return rc
@@ -645,7 +684,8 @@ class FFmpegAdapter:
         ``delay_ms > 0`` an ``adelay`` filter is appended; if ``delay_ms < 0``
         an ``atrim=start=<seconds>`` trims the leading audio; zero adds nothing.
 
-        ``-progress pipe:1`` is enabled and consumed by ``_on_progress_line``;
+        ``-progress pipe:1`` is enabled and consumed by
+        :func:`_make_ffmpeg_progress_handler`;
         ffmpeg's stderr (warnings/errors) still flows to ``self._on_output`` and
         ends up in the TUI log. ``on_progress`` receives a ``ProgressSample``
         per progress block so the per-step bar advances.
@@ -674,27 +714,10 @@ class FFmpegAdapter:
         ]
         log_path = self._log_dir / f"ffmpeg_mono_s{stream_index}.log" if self._log_dir else None
 
-        kv_buf: dict[str, str] = {}
-
-        def _on_progress_line(line: str) -> bool:
-            # Every line of `-progress pipe:1` output is a `key=value` pair.
-            # Consume (return True) to keep it out of the log and the TUI.
-            if "=" not in line:
-                return False
-            key, _, val = line.partition("=")
-            key = key.strip()
-            kv_buf[key] = val.strip()
-            if key == "progress":
-                sample = _parse_ffmpeg_progress_block(kv_buf)
-                kv_buf.clear()
-                if sample is not None and on_progress is not None:
-                    on_progress(sample)
-            return True
-
         rc, _out = run_tool(
             cmd,
             on_output=self._on_output,
-            on_progress_line=_on_progress_line,
+            on_progress_line=_make_ffmpeg_progress_handler(on_progress),
             log_path=log_path,
         )
         return rc

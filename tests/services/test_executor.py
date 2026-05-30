@@ -52,6 +52,7 @@ def executor_with_mocks() -> tuple[Executor, SimpleNamespace]:
         tagger=MagicMock(),
         cleaner=MagicMock(),
         prober=MagicMock(),
+        video_copier=MagicMock(),
     )
     mocks.audio_extractor.extract_track.return_value = 0
     mocks.audio_extractor.ffmpeg_to_wav.return_value = 0
@@ -63,6 +64,7 @@ def executor_with_mocks() -> tuple[Executor, SimpleNamespace]:
     mocks.tagger.set_encoder_tag.return_value = 0
     mocks.cleaner.clean.return_value = 0
     mocks.prober.probe.return_value = {"chapters": []}
+    mocks.video_copier.copy_video.return_value = 0
 
     executor = Executor(
         encoder=mocks.encoder,
@@ -73,6 +75,7 @@ def executor_with_mocks() -> tuple[Executor, SimpleNamespace]:
         tagger=mocks.tagger,
         cleaner=mocks.cleaner,
         prober=mocks.prober,
+        video_copier=mocks.video_copier,
     )
     executor._vmaf_enabled = False  # normally set by run()
     return executor, mocks
@@ -3001,3 +3004,323 @@ class TestVideoMetaUnknownContentLightPart:
         assert video_meta["hdr_max_fall"] == "400"
         # "Unknown=999" is silently ignored
         assert "Unknown" not in str(video_meta)
+
+
+# ---------------------------------------------------------------------------
+# Task 4 — Passthrough video step
+# ---------------------------------------------------------------------------
+
+
+def _passthrough_job(tmp_path: Path, *, dv_mode: DvMode | None = None) -> Any:
+    """Pipeline job whose video stream is copied verbatim (passthrough)."""
+    return make_job(
+        job_id="passthrough-job",
+        source_files=["/src/movie.mkv"],
+        output_file=str(tmp_path / "output" / "movie.mkv"),
+        video_params=make_video_params(passthrough=True, dv_mode=dv_mode),
+        audio=[],
+        subtitles=[],
+        attachments=[],
+        copy_chapters=False,
+        source_size=1_000_000,
+        duration_s=5400.0,
+    )
+
+
+class TestVideoCopierInConstructor:
+    """video_copier added to the adapter list when provided."""
+
+    def test_video_copier_appended(self) -> None:
+        copier = MagicMock()
+        executor = Executor(
+            encoder=MagicMock(),
+            audio_extractor=MagicMock(),
+            audio_decoder=MagicMock(),
+            aac_encoder=MagicMock(),
+            muxer=MagicMock(),
+            tagger=MagicMock(),
+            cleaner=MagicMock(),
+            prober=MagicMock(),
+            video_copier=copier,
+        )
+        assert copier in executor._adapters
+
+    def test_no_video_copier_not_appended(self) -> None:
+        executor = Executor(
+            encoder=MagicMock(),
+            audio_extractor=MagicMock(),
+            audio_decoder=MagicMock(),
+            aac_encoder=MagicMock(),
+            muxer=MagicMock(),
+            tagger=MagicMock(),
+            cleaner=MagicMock(),
+            prober=MagicMock(),
+            video_copier=None,
+        )
+        assert executor._video_copier is None
+
+
+class TestRunPipelinePassthrough:
+    """Task 4: passthrough branch copies video instead of encoding."""
+
+    def test_passthrough_calls_copy_video_not_encode(
+        self,
+        executor_with_mocks: tuple[Executor, SimpleNamespace],
+        tmp_path: Path,
+    ) -> None:
+        executor, mocks = executor_with_mocks
+
+        def fake_clean(input_path: Any, output_path: Any, on_progress: Any = None) -> int:
+            Path(output_path).write_bytes(b"CLEAN")
+            return 0
+
+        mocks.cleaner.clean.side_effect = fake_clean
+        job = _passthrough_job(tmp_path)
+        output_path = Path(job.output_file)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        executor._run_pipeline(job, output_path, tmp_path)
+
+        mocks.video_copier.copy_video.assert_called_once()
+        assert not mocks.encoder.encode.called
+        # mux/tag/mkclean still run
+        mocks.muxer.mux.assert_called_once()
+        mocks.tagger.set_encoder_tag.assert_called_once()
+        mocks.cleaner.clean.assert_called_once()
+        assert output_path.exists()
+
+    def test_passthrough_tag_settings_string(
+        self,
+        executor_with_mocks: tuple[Executor, SimpleNamespace],
+        tmp_path: Path,
+    ) -> None:
+        executor, mocks = executor_with_mocks
+
+        def fake_clean(input_path: Any, output_path: Any, on_progress: Any = None) -> int:
+            Path(output_path).write_bytes(b"CLEAN")
+            return 0
+
+        mocks.cleaner.clean.side_effect = fake_clean
+        job = _passthrough_job(tmp_path)
+        output_path = Path(job.output_file)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        executor._run_pipeline(job, output_path, tmp_path)
+
+        tag_call = mocks.tagger.set_encoder_tag.call_args
+        assert tag_call[0][2] == "video stream copied (passthrough)"
+
+    def test_passthrough_skips_dv_rpu_extraction(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        dovi_mock = MagicMock()
+        copier_mock = MagicMock()
+        copier_mock.copy_video.return_value = 0
+        muxer_mock = MagicMock()
+        muxer_mock.mux.return_value = 0
+        tagger_mock = MagicMock()
+        tagger_mock.set_encoder_tag.return_value = 0
+        cleaner_mock = MagicMock()
+
+        def fake_clean(input_path: Any, output_path: Any, on_progress: Any = None) -> int:
+            Path(output_path).write_bytes(b"CLEAN")
+            return 0
+
+        cleaner_mock.clean.side_effect = fake_clean
+        executor = Executor(
+            encoder=MagicMock(),
+            audio_extractor=MagicMock(),
+            audio_decoder=MagicMock(),
+            aac_encoder=MagicMock(),
+            muxer=muxer_mock,
+            tagger=tagger_mock,
+            cleaner=cleaner_mock,
+            prober=MagicMock(),
+            dovi_processor=dovi_mock,
+            video_copier=copier_mock,
+        )
+        executor._vmaf_enabled = False
+        # Even with a DV mode set, passthrough must not extract RPU.
+        job = _passthrough_job(tmp_path, dv_mode=DvMode.COPY)
+        output_path = Path(job.output_file)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        executor._run_pipeline(job, output_path, tmp_path)
+
+        assert not dovi_mock.extract_rpu.called
+        copier_mock.copy_video.assert_called_once()
+
+    def test_passthrough_does_not_store_metrics(
+        self,
+        executor_with_mocks: tuple[Executor, SimpleNamespace],
+        tmp_path: Path,
+    ) -> None:
+        executor, mocks = executor_with_mocks
+
+        def fake_clean(input_path: Any, output_path: Any, on_progress: Any = None) -> int:
+            Path(output_path).write_bytes(b"CLEAN")
+            return 0
+
+        mocks.cleaner.clean.side_effect = fake_clean
+        job = _passthrough_job(tmp_path)
+        output_path = Path(job.output_file)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        executor._run_pipeline(job, output_path, tmp_path)
+
+        assert job.vmaf_score is None
+        assert job.ssim_score is None
+
+    def test_passthrough_forwards_hdr_video_meta_to_mux(
+        self,
+        executor_with_mocks: tuple[Executor, SimpleNamespace],
+        tmp_path: Path,
+    ) -> None:
+        """Passthrough keeps colour/HDR fields populated, so container-level
+        HDR flags must still reach the muxer (Plex/Jellyfin compatibility)."""
+        from furnace.core.models import HdrMetadata
+
+        executor, mocks = executor_with_mocks
+
+        def fake_clean(input_path: Any, output_path: Any, on_progress: Any = None) -> int:
+            Path(output_path).write_bytes(b"CLEAN")
+            return 0
+
+        mocks.cleaner.clean.side_effect = fake_clean
+        vp = make_video_params(
+            passthrough=True,
+            color_range="tv",
+            color_primaries="bt2020",
+            color_transfer="smpte2084",
+            hdr=HdrMetadata(content_light="MaxCLL=1000,MaxFALL=400"),
+        )
+        job = make_job(
+            job_id="passthrough-hdr",
+            source_files=["/src/movie.mkv"],
+            output_file=str(tmp_path / "output" / "movie.mkv"),
+            video_params=vp,
+            audio=[],
+            subtitles=[],
+            attachments=[],
+            copy_chapters=False,
+            source_size=1_000_000,
+            duration_s=5400.0,
+        )
+        output_path = Path(job.output_file)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        executor._run_pipeline(job, output_path, tmp_path)
+
+        video_meta = mocks.muxer.mux.call_args.kwargs["video_meta"]
+        assert video_meta["color_range"] == "tv"
+        assert video_meta["color_primaries"] == "bt2020"
+        assert video_meta["color_transfer"] == "smpte2084"
+        assert video_meta["hdr_max_cll"] == "1000"
+        assert video_meta["hdr_max_fall"] == "400"
+
+    def test_passthrough_without_copier_raises(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        executor = Executor(
+            encoder=MagicMock(),
+            audio_extractor=MagicMock(),
+            audio_decoder=MagicMock(),
+            aac_encoder=MagicMock(),
+            muxer=MagicMock(),
+            tagger=MagicMock(),
+            cleaner=MagicMock(),
+            prober=MagicMock(),
+            video_copier=None,
+        )
+        executor._vmaf_enabled = False
+        job = _passthrough_job(tmp_path)
+        output_path = Path(job.output_file)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        with pytest.raises(RuntimeError, match=r"passthrough.*video_copier"):
+            executor._run_pipeline(job, output_path, tmp_path)
+
+    def test_passthrough_copy_failure_raises(
+        self,
+        executor_with_mocks: tuple[Executor, SimpleNamespace],
+        tmp_path: Path,
+    ) -> None:
+        executor, mocks = executor_with_mocks
+        mocks.video_copier.copy_video.return_value = 1
+        job = _passthrough_job(tmp_path)
+        output_path = Path(job.output_file)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        # Match the rc-failure message specifically — both this and the missing
+        # video_copier error contain "passthrough", so a bare match could pass
+        # for the wrong reason.
+        with pytest.raises(RuntimeError, match=r"passthrough copy failed with return code 1"):
+            executor._run_pipeline(job, output_path, tmp_path)
+
+    def test_passthrough_progress_updates_output_size(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        progress_mock = MagicMock()
+        copier_mock = MagicMock()
+
+        def fake_copy(input_path: Any, output_path: Any, on_progress: Any = None) -> int:
+            Path(output_path).write_bytes(b"VIDEO_DATA")
+            if on_progress:
+                on_progress(ProgressSample(fraction=0.5))
+            return 0
+
+        copier_mock.copy_video.side_effect = fake_copy
+        muxer_mock = MagicMock()
+        muxer_mock.mux.return_value = 0
+        tagger_mock = MagicMock()
+        tagger_mock.set_encoder_tag.return_value = 0
+        cleaner_mock = MagicMock()
+
+        def fake_clean(input_path: Any, output_path: Any, on_progress: Any = None) -> int:
+            Path(output_path).write_bytes(b"CLEAN")
+            return 0
+
+        cleaner_mock.clean.side_effect = fake_clean
+        executor = Executor(
+            encoder=MagicMock(),
+            audio_extractor=MagicMock(),
+            audio_decoder=MagicMock(),
+            aac_encoder=MagicMock(),
+            muxer=muxer_mock,
+            tagger=tagger_mock,
+            cleaner=cleaner_mock,
+            prober=MagicMock(),
+            video_copier=copier_mock,
+            progress=progress_mock,
+        )
+        executor._vmaf_enabled = False
+        job = _passthrough_job(tmp_path)
+        output_path = Path(job.output_file)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        executor._run_pipeline(job, output_path, tmp_path)
+
+        progress_mock.update_output_size.assert_called()
+        progress_mock.update_status.assert_called()
+
+    def test_passthrough_progress_callback_no_progress(
+        self,
+        executor_with_mocks: tuple[Executor, SimpleNamespace],
+        tmp_path: Path,
+    ) -> None:
+        """Passthrough progress callback skips size push when progress is None."""
+        executor, mocks = executor_with_mocks
+
+        def fake_copy(input_path: Any, output_path: Any, on_progress: Any = None) -> int:
+            if on_progress:
+                on_progress(ProgressSample(fraction=0.5))
+            return 0
+
+        mocks.video_copier.copy_video.side_effect = fake_copy
+
+        def fake_clean(input_path: Any, output_path: Any, on_progress: Any = None) -> int:
+            Path(output_path).write_bytes(b"CLEAN")
+            return 0
+
+        mocks.cleaner.clean.side_effect = fake_clean
+        # executor._progress is None by default
+        job = _passthrough_job(tmp_path)
+        output_path = Path(job.output_file)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        # Should not raise — callback simply skips the size push
+        executor._run_pipeline(job, output_path, tmp_path)

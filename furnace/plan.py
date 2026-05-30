@@ -106,6 +106,7 @@ def _load_video_params(raw: dict[str, Any]) -> VideoParams:
         sar_num=raw.get("sar_num", 1),
         sar_den=raw.get("sar_den", 1),
         dv_mode=dv_mode,
+        passthrough=raw.get("passthrough", False),
     )
 
 

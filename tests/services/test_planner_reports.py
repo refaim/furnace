@@ -19,6 +19,7 @@ from unittest.mock import MagicMock
 
 from furnace.core.models import (
     CropRect,
+    DvMode,
     HdrMetadata,
     Movie,
     VideoInfo,
@@ -264,3 +265,151 @@ def test_plan_file_done_summary_is_emitted_via_reporter() -> None:
     assert isinstance(summary, str)
     assert "1920x1080" in summary
     assert "cq " in summary
+
+
+def test_format_plan_summary_passthrough() -> None:
+    """A passthrough job renders the copy-video label, not encode settings."""
+    prober = MagicMock()
+    planner = PlannerService(prober=prober, previewer=None)
+    plan = planner.create_plan(
+        movies=[(_make_movie(), Path("/out/x.mkv"))],
+        audio_lang_filter=["eng"],
+        sub_lang_filter=[],
+        vmaf_enabled=False,
+        dry_run=False,
+        copy_video=True,
+    )
+    summary = _format_plan_summary(_make_movie(), plan.jobs[0])
+    assert summary == "passthrough (copy video)"
+    # passthrough skips cropdetect entirely
+    prober.detect_crop.assert_not_called()
+
+
+def test_format_plan_summary_interlaced_fallback() -> None:
+    """An interlaced fallback-to-encode job is labelled with its reason."""
+    movie = replace(_make_movie(), video=replace(_make_video_info(), interlaced=True))
+    prober = MagicMock()
+    prober.detect_crop.return_value = None
+    planner = PlannerService(prober=prober, previewer=None)
+    plan = planner.create_plan(
+        movies=[(movie, Path("/out/x.mkv"))],
+        audio_lang_filter=["eng"],
+        sub_lang_filter=[],
+        vmaf_enabled=False,
+        dry_run=False,
+        copy_video=True,
+    )
+    summary = _format_plan_summary(movie, plan.jobs[0], "interlaced")
+    assert summary.startswith("encode (interlaced), ")
+    assert summary.endswith(", deinterlace")
+
+
+def _make_dv_p7_movie() -> Movie:
+    """A genuine Dolby Vision Profile 7 FEL source that must fall back to encode."""
+    dv_video = replace(
+        _make_video_info(),
+        hdr=HdrMetadata(is_dolby_vision=True, dv_profile=7),
+    )
+    return replace(_make_movie(), video=dv_video)
+
+
+def test_format_plan_summary_dv_p7_fallback() -> None:
+    """A genuine DV P7 FEL source falls back to encode and is labelled accordingly."""
+    movie = _make_dv_p7_movie()
+    prober = MagicMock()
+    prober.detect_crop.return_value = None
+    planner = PlannerService(prober=prober, previewer=None)
+    plan = planner.create_plan(
+        movies=[(movie, Path("/out/x.mkv"))],
+        audio_lang_filter=["eng"],
+        sub_lang_filter=[],
+        vmaf_enabled=False,
+        dry_run=False,
+        copy_video=True,
+    )
+    job = plan.jobs[0]
+    # The DV P7 FEL source genuinely fell back to the encode path.
+    assert job.video_params.passthrough is False
+    assert job.video_params.dv_mode == DvMode.TO_8_1
+    summary = _format_plan_summary(movie, job, "DV P7 FEL")
+    assert summary.startswith("encode (DV P7 FEL), ")
+    assert "cq " in summary
+
+
+def test_format_plan_summary_normal_encode_has_no_reason_prefix() -> None:
+    """Without a fallback reason (copy-video off), summary is the plain encode line."""
+    movie = _make_movie()
+    prober = MagicMock()
+    prober.detect_crop.return_value = None
+    planner = PlannerService(prober=prober, previewer=None)
+    plan = planner.create_plan(
+        movies=[(movie, Path("/out/x.mkv"))],
+        audio_lang_filter=["eng"],
+        sub_lang_filter=[],
+        vmaf_enabled=False,
+        dry_run=False,
+    )
+    summary = _format_plan_summary(movie, plan.jobs[0])
+    assert summary.startswith("cq ")
+    assert "encode (" not in summary
+    assert "passthrough" not in summary
+
+
+def test_passthrough_summary_emitted_via_reporter() -> None:
+    """End-to-end: a passthrough job's plan_file_done summary says copy video."""
+    prober = MagicMock()
+    reporter = RecordingPlanReporter()
+    planner = PlannerService(prober=prober, previewer=None, reporter=reporter)
+    planner.create_plan(
+        movies=[(_make_movie(), Path("/out/x.mkv"))],
+        audio_lang_filter=["eng"],
+        sub_lang_filter=[],
+        vmaf_enabled=False,
+        dry_run=False,
+        copy_video=True,
+    )
+    done = [e for e in reporter.events if e.method == "plan_file_done"]
+    summary = done[0].args[0]
+    assert summary == "passthrough (copy video)"
+
+
+def test_interlaced_fallback_reason_emitted_via_reporter() -> None:
+    """End-to-end: an interlaced fallback surfaces its reason in the report path."""
+    movie = replace(_make_movie(), video=replace(_make_video_info(), interlaced=True))
+    prober = MagicMock()
+    prober.detect_crop.return_value = None
+    reporter = RecordingPlanReporter()
+    planner = PlannerService(prober=prober, previewer=None, reporter=reporter)
+    planner.create_plan(
+        movies=[(movie, Path("/out/x.mkv"))],
+        audio_lang_filter=["eng"],
+        sub_lang_filter=[],
+        vmaf_enabled=False,
+        dry_run=False,
+        copy_video=True,
+    )
+    done = [e for e in reporter.events if e.method == "plan_file_done"]
+    summary = done[0].args[0]
+    assert isinstance(summary, str)
+    assert summary.startswith("encode (interlaced), ")
+
+
+def test_dv_p7_fallback_reason_emitted_via_reporter() -> None:
+    """End-to-end: a genuine DV P7 FEL fallback surfaces its reason in the report path."""
+    movie = _make_dv_p7_movie()
+    prober = MagicMock()
+    prober.detect_crop.return_value = None
+    reporter = RecordingPlanReporter()
+    planner = PlannerService(prober=prober, previewer=None, reporter=reporter)
+    planner.create_plan(
+        movies=[(movie, Path("/out/x.mkv"))],
+        audio_lang_filter=["eng"],
+        sub_lang_filter=[],
+        vmaf_enabled=False,
+        dry_run=False,
+        copy_video=True,
+    )
+    done = [e for e in reporter.events if e.method == "plan_file_done"]
+    summary = done[0].args[0]
+    assert isinstance(summary, str)
+    assert summary.startswith("encode (DV P7 FEL), ")

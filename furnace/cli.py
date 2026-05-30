@@ -381,6 +381,9 @@ def plan(
     names: Path | None = typer.Option(None, "--names", help="Rename map file"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Show plan without saving"),
     vmaf: bool = typer.Option(False, "--vmaf", help="Enable VMAF"),
+    copy_video: bool = typer.Option(
+        False, "--copy-video", "-cv", help="Copy eligible video streams verbatim instead of re-encoding"
+    ),
     config: Path | None = typer.Option(None, "--config", help="Path to config file"),
 ) -> None:
     """Scan source, show TUI for track selection, save JSON plan."""
@@ -393,7 +396,8 @@ def plan(
     _setup_logging(output, console=False)  # console handler removed; reporter owns terminal
 
     logger.debug(
-        "plan command started: source=%s output=%s audio_lang=%s sub_lang=%s names=%s dry_run=%s vmaf=%s",
+        "plan command started: source=%s output=%s audio_lang=%s sub_lang=%s names=%s "
+        "dry_run=%s vmaf=%s copy_video=%s",
         source,
         output,
         audio_lang,
@@ -401,6 +405,7 @@ def plan(
         names,
         dry_run,
         vmaf,
+        copy_video,
     )
 
     reporter = RichPlanReporter(source=source, output=output)
@@ -503,6 +508,7 @@ def plan(
             dry_run=dry_run,
             sar_overrides=sar_override_paths,
             downmix_overrides=downmix_overrides,
+            copy_video=copy_video,
         )
         _apply_demux_dir_to_plan(plan_obj, demux_dir)
 
@@ -575,6 +581,7 @@ def run(
             cleaner=mkclean_adapter,
             prober=ffmpeg_adapter,
             dovi_processor=dovi_adapter,
+            video_copier=ffmpeg_adapter,
             progress=progress,
             log_dir=log_dir,
         )

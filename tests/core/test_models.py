@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from furnace.core.models import DownmixMode, DvBlCompatibility, DvMode, EncodeResult
+from tests.conftest import make_video_params
 
 
 class TestDvBlCompatibility:
@@ -37,6 +38,18 @@ class TestEncodeResult:
         r = EncodeResult(return_code=0, encoder_settings="test", vmaf_score=95.4, ssim_score=0.987)
         assert r.vmaf_score == 95.4
         assert r.ssim_score == 0.987
+
+
+class TestVideoParamsPassthrough:
+    def test_default_is_false(self) -> None:
+        """VideoParams.passthrough defaults to False."""
+        vp = make_video_params()
+        assert vp.passthrough is False
+
+    def test_can_be_set_true(self) -> None:
+        """VideoParams.passthrough can be set to True."""
+        vp = make_video_params(passthrough=True)
+        assert vp.passthrough is True
 
 
 class TestDownmixMode:

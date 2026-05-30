@@ -100,6 +100,26 @@ class Encoder(Protocol):
 
 
 @runtime_checkable
+class VideoCopier(Protocol):
+    """Copy a video stream verbatim (passthrough) instead of re-encoding.
+    Implemented by FFmpegAdapter."""
+
+    def copy_video(
+        self,
+        input_path: Path,
+        output_path: Path,
+        on_progress: Callable[[ProgressSample], None] | None = None,
+    ) -> int:
+        """Copy the first video stream byte-for-byte into a new MKV.
+
+        ffmpeg -map 0:v:0 -c:v copy. Audio/subs/chapters are dropped here;
+        the muxer reassembles them downstream. ``on_progress`` is called per
+        ``-progress pipe:1`` block. Returns the ffmpeg exit code.
+        """
+        ...
+
+
+@runtime_checkable
 class DoviProcessor(Protocol):
     """Extract/convert Dolby Vision RPU metadata via dovi_tool."""
 

@@ -37,6 +37,7 @@ from furnace.core.ports import (
     Muxer,
     Prober,
     Tagger,
+    VideoCopier,
 )
 from furnace.core.progress import ProgressSample, ProgressTracker
 from furnace.plan import update_job_status
@@ -107,6 +108,7 @@ class Executor:
         cleaner: Cleaner,
         prober: Prober,
         dovi_processor: DoviProcessor | None = None,
+        video_copier: VideoCopier | None = None,
         progress: Any | None = None,  # RunApp or similar (optional, avoids circular import)
         log_dir: Path | None = None,
     ) -> None:
@@ -119,12 +121,15 @@ class Executor:
         self._cleaner = cleaner
         self._prober = prober
         self._dovi_processor = dovi_processor
+        self._video_copier = video_copier
         self._progress = progress
         self._log_dir = log_dir
         self._shutdown_event = threading.Event()
         self._adapters: list[Any] = [encoder, audio_extractor, audio_decoder, aac_encoder, muxer, tagger, cleaner]
         if dovi_processor is not None:
             self._adapters.append(dovi_processor)
+        if video_copier is not None:
+            self._adapters.append(video_copier)
 
     def _make_progress_callback(
         self,
@@ -294,9 +299,12 @@ class Executor:
             }
             subtitle_files.append((sub_path, sub_meta))
 
-        # Step 3: DV RPU extraction (if needed)
+        passthrough = job.video_params.passthrough
+
+        # Step 3: DV RPU extraction (if needed) — skipped for passthrough jobs
+        # (their video stream is copied verbatim, RPU and all).
         rpu_path: Path | None = None
-        if job.video_params.dv_mode is not None:
+        if job.video_params.dv_mode is not None and not passthrough:
             if self._shutdown_event.is_set():
                 return
             if self._dovi_processor is None:
@@ -316,23 +324,20 @@ class Executor:
             if rc != 0:
                 raise RuntimeError(f"DV RPU extraction failed with return code {rc}")
 
-        # Step 4: Encode video (slow — main bottleneck)
+        # Step 4: Video step (slow — main bottleneck). Passthrough copies the
+        # source stream verbatim; otherwise re-encode via NVEncC.
         if self._shutdown_event.is_set():
             return
 
         video_output = temp_dir / "video.mkv"
-        logger.info("Encoding video: %s", main_source.name)
-        if self._progress is not None:
-            self._progress.update_status("Encoding video")
-            self._progress.add_tool_line(f"[furnace] Encoding video: {main_source.name}")
 
-        _, base_encode_on_progress = self._make_progress_callback(
+        _, base_video_on_progress = self._make_progress_callback(
             total_s=job.duration_s or None,
         )
 
-        def encode_on_progress(sample: ProgressSample) -> None:
-            base_encode_on_progress(sample)
-            # Preserve the output-size update alongside encoding progress
+        def video_on_progress(sample: ProgressSample) -> None:
+            base_video_on_progress(sample)
+            # Preserve the output-size update alongside the video step progress
             try:
                 video_size = video_output.stat().st_size if video_output.exists() else 0
             except OSError:
@@ -340,23 +345,47 @@ class Executor:
             if self._progress is not None:
                 self._progress.update_output_size(self._cumulative_audio_size + video_size)
 
-        rc_result = self._encoder.encode(
-            input_path=main_source,
-            output_path=video_output,
-            video_params=job.video_params,
-            on_progress=encode_on_progress,
-            vmaf_enabled=self._vmaf_enabled,
-            rpu_path=rpu_path,
-        )
-        if rc_result.return_code != 0:
-            raise RuntimeError(f"Video encoding failed with return code {rc_result.return_code}")
+        if passthrough:
+            if self._video_copier is None:
+                msg = "passthrough video requires a video_copier but it is not configured"
+                raise RuntimeError(msg)
+            logger.info("Copying video stream (passthrough): %s", main_source.name)
+            if self._progress is not None:
+                self._progress.update_status("Copying video (passthrough)")
+                self._progress.add_tool_line(
+                    f"[furnace] Copying video stream (passthrough): {main_source.name}",
+                )
+            rc = self._video_copier.copy_video(
+                main_source,
+                video_output,
+                on_progress=video_on_progress,
+            )
+            if rc != 0:
+                raise RuntimeError(f"Video passthrough copy failed with return code {rc}")
+            encoder_settings = "video stream copied (passthrough)"
+        else:
+            logger.info("Encoding video: %s", main_source.name)
+            if self._progress is not None:
+                self._progress.update_status("Encoding video")
+                self._progress.add_tool_line(f"[furnace] Encoding video: {main_source.name}")
 
-        # Store metrics from encode
-        if rc_result.vmaf_score is not None:
-            job.vmaf_score = rc_result.vmaf_score
-        if rc_result.ssim_score is not None:
-            job.ssim_score = rc_result.ssim_score
-        encoder_settings = rc_result.encoder_settings
+            rc_result = self._encoder.encode(
+                input_path=main_source,
+                output_path=video_output,
+                video_params=job.video_params,
+                on_progress=video_on_progress,
+                vmaf_enabled=self._vmaf_enabled,
+                rpu_path=rpu_path,
+            )
+            if rc_result.return_code != 0:
+                raise RuntimeError(f"Video encoding failed with return code {rc_result.return_code}")
+
+            # Store metrics from encode
+            if rc_result.vmaf_score is not None:
+                job.vmaf_score = rc_result.vmaf_score
+            if rc_result.ssim_score is not None:
+                job.ssim_score = rc_result.ssim_score
+            encoder_settings = rc_result.encoder_settings
 
         # Step 5: Mux
         if self._shutdown_event.is_set():

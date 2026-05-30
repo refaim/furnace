@@ -282,6 +282,7 @@ class VideoParams:
     sar_num: int = 1  # sample aspect ratio numerator
     sar_den: int = 1  # sample aspect ratio denominator
     dv_mode: DvMode | None = None  # None=no DV, COPY=as-is, TO_8_1=P7->P8.1
+    passthrough: bool = False  # True = copy video stream verbatim (no re-encode)
 
 
 @dataclass

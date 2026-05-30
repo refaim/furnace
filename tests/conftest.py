@@ -102,6 +102,7 @@ def make_video_params(
     sar_num: int = 1,
     sar_den: int = 1,
     dv_mode: DvMode | None = None,
+    passthrough: bool = False,
 ) -> VideoParams:
     return VideoParams(
         cq=cq,
@@ -122,6 +123,7 @@ def make_video_params(
         sar_num=sar_num,
         sar_den=sar_den,
         dv_mode=dv_mode,
+        passthrough=passthrough,
     )
 
 
