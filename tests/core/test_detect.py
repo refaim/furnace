@@ -547,15 +547,14 @@ class TestAggregateCrop:
         """Single crop -> itself."""
         assert aggregate_crop([CropRect(704, 576, 0, 0)]) == CropRect(704, 576, 0, 0)
 
-    def test_per_edge_median_independent_axes(self) -> None:
+    def test_dominant_cluster_per_edge(self) -> None:
         """Noisy vertical axis must not discard a rock-solid horizontal one.
 
         Regression for Batman: The Animated Series 4:3-in-16:9 pillarbox
         upscales. cropdetect nails the left/right bars (x=248, x+w=1672) on
         every sample, but dark scenes make it over-crop top/bottom, so h/y
-        scatter. Joint 4D clustering split the votes and returned None; the
-        per-edge median recovers the true 1424:1072:248:4 because each edge
-        has a clear majority on its own.
+        scatter. Each edge takes the median of its densest cluster, so the
+        constant pillarbox survives even when top/bottom is unreliable.
         """
         crops = [
             CropRect(1424, 1072, 248, 4),
@@ -569,66 +568,76 @@ class TestAggregateCrop:
             CropRect(1424, 1072, 248, 4),
             CropRect(1424, 1072, 248, 4),
         ]
+        # left x: 248 (x8) + 246 cluster to 248; right x+w: 1672 (x7) wins.
+        # top y: 4 (x7) wins; bottom y+h: 1076 (x8) wins -> 1072 high.
         assert aggregate_crop(crops) == CropRect(1424, 1072, 248, 4)
 
-    def test_outliers_below_half_are_ignored(self) -> None:
-        """A minority of over-cropped samples does not move the median."""
+    def test_scattered_overcrops_lose_to_dominant_cluster(self) -> None:
+        """The true crop is a plurality cluster; dark over-crops scatter.
+
+        Only 3 of 7 samples show the full picture (the true crop), and the 4
+        dark-scene over-crops are all different. The *median* top edge would
+        be a dark over-crop (y=24); the dominant-cluster pick recovers the
+        true y=4, because the 4 over-crops never cluster while the 3 true
+        samples do. This is exactly why the median was wrong on dark episodes.
+        """
         crops = [
-            CropRect(1424, 1080, 248, 0),
-            CropRect(1424, 1080, 248, 0),
-            CropRect(1424, 1080, 248, 0),
-            CropRect(1000, 800, 460, 140),  # one dark-scene over-crop
+            CropRect(1424, 1072, 248, 4),   # true (x3)
+            CropRect(1424, 1072, 248, 4),
+            CropRect(1424, 1072, 248, 4),
+            CropRect(1424, 1040, 248, 24),  # scattered over-crops (x4)
+            CropRect(1424, 1008, 248, 40),
+            CropRect(1424, 976, 248, 56),
+            CropRect(1424, 944, 248, 72),
         ]
-        # left edges sorted [248,248,248,460] idx 2 -> 248
-        # right edges (x+w) sorted [1460,1672,1672,1672] idx 2 -> 1672 -> w=1424
-        # top edges sorted [0,0,0,140] idx 2 -> 0
-        # bottom edges (y+h) sorted [940,1080,1080,1080] idx 2 -> 1080 -> h=1080
-        assert aggregate_crop(crops) == CropRect(1424, 1080, 248, 0)
+        # top y sorted [4,4,4,24,40,56,72]: median (idx 3) = 24 (over-crop),
+        # but the densest cluster is {4,4,4} -> top = 4.
+        # bottom y+h: 1076 (x3) is the densest cluster -> bottom = 1076.
+        assert aggregate_crop(crops) == CropRect(1424, 1072, 248, 4)
+
+    def test_jitter_within_tolerance_clusters_together(self) -> None:
+        """+-2px cropdetect jitter on an edge is merged into one cluster."""
+        crops = [
+            CropRect(1424, 1072, 248, 4),
+            CropRect(1426, 1072, 246, 4),  # x jittered -2
+            CropRect(1422, 1072, 250, 4),  # x jittered +2
+            CropRect(1424, 1072, 248, 4),
+            CropRect(1424, 1072, 248, 4),
+        ]
+        # lefts [248,246,250,248,248] all within tolerance -> median 248.
+        assert aggregate_crop(crops) == CropRect(1424, 1072, 248, 4)
 
     def test_all_full_frame_returns_full_frame(self) -> None:
         """No bars on any sample -> full frame, so the planner drops the crop.
 
-        With the >50% reliability gate gone, this is the contract that keeps
-        bar-free content from being cropped: aggregate_crop returns the exact
-        source rectangle, which the planner's full-frame check discards.
+        This is the contract that keeps bar-free content from being cropped:
+        aggregate_crop returns the exact source rectangle, which the planner's
+        full-frame check discards.
         """
         crops = [CropRect(1920, 1080, 0, 0)] * 10
         assert aggregate_crop(crops) == CropRect(1920, 1080, 0, 0)
 
-    def test_dimensions_never_negative_with_varying_bars(self) -> None:
-        """Bars varying on both axes still yield w,h >= 0 (pointwise order).
+    def test_inconsistent_clusters_raise(self) -> None:
+        """Per-edge clusters that invert raise ValueError (planner -> no crop).
 
-        Even when left/right (and top/bottom) bar widths differ wildly across
-        samples, median(x) <= median(x+w) holds because x <= x+w per sample,
-        so the result can never invert into a negative dimension.
+        Real cropdetect never emits this (bars are stable, w/h >= 16), but the
+        independent per-edge medians carry no joint invariant, so a contrived
+        input where the dominant left edge sits past the dominant right edge
+        must be rejected rather than yield a degenerate rectangle that could
+        reach the encoder.
         """
         crops = [
-            CropRect(1600, 1000, 160, 40),  # narrow left/right, thin top/bottom
-            CropRect(1000, 1080, 460, 0),   # wide left, no top/bottom
-            CropRect(1400, 600, 260, 240),  # mid left, thick top/bottom
+            CropRect(0, 0, 100, 100),       # x=x+w=100, y=y+h=100 (x3)
+            CropRect(0, 0, 100, 100),
+            CropRect(0, 0, 100, 100),
+            CropRect(50, 50, 0, 0),         # x+w=50, y+h=50 (x4, scattered x/y)
+            CropRect(40, 40, 10, 10),
+            CropRect(30, 30, 20, 20),
+            CropRect(10, 10, 40, 40),
         ]
-        # left x sorted [160,260,460] idx 1 -> 260
-        # right x+w sorted [1460,1660,1760] idx 1 -> 1660 -> w=1400
-        # top y sorted [0,40,240] idx 1 -> 40
-        # bottom y+h sorted [840,1040,1080] idx 1 -> 1040 -> h=1000
-        result = aggregate_crop(crops)
-        assert result == CropRect(1400, 1000, 260, 40)
-        assert result.w >= 0
-        assert result.h >= 0
-
-    def test_even_count_uses_upper_median_per_edge(self) -> None:
-        """Even sample count -> upper-middle (sorted[len//2]) on each edge."""
-        crops = [
-            CropRect(686, 430, 10, 20),
-            CropRect(688, 432, 12, 22),
-            CropRect(690, 434, 14, 24),
-            CropRect(692, 436, 16, 26),
-        ]
-        # left x sorted [10,12,14,16] idx 2 -> 14
-        # right x+w sorted [696,700,704,708] idx 2 -> 704 -> w=690
-        # top y sorted [20,22,24,26] idx 2 -> 24
-        # bottom y+h sorted [450,454,458,462] idx 2 -> 458 -> h=434
-        assert aggregate_crop(crops) == CropRect(690, 434, 14, 24)
+        # left cluster {100x3} -> 100; right cluster {50x4} -> 50 -> inverted.
+        with pytest.raises(ValueError, match="too inconsistent"):
+            aggregate_crop(crops)
 
 
 # ---------------------------------------------------------------------------

@@ -232,34 +232,75 @@ def hdr_transfer_for_cropdetect(color_transfer: str | None) -> str | None:
     return color_transfer if color_transfer in _HDR_TRANSFERS else None
 
 
-def aggregate_crop(crops: list[CropRect]) -> CropRect:
+CROP_EDGE_TOLERANCE = 8
+"""Pixels: cropdetect's per-edge jitter merged into a single cluster.
+
+Comfortably above the +-2px centering wobble seen in practice yet well below
+``round=16`` (the cropdetect rounding), so genuinely distinct crops are never
+merged."""
+
+
+def _dominant_edge(values: list[int], tolerance: int) -> int:
+    """Median of the largest cluster of *values* within +-``tolerance``.
+
+    A cluster is every value within ``tolerance`` of an anchor; the anchor
+    whose cluster is largest wins (first-seen breaks ties), and its members'
+    upper median is returned. This is a 1-D mode: the consensus position the
+    most samples agree on, robust to a scatter of outliers on either side.
+
+    On exact ties the returned median can depend on input order, since a
+    different anchor's cluster (with different members) may win. That is
+    harmless here only because a real crop edge is constant across well-lit
+    samples and so forms the single tightest, largest cluster, out-voting any
+    gradient of scattered over-/under-crops.
+    """
+    best: list[int] = []
+    for anchor in values:
+        members = [v for v in values if abs(v - anchor) <= tolerance]
+        if len(members) > len(best):
+            best = members
+    best.sort()
+    return best[len(best) // 2]
+
+
+def aggregate_crop(
+    crops: list[CropRect],
+    tolerance: int = CROP_EDGE_TOLERANCE,
+) -> CropRect:
     """Combine per-sample cropdetect results into a single crop rectangle.
 
-    cropdetect noise is one-sided: a black bar is always black, but content
-    can be transiently dark, so a detected bar is never *smaller* than the
-    true bar -- only equal or larger when a dark scene fools the detector.
-    The robust estimator is therefore the median taken on each content-box
-    edge independently (left/right/top/bottom), not a joint 4-coordinate
-    cluster: a noisy axis (e.g. letterbox flicker on dark frames) no longer
-    fragments the votes for a rock-solid axis (e.g. a constant pillarbox),
-    so a stable left/right crop survives even when top/bottom is unreliable.
+    cropdetect is noisy in two ways: dark scenes make it *over-crop* (a black
+    bar is always black, but transiently dark content shrinks the detected
+    picture), while stray bright pixels/logos in a bar make it *under-crop*.
+    Both are minorities scattered around a consensus: the true picture edge is
+    where the many well-lit samples agree.
 
-    Each edge takes the upper median (``sorted[len // 2]``) of the observed
-    edge positions -- every returned value is a real cropdetect sample, so no
-    averaging is introduced.
+    So each content-box edge (left=x, right=x+w, top=y, bottom=y+h) is reduced
+    independently to the median of its densest cluster (see ``_dominant_edge``).
+    Per-edge decomposition means a noisy axis (letterbox flicker) cannot drag a
+    rock-solid axis (a constant pillarbox); taking the cluster *mode* rather
+    than the plain median means a dark-majority episode -- where over-crops
+    outnumber true samples but never agree with each other -- still resolves to
+    the true edge.
 
-    ``w`` and ``h`` are guaranteed non-negative: each sample has ``x <= x+w``
-    and ``y <= y+h``, and pointwise ordering is preserved by order statistics,
-    so ``median(x) <= median(x+w)`` and ``median(y) <= median(y+h)``.
+    Raises ``ValueError`` if the dominant edges invert (left past right, or top
+    past bottom): the independent per-edge medians carry no joint invariant, so
+    a pathological set of wildly inconsistent samples could do this. Real
+    cropdetect output (stable bars, ``x+w <= width``, w/h a multiple of 16)
+    never does -- and the planner catches the ValueError and treats it as "no
+    reliable crop" rather than letting a degenerate rectangle reach the encoder.
 
     Requires a non-empty list.
     """
-    lefts = sorted(c.x for c in crops)
-    rights = sorted(c.x + c.w for c in crops)
-    tops = sorted(c.y for c in crops)
-    bottoms = sorted(c.y + c.h for c in crops)
-    mid = len(crops) // 2
-    left, right, top, bottom = lefts[mid], rights[mid], tops[mid], bottoms[mid]
+    left = _dominant_edge([c.x for c in crops], tolerance)
+    right = _dominant_edge([c.x + c.w for c in crops], tolerance)
+    top = _dominant_edge([c.y for c in crops], tolerance)
+    bottom = _dominant_edge([c.y + c.h for c in crops], tolerance)
+    if right < left or bottom < top:
+        raise ValueError(
+            f"cropdetect samples too inconsistent to crop: "
+            f"x {left}..{right}, y {top}..{bottom}",
+        )
     return CropRect(w=right - left, h=bottom - top, x=left, y=top)
 
 

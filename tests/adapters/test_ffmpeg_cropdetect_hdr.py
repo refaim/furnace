@@ -66,7 +66,8 @@ def test_detect_crop_filter_chain(
             is_dvd=False,
             hdr_transfer=hdr_transfer,
         )
-    # All 10 sample-point invocations should use the same -vf.
-    assert mock_run.call_count == 10
-    for i in range(10):
+    # A constant crop converges after the minimum two batches (2 x 10 = 20
+    # invocations); every one should use the same -vf.
+    assert mock_run.call_count == 20
+    for i in range(mock_run.call_count):
         assert _captured_vf(mock_run.call_args_list, i) == expected_vf

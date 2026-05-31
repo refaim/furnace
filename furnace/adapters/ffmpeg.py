@@ -175,35 +175,26 @@ class FFmpegAdapter:
         data: dict[str, Any] = json.loads(result.stdout)
         return data
 
-    _CROP_SAMPLE_POINTS: tuple[float, ...] = (
-        0.05,
-        0.10,
-        0.20,
-        0.30,
-        0.40,
-        0.50,
-        0.60,
-        0.70,
-        0.80,
-        0.90,
-    )
-    _CROP_SAMPLE_POINTS_DVD: tuple[float, ...] = (
-        0.05,
-        0.10,
-        0.15,
-        0.20,
-        0.25,
-        0.30,
-        0.35,
-        0.45,
-        0.50,
-        0.55,
-        0.60,
-        0.65,
-        0.75,
-        0.85,
-        0.90,
-    )
+    # Adaptive cropdetect sampling: take a batch of points across the
+    # timeline, aggregate, then keep adding batches until the crop stops
+    # changing (converged -> confident) or the cap is hit. Dark episodes need
+    # more samples to catch enough well-lit frames; clean ones converge after
+    # the minimum two batches.
+    _CROP_BATCH_HD = 10
+    _CROP_BATCH_DVD = 15  # DVD is cheap to decode and noisier -> denser batches
+    _CROP_MAX_BATCHES = 4
+
+    @staticmethod
+    def _crop_sample_batches(per_batch: int, max_batches: int) -> list[list[float]]:
+        """Timeline fractions split into ``max_batches`` interleaved batches.
+
+        Every batch spans the whole timeline (stride ``max_batches``), so even
+        the first batch is well distributed and later batches fill the gaps --
+        a prefix of batches is never clustered in one part of the runtime.
+        """
+        total = per_batch * max_batches
+        fracs = [(i + 0.5) / total for i in range(total)]
+        return [fracs[b::max_batches] for b in range(max_batches)]
 
     def detect_crop(
         self,
@@ -215,12 +206,19 @@ class FFmpegAdapter:
         hdr_transfer: str | None = None,
         on_progress: Callable[[ProgressSample], None] | None = None,
     ) -> CropRect | None:
-        """Run cropdetect at multiple points across the timeline.
+        """Run cropdetect across the timeline, sampling adaptively.
 
-        Returns the per-edge median crop across all samples (see
-        ``aggregate_crop``), or None if no sample produced a crop at all.
-        Whether the result counts as "no black bars" (crop equals the full
-        frame) is decided downstream by the planner.
+        Samples a batch of points, aggregates them (see ``aggregate_crop``),
+        and keeps adding batches until the aggregate stops changing between
+        batches (converged) or the batch cap is reached. Returns the converged
+        crop, or None if no sample produced a crop at all. Whether the result
+        counts as "no black bars" (crop equals the full frame) is decided
+        downstream by the planner.
+
+        Propagates ``ValueError`` from ``aggregate_crop`` if the samples are too
+        inconsistent to form a crop (the planner catches it and treats it as no
+        crop). This needs non-physical cropdetect output and never happens in
+        practice.
 
         ``hdr_transfer`` is the source's color transfer ('smpte2084' or
         'arib-std-b67') when the input needs HDR tonemapping before
@@ -233,9 +231,12 @@ class FFmpegAdapter:
         geometry.
 
         ``on_progress`` is called after each sample point with a fraction
-        (``points_done / total_points``).
+        (``points_done / cap``), and once more with ``1.0`` when detection
+        finishes (so an early-converged run still completes the bar).
         """
-        points = self._CROP_SAMPLE_POINTS_DVD if is_dvd else self._CROP_SAMPLE_POINTS
+        per_batch = self._CROP_BATCH_DVD if is_dvd else self._CROP_BATCH_HD
+        batches = self._crop_sample_batches(per_batch, self._CROP_MAX_BATCHES)
+        total_points = per_batch * self._CROP_MAX_BATCHES
 
         parts: list[str] = []
         if interlaced:
@@ -268,53 +269,67 @@ class FFmpegAdapter:
         vf = ",".join(parts)
 
         crop_values: list[CropRect] = []
+        done = 0
+        prev: CropRect | None = None
+        result: CropRect | None = None
 
-        for i, pct in enumerate(points, start=1):
-            seek = duration_s * pct
-            cmd = [
-                str(self._ffmpeg),
-                "-hide_banner",
-                "-ss",
-                f"{seek:.2f}",
-                "-i",
-                str(path),
-                "-t",
-                "2",
-                "-vf",
-                vf,
-                "-f",
-                "null",
-                "-",
-            ]
-            logger.debug("detect_crop cmd: %s", cmd)
-            result = subprocess.run(
-                cmd, capture_output=True, text=True,
-                encoding="utf-8", errors="replace", check=False,
-            )
-            last_crop: str | None = None
-            for line in result.stderr.splitlines():
-                m = re.search(r"crop=(\d+:\d+:\d+:\d+)", line)
-                if m:
-                    last_crop = m.group(1)
-            if last_crop is not None:
-                parts_crop = last_crop.split(":")
-                # Regex `crop=(\d+:\d+:\d+:\d+)` structurally guarantees 4 parts.
-                crop_values.append(
-                    CropRect(
-                        w=int(parts_crop[0]),
-                        h=int(parts_crop[1]),
-                        x=int(parts_crop[2]),
-                        y=int(parts_crop[3]),
-                    )
+        for batch in batches:
+            for pct in batch:
+                seek = duration_s * pct
+                cmd = [
+                    str(self._ffmpeg),
+                    "-hide_banner",
+                    "-ss",
+                    f"{seek:.2f}",
+                    "-i",
+                    str(path),
+                    "-t",
+                    "2",
+                    "-vf",
+                    vf,
+                    "-f",
+                    "null",
+                    "-",
+                ]
+                logger.debug("detect_crop cmd: %s", cmd)
+                run = subprocess.run(
+                    cmd, capture_output=True, text=True,
+                    encoding="utf-8", errors="replace", check=False,
                 )
+                last_crop: str | None = None
+                for line in run.stderr.splitlines():
+                    m = re.search(r"crop=(\d+:\d+:\d+:\d+)", line)
+                    if m:
+                        last_crop = m.group(1)
+                if last_crop is not None:
+                    parts_crop = last_crop.split(":")
+                    # Regex `crop=(\d+:\d+:\d+:\d+)` guarantees 4 parts.
+                    crop_values.append(
+                        CropRect(
+                            w=int(parts_crop[0]),
+                            h=int(parts_crop[1]),
+                            x=int(parts_crop[2]),
+                            y=int(parts_crop[3]),
+                        )
+                    )
+                done += 1
+                if on_progress is not None:
+                    on_progress(ProgressSample(fraction=done / total_points))
 
-            if on_progress is not None:
-                on_progress(ProgressSample(fraction=i / len(points)))
+            if not crop_values:
+                continue
+            current = aggregate_crop(crop_values)
+            if current == prev:
+                result = current
+                break
+            prev = current
+        else:
+            # Cap reached without convergence: keep the last (best) estimate.
+            result = prev
 
-        if not crop_values:
-            return None
-
-        return aggregate_crop(crop_values)
+        if on_progress is not None:
+            on_progress(ProgressSample(fraction=1.0))
+        return result
 
     def get_encoder_tag(self, path: Path) -> str | None:
         """Read format.tags.ENCODER from probe output."""

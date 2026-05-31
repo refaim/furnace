@@ -108,8 +108,8 @@ class TestDetectCrop:
             crop = adapter.detect_crop(Path("v.mkv"), duration_s=100.0)
         assert crop is None
 
-    def test_detect_crop_dvd_uses_more_sample_points(self) -> None:
-        """DVD mode uses _CROP_SAMPLE_POINTS_DVD which has 15 points."""
+    def test_detect_crop_dvd_uses_larger_batches(self) -> None:
+        """DVD batches are 15 points; a constant crop converges after two."""
         adapter = _adapter()
         call_count = 0
 
@@ -123,8 +123,8 @@ class TestDetectCrop:
 
         with patch("furnace.adapters.ffmpeg.subprocess.run", side_effect=counting_run):
             adapter.detect_crop(Path("v.mkv"), duration_s=100.0, is_dvd=True)
-        # DVD uses 15 sample points
-        assert call_count == 15
+        # 2 batches x 15 = 30 (vs 2 x 10 = 20 for HD), proving DVD samples denser.
+        assert call_count == 30
 
     def test_detect_crop_interlaced_uses_yadif(self) -> None:
         """Interlaced sources add yadif before cropdetect."""
@@ -147,42 +147,79 @@ class TestDetectCrop:
 
 
 class TestDetectCropAggregation:
-    def test_detect_crop_returns_per_edge_median(self) -> None:
-        """Varying samples are combined per edge (no all-or-nothing gate).
+    def test_detect_crop_converges_on_dominant_cluster(self) -> None:
+        """Dark-episode samples: the plurality true crop beats the median.
 
-        Each call returns a different crop; detect_crop must still return the
-        per-edge median crop rather than giving up. See aggregate_crop.
+        Each 10-sample batch is 5 true crops + 5 scattered over-crops (stable
+        left/right, dark top/bottom). The median top edge would be a dark
+        over-crop (y=180); the dominant-cluster pick recovers the true y=140.
+        The aggregate is identical across both batches, so it converges after
+        2 batches (20 invocations) rather than running the full cap of 40.
         """
         adapter = _adapter()
-        call_idx = 0
-        crops = [
-            "crop=1920:800:0:140",
-            "crop=1000:500:100:200",
-            "crop=1920:800:0:140",
-            "crop=500:300:50:50",
-            "crop=1920:800:0:140",
-            "crop=800:600:100:100",
-            "crop=500:300:50:50",
-            "crop=800:600:100:100",
-            "crop=500:300:50:50",
-            "crop=800:600:100:100",
+        call_count = 0
+        pattern = [
+            "crop=1600:800:160:140",  # true (x5)
+            "crop=1600:800:160:140",
+            "crop=1600:800:160:140",
+            "crop=1600:800:160:140",
+            "crop=1600:800:160:140",
+            "crop=1600:760:160:160",  # scattered over-crops (x5)
+            "crop=1600:720:160:180",
+            "crop=1600:680:160:200",
+            "crop=1600:640:160:220",
+            "crop=1600:600:160:240",
         ]
 
-        def varying_run(*args: Any, **kwargs: Any) -> MagicMock:
-            nonlocal call_idx
+        def cycling_run(*args: Any, **kwargs: Any) -> MagicMock:
+            nonlocal call_count
             mock = MagicMock()
             mock.returncode = 0
-            mock.stderr = f"[cropdetect] {crops[call_idx % len(crops)]}\n"
-            call_idx += 1
+            mock.stderr = f"[cropdetect] {pattern[call_count % len(pattern)]}\n"
+            call_count += 1
             return mock
 
-        with patch("furnace.adapters.ffmpeg.subprocess.run", side_effect=varying_run):
+        with patch("furnace.adapters.ffmpeg.subprocess.run", side_effect=cycling_run):
             crop = adapter.detect_crop(Path("v.mkv"), duration_s=100.0)
-        # left x sorted [0,0,0,50,50,50,100,100,100,100] idx 5 -> 50
-        # right x+w sorted [550,550,550,900,900,900,1100,1920,1920,1920] idx 5 -> 900
-        # top y sorted [50,50,50,100,100,100,140,140,140,200] idx 5 -> 100
-        # bottom y+h sorted [350,350,350,700,700,700,700,940,940,940] idx 5 -> 700
-        assert crop == CropRect(w=850, h=600, x=50, y=100)
+        assert crop == CropRect(w=1600, h=800, x=160, y=140)
+        assert call_count == 20  # converged after the minimum two batches
+
+    def test_detect_crop_runs_to_cap_when_never_converging(self) -> None:
+        """Aggregate that shifts every batch runs the full cap, keeps the last.
+
+        Each batch contributes a strictly larger dominant cluster on the bottom
+        edge (counts 5, 6, 7, 8), so the aggregate changes after every batch and
+        never converges. Detection must sample the whole cap (4 x 10 = 40) and
+        return the final estimate rather than None -- the fallback for the
+        hardest, never-settling episodes.
+        """
+        adapter = _adapter()
+        # x=0,w=100,y=0 throughout -> only the bottom edge (=h) moves.
+        batch_dominant = [1000, 1100, 1200, 1300]  # counts 5,6,7,8 per batch
+        batch_fillers = [
+            [10, 20, 30, 40, 50],   # 5 dominant + 5 fillers = 10
+            [60, 70, 80, 90],       # 6 + 4
+            [110, 120, 130],        # 7 + 3
+            [140, 150],             # 8 + 2
+        ]
+        heights: list[int] = []
+        for b, dom in enumerate(batch_dominant):
+            heights += [dom] * (10 - len(batch_fillers[b])) + batch_fillers[b]
+
+        call_count = 0
+
+        def shifting_run(*args: Any, **kwargs: Any) -> MagicMock:
+            nonlocal call_count
+            mock = MagicMock()
+            mock.returncode = 0
+            mock.stderr = f"[cropdetect] crop=100:{heights[call_count]}:0:0\n"
+            call_count += 1
+            return mock
+
+        with patch("furnace.adapters.ffmpeg.subprocess.run", side_effect=shifting_run):
+            crop = adapter.detect_crop(Path("v.mkv"), duration_s=100.0)
+        assert call_count == 40  # never converged -> sampled the full cap
+        assert crop == CropRect(w=100, h=1300, x=0, y=0)  # last batch's estimate
 
 
 class TestGetEncoderTag:
