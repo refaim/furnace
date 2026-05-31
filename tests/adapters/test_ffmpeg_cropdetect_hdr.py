@@ -14,20 +14,20 @@ import pytest
 
 from furnace.adapters.ffmpeg import FFmpegAdapter
 
-_SDR_VF = "cropdetect=24:16:0"
-_SDR_VF_INTERLACED = "yadif,cropdetect=24:16:0"
+_SDR_VF = "cropdetect=40:16:0"
+_SDR_VF_INTERLACED = "yadif,cropdetect=40:16:0"
 
 _PQ_CHAIN = (
     "zscale=tin=smpte2084:min=2020_ncl:pin=2020:t=linear:npl=100,"
     "zscale=tin=linear:min=2020_ncl:pin=2020:t=bt709:m=bt709:p=bt709:r=tv,"
     "format=yuv420p,"
-    "cropdetect=24:16:0"
+    "cropdetect=40:16:0"
 )
 _HLG_CHAIN = (
     "zscale=tin=arib-std-b67:min=2020_ncl:pin=2020:t=linear:npl=100,"
     "zscale=tin=linear:min=2020_ncl:pin=2020:t=bt709:m=bt709:p=bt709:r=tv,"
     "format=yuv420p,"
-    "cropdetect=24:16:0"
+    "cropdetect=40:16:0"
 )
 _PQ_CHAIN_INTERLACED = "yadif," + _PQ_CHAIN
 

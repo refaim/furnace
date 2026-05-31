@@ -184,6 +184,14 @@ class FFmpegAdapter:
     _CROP_BATCH_DVD = 15  # DVD is cheap to decode and noisier -> denser batches
     _CROP_MAX_BATCHES = 4
 
+    # cropdetect luma threshold (8-bit). Higher than ffmpeg's default 24 because
+    # old DVD/analog transfers carry a dim *grey* letterbox (~40, not pure black)
+    # that 24 mistakes for picture and leaves uncropped. 40 catches it while the
+    # consensus aggregation (aggregate_crop) absorbs the extra per-window
+    # over-crop a higher threshold causes on genuinely dark scenes. Validated to
+    # leave pure-black-bar content (e.g. pillarboxed cartoons) unchanged.
+    _CROP_DETECT_LIMIT = 40
+
     @staticmethod
     def _crop_sample_batches(per_batch: int, max_batches: int) -> list[list[float]]:
         """Timeline fractions split into ``max_batches`` interleaved batches.
@@ -223,7 +231,7 @@ class FFmpegAdapter:
         ``hdr_transfer`` is the source's color transfer ('smpte2084' or
         'arib-std-b67') when the input needs HDR tonemapping before
         cropdetect (PQ/HLG -> linear -> bt709, then ``format=yuv420p`` so
-        the SDR ``limit=24`` keeps its intended meaning -- cropdetect does
+        the 8-bit ``limit`` keeps its intended meaning -- cropdetect does
         NOT auto-scale ``limit`` to bit depth). DV Profile 5 (single-layer
         dvhe.05) is also tagged as smpte2084 in container metadata; zscale
         mis-handles its IPT-PQ-C2 colors but luma magnitude near zero is
@@ -259,13 +267,13 @@ class FFmpegAdapter:
                 "zscale=tin=linear:min=2020_ncl:pin=2020:"
                 "t=bt709:m=bt709:p=bt709:r=tv",
             )
-            # format=yuv420p is load-bearing: cropdetect's `limit=24` is
-            # bit-depth-naive -- see libavfilter/vf_cropdetect.c -- so
-            # 10-bit input would compare against code 24/1023 (~6 in 8-bit),
-            # below limited-range black. Force 8-bit so the SDR threshold keeps
+            # format=yuv420p is load-bearing: cropdetect's `limit` is
+            # bit-depth-naive -- see libavfilter/vf_cropdetect.c -- so 10-bit
+            # input would compare against code 40/1023 (~10 in 8-bit), well
+            # below limited-range black. Force 8-bit so the threshold keeps
             # its intended meaning.
             parts.append("format=yuv420p")
-        parts.append("cropdetect=24:16:0")
+        parts.append(f"cropdetect={self._CROP_DETECT_LIMIT}:16:0")
         vf = ",".join(parts)
 
         crop_values: list[CropRect] = []
