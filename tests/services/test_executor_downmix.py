@@ -267,15 +267,19 @@ class TestDecodeEncodeMonoDownmix:
         s2m_kwargs = mocks.audio_extractor.stereo_to_mono_wav.call_args.kwargs
         assert s2m_kwargs["delay_ms"] == 0
 
-    def test_stereo_source_skips_eac3to_calls_mono_directly(
+    def test_stereo_non_drc_source_skips_eac3to_calls_mono_directly(
         self, executor_with_mocks: tuple[Executor, SimpleNamespace], tmp_path: Path,
     ) -> None:
-        """channels == 2: stereo_to_mono_wav direct from source, delay applied here."""
+        """Stereo, non-DRC codec (aac): ffmpeg averages source directly, delay here.
+
+        ffmpeg's aac decoder applies no dynamic-range compression, so there is
+        no reason to take the slower eac3to decode route.
+        """
         executor, mocks = executor_with_mocks
         mocks.audio_extractor.stereo_to_mono_wav.return_value = 0
 
         instr = _instr(
-            "ac3", downmix=DownmixMode.MONO, channels=2, stream_index=3, delay_ms=-30,
+            "aac", downmix=DownmixMode.MONO, channels=2, stream_index=3, delay_ms=-30,
         )
         executor._process_audio_track(instr, tmp_path, _job())
 
@@ -288,6 +292,40 @@ class TestDecodeEncodeMonoDownmix:
         assert s2m_kwargs["stream_index"] == instr.stream_index
         assert s2m_kwargs["input_path"] == Path(instr.source_file)
         assert s2m_kwargs["delay_ms"] == -30
+
+        mocks.aac_encoder.encode_aac.assert_called_once()
+
+    @pytest.mark.parametrize("codec", ["ac3", "eac3"])
+    def test_stereo_drc_codec_routes_through_eac3to(
+        self, codec: str,
+        executor_with_mocks: tuple[Executor, SimpleNamespace], tmp_path: Path,
+    ) -> None:
+        """Stereo (E-)AC3 MONO decodes via eac3to, NOT ffmpeg-direct.
+
+        ffmpeg's (E-)AC3 decoder bakes in dynamic-range compression by default,
+        so a stereo AC3/E-AC3 source must be decoded by eac3to (full range,
+        -removeDialnorm) and only then averaged to mono by ffmpeg -- mirroring
+        the multichannel path. Already stereo, so decode_lossless gets no
+        downmix; the delay is applied at eac3to and the mono step gets 0.
+        """
+        executor, mocks = executor_with_mocks
+        mocks.audio_extractor.stereo_to_mono_wav.return_value = 0
+
+        instr = _instr(
+            codec, downmix=DownmixMode.MONO, channels=2, stream_index=3, delay_ms=125,
+        )
+        executor._process_audio_track(instr, tmp_path, _job())
+
+        # eac3to decode route, not a direct ffmpeg pan on the source.
+        mocks.audio_extractor.extract_track.assert_called_once()
+        decode_call = mocks.audio_decoder.decode_lossless.call_args
+        assert decode_call.kwargs.get("downmix") is None  # already stereo
+        assert decode_call.args[2] == 125  # delay applied at eac3to
+
+        mocks.audio_extractor.stereo_to_mono_wav.assert_called_once()
+        s2m_kwargs = mocks.audio_extractor.stereo_to_mono_wav.call_args.kwargs
+        assert s2m_kwargs["input_path"] != Path(instr.source_file)  # decoded WAV
+        assert s2m_kwargs["delay_ms"] == 0  # delay already handled by eac3to
 
         mocks.aac_encoder.encode_aac.assert_called_once()
 
@@ -313,7 +351,7 @@ class TestDecodeEncodeMonoDownmix:
         mocks.audio_decoder.decode_lossless.return_value = 7
 
         instr = _instr("dts", downmix=DownmixMode.MONO, channels=6)
-        with pytest.raises(RuntimeError, match=r"eac3to -downStereo failed.*rc=7"):
+        with pytest.raises(RuntimeError, match=r"eac3to decode failed.*rc=7"):
             executor._process_audio_track(instr, tmp_path, _job())
 
         mocks.audio_extractor.stereo_to_mono_wav.assert_not_called()
@@ -368,7 +406,7 @@ class TestDecodeEncodeMonoDownmix:
         executor, mocks = executor_with_mocks
         mocks.audio_extractor.stereo_to_mono_wav.return_value = 5
 
-        instr = _instr("ac3", downmix=DownmixMode.MONO, channels=2)
+        instr = _instr("aac", downmix=DownmixMode.MONO, channels=2)
         with pytest.raises(RuntimeError, match=r"stereo_to_mono_wav failed.*rc=5"):
             executor._process_audio_track(instr, tmp_path, _job())
 
@@ -382,7 +420,7 @@ class TestDecodeEncodeMonoDownmix:
         mocks.audio_extractor.stereo_to_mono_wav.return_value = 0
         mocks.aac_encoder.encode_aac.return_value = 3
 
-        instr = _instr("ac3", downmix=DownmixMode.MONO, channels=2)
+        instr = _instr("aac", downmix=DownmixMode.MONO, channels=2)
         with pytest.raises(RuntimeError, match=r"encode_aac failed.*rc=3"):
             executor._process_audio_track(instr, tmp_path, _job())
 
@@ -413,7 +451,7 @@ class TestDecodeEncodeMonoDownmix:
         executor, mocks = executor_with_mocks
         mocks.audio_extractor.stereo_to_mono_wav.return_value = 0
 
-        instr = _instr("ac3", downmix=DownmixMode.MONO, channels=2)
+        instr = _instr("aac", downmix=DownmixMode.MONO, channels=2)
         executor._process_audio_track(instr, tmp_path, _job())
 
         mono_call = mocks.audio_extractor.stereo_to_mono_wav.call_args

@@ -2429,12 +2429,12 @@ class TestAudioProgressLines:
     def test_decode_encode_mono_stereo_source_progress_lines(
         self, tmp_path: Path,
     ) -> None:
-        """Stereo source MONO downmix announces the averaging and AAC steps."""
+        """Stereo non-DRC source MONO downmix announces the averaging and AAC steps."""
         executor, mocks, progress = _make_executor_with_progress()
         mocks.audio_extractor.stereo_to_mono_wav.return_value = 0
         instr = make_audio_instruction(
             action=AudioAction.DECODE_ENCODE,
-            codec_name="ac3",
+            codec_name="aac",
             channels=2,
             downmix=DownmixMode.MONO,
             stream_index=5,
@@ -2443,6 +2443,26 @@ class TestAudioProgressLines:
         tool_lines = [c[0][0] for c in progress.add_tool_line.call_args_list]
         assert any("Averaging audio stream 5 to mono" in line for line in tool_lines)
         assert any("Encoding AAC for stream 5" in line for line in tool_lines)
+
+    def test_decode_encode_mono_stereo_drc_codec_progress_lines(
+        self, tmp_path: Path,
+    ) -> None:
+        """Stereo AC3 MONO routes through eac3to: extract, decode, average, AAC."""
+        executor, mocks, progress = _make_executor_with_progress()
+        mocks.audio_extractor.stereo_to_mono_wav.return_value = 0
+        instr = make_audio_instruction(
+            action=AudioAction.DECODE_ENCODE,
+            codec_name="ac3",
+            channels=2,
+            downmix=DownmixMode.MONO,
+            stream_index=8,
+        )
+        executor._process_audio_track(instr, tmp_path, _minimal_job())
+        tool_lines = [c[0][0] for c in progress.add_tool_line.call_args_list]
+        assert any("Extracting audio stream 8 for MONO downmix" in line for line in tool_lines)
+        assert any("Decoding audio stream 8 with eac3to" in line for line in tool_lines)
+        assert any("Averaging audio stream 8 to mono" in line for line in tool_lines)
+        assert any("Encoding AAC for stream 8" in line for line in tool_lines)
 
     def test_decode_encode_mono_multichannel_eac3to_progress_lines(
         self, tmp_path: Path,

@@ -96,6 +96,15 @@ def _codec_supported_by_eac3to(codec_name: str) -> bool:
     return codec_name.lower() in _EAC3TO_SUPPORTED_SRC
 
 
+# Codecs whose ffmpeg decoder applies dynamic-range compression by default
+# (drc_scale=1) -- only the (E-)AC3 decoders do. Decoding these with ffmpeg
+# would bake the DRC ("night mode" loudness flattening) into the output, so a
+# stereo (E-)AC3 source bound for mono is decoded by eac3to (full range,
+# -removeDialnorm) instead, exactly like the multichannel downmix path. DTS,
+# TrueHD, AAC, MP3, FLAC etc. decode full range in ffmpeg already.
+_FFMPEG_DRC_CODECS: frozenset[str] = frozenset({"ac3", "eac3"})
+
+
 class Executor:
     def __init__(
         self,
@@ -543,7 +552,13 @@ class Executor:
                         f"MONO downmix without channel count for stream {track_idx}",
                     )
 
-                if instr.channels == STEREO_CHANNELS:
+                is_stereo = instr.channels == STEREO_CHANNELS
+
+                # Stereo source whose ffmpeg decoder applies no DRC: average to
+                # mono with ffmpeg directly. (E-)AC3 is excluded -- its ffmpeg
+                # decoder bakes in dynamic-range compression -- and falls through
+                # to the eac3to decode route below, like multichannel sources.
+                if is_stereo and instr.codec_name.lower() not in _FFMPEG_DRC_CODECS:
                     if self._progress is not None:
                         self._progress.add_tool_line(
                             f"[furnace] Averaging audio stream {track_idx} to mono with ffmpeg",
@@ -594,7 +609,7 @@ class Executor:
                     )
                     if rc != 0:
                         raise RuntimeError(
-                            f"Audio extract (MONO multichannel) failed with rc={rc} for stream {track_idx}",
+                            f"Audio extract (MONO) failed with rc={rc} for stream {track_idx}",
                         )
                 else:
                     if self._progress is not None:
@@ -614,13 +629,19 @@ class Executor:
                     )
                     if rc != 0:
                         raise RuntimeError(
-                            f"ffmpeg pre-decode (MONO multichannel) failed with rc={rc} for stream {track_idx}",
+                            f"ffmpeg pre-decode (MONO) failed with rc={rc} for stream {track_idx}",
                         )
 
+                # Already stereo (an (E-)AC3 routed here only to dodge ffmpeg's
+                # DRC) needs no channel downmix; multichannel collapses to stereo.
+                decode_downmix = None if is_stereo else DownmixMode.STEREO
                 if self._progress is not None:
-                    self._progress.add_tool_line(
-                        f"[furnace] Downmixing audio stream {track_idx} to stereo with eac3to",
+                    eac3to_step = (
+                        f"[furnace] Decoding audio stream {track_idx} with eac3to"
+                        if is_stereo
+                        else f"[furnace] Downmixing audio stream {track_idx} to stereo with eac3to"
                     )
+                    self._progress.add_tool_line(eac3to_step)
                 stereo_wav = temp_dir / f"audio_{track_idx}_stereo.wav"
                 _, on_progress = self._make_progress_callback(total_s=None)
                 rc = self._audio_decoder.decode_lossless(
@@ -628,10 +649,10 @@ class Executor:
                     stereo_wav,
                     instr.delay_ms,
                     on_progress=on_progress,
-                    downmix=DownmixMode.STEREO,
+                    downmix=decode_downmix,
                 )
                 if rc != 0:
-                    raise RuntimeError(f"eac3to -downStereo failed: rc={rc}")
+                    raise RuntimeError(f"eac3to decode failed: rc={rc}")
 
                 if self._progress is not None:
                     self._progress.add_tool_line(
