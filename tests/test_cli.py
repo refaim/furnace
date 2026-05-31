@@ -2301,3 +2301,342 @@ class TestDefaultAppRunner:
             result = _run_screen_app(lambda: fake_screen)
 
         assert result is None
+
+
+# ---------------------------------------------------------------------------
+# scan command
+# ---------------------------------------------------------------------------
+
+
+class TestScanCommand:
+    def test_no_filters_calls_service_with_defaults(self, tmp_path: Path) -> None:
+        """`furnace scan SRC` runs the service with all filters off."""
+        src = tmp_path / "movies"
+        src.mkdir()
+        cfg = _make_tool_paths(tmp_path)
+
+        with (
+            patch("furnace.cli.load_config", return_value=cfg),
+            patch("furnace.cli.FFmpegAdapter"),
+            patch("furnace.cli.ScanService") as mock_service_cls,
+            patch("furnace.cli.render_scan_table"),
+        ):
+            mock_service_cls.return_value.scan.return_value = ([], 0)
+
+            result = runner.invoke(app, ["scan", str(src)])
+
+        assert result.exit_code == 0, result.output
+        call = mock_service_cls.return_value.scan.call_args
+        assert call.args[0] == src
+        assert call.kwargs["not_encoded"] is False
+        assert call.kwargs["encoded"] is False
+        assert call.kwargs["max_version"] is None
+
+    def test_not_encoded_flag_forwarded(self, tmp_path: Path) -> None:
+        src = tmp_path / "movies"
+        src.mkdir()
+        cfg = _make_tool_paths(tmp_path)
+
+        with (
+            patch("furnace.cli.load_config", return_value=cfg),
+            patch("furnace.cli.FFmpegAdapter"),
+            patch("furnace.cli.ScanService") as mock_service_cls,
+            patch("furnace.cli.render_scan_table"),
+        ):
+            mock_service_cls.return_value.scan.return_value = ([], 0)
+
+            result = runner.invoke(app, ["scan", str(src), "--not-encoded"])
+
+        assert result.exit_code == 0, result.output
+        assert mock_service_cls.return_value.scan.call_args.kwargs["not_encoded"] is True
+
+    def test_encoded_flag_forwarded(self, tmp_path: Path) -> None:
+        src = tmp_path / "movies"
+        src.mkdir()
+        cfg = _make_tool_paths(tmp_path)
+
+        with (
+            patch("furnace.cli.load_config", return_value=cfg),
+            patch("furnace.cli.FFmpegAdapter"),
+            patch("furnace.cli.ScanService") as mock_service_cls,
+            patch("furnace.cli.render_scan_table"),
+        ):
+            mock_service_cls.return_value.scan.return_value = ([], 0)
+
+            result = runner.invoke(app, ["scan", str(src), "--encoded"])
+
+        assert result.exit_code == 0, result.output
+        assert mock_service_cls.return_value.scan.call_args.kwargs["encoded"] is True
+
+    def test_max_version_parsed_to_tuple(self, tmp_path: Path) -> None:
+        src = tmp_path / "movies"
+        src.mkdir()
+        cfg = _make_tool_paths(tmp_path)
+
+        with (
+            patch("furnace.cli.load_config", return_value=cfg),
+            patch("furnace.cli.FFmpegAdapter"),
+            patch("furnace.cli.ScanService") as mock_service_cls,
+            patch("furnace.cli.render_scan_table"),
+        ):
+            mock_service_cls.return_value.scan.return_value = ([], 0)
+
+            result = runner.invoke(app, ["scan", str(src), "--max-version", "1.19.3"])
+
+        assert result.exit_code == 0, result.output
+        assert mock_service_cls.return_value.scan.call_args.kwargs["max_version"] == (1, 19, 3)
+
+    def test_union_of_flags_forwarded(self, tmp_path: Path) -> None:
+        src = tmp_path / "movies"
+        src.mkdir()
+        cfg = _make_tool_paths(tmp_path)
+
+        with (
+            patch("furnace.cli.load_config", return_value=cfg),
+            patch("furnace.cli.FFmpegAdapter"),
+            patch("furnace.cli.ScanService") as mock_service_cls,
+            patch("furnace.cli.render_scan_table"),
+        ):
+            mock_service_cls.return_value.scan.return_value = ([], 0)
+
+            result = runner.invoke(
+                app, ["scan", str(src), "--not-encoded", "--max-version", "1.19.3"]
+            )
+
+        assert result.exit_code == 0, result.output
+        kwargs = mock_service_cls.return_value.scan.call_args.kwargs
+        assert kwargs["not_encoded"] is True
+        assert kwargs["max_version"] == (1, 19, 3)
+
+    def test_bad_max_version_is_cli_error(self, tmp_path: Path) -> None:
+        """A non-X.Y.Z --max-version yields a typer BadParameter (exit != 0)."""
+        src = tmp_path / "movies"
+        src.mkdir()
+        cfg = _make_tool_paths(tmp_path)
+
+        with (
+            patch("furnace.cli.load_config", return_value=cfg) as mock_load_cfg,
+            patch("furnace.cli.FFmpegAdapter"),
+            patch("furnace.cli.ScanService") as mock_service_cls,
+            patch("furnace.cli.render_scan_table"),
+        ):
+            result = runner.invoke(app, ["scan", str(src), "--max-version", "1.2"])
+
+        assert result.exit_code != 0
+        assert "max-version" in result.output
+        # The error is raised before any work happens.
+        mock_load_cfg.assert_not_called()
+        mock_service_cls.return_value.scan.assert_not_called()
+
+    def test_config_forwarded_to_load_config(self, tmp_path: Path) -> None:
+        src = tmp_path / "movies"
+        src.mkdir()
+        config_file = tmp_path / "my.toml"
+        cfg = _make_tool_paths(tmp_path)
+
+        with (
+            patch("furnace.cli.load_config", return_value=cfg) as mock_load_cfg,
+            patch("furnace.cli.FFmpegAdapter"),
+            patch("furnace.cli.ScanService") as mock_service_cls,
+            patch("furnace.cli.render_scan_table"),
+        ):
+            mock_service_cls.return_value.scan.return_value = ([], 0)
+
+            result = runner.invoke(app, ["scan", str(src), "--config", str(config_file)])
+
+        assert result.exit_code == 0, result.output
+        mock_load_cfg.assert_called_once_with(config_file)
+
+    def test_ffmpeg_adapter_built_from_config(self, tmp_path: Path) -> None:
+        src = tmp_path / "movies"
+        src.mkdir()
+        cfg = _make_tool_paths(tmp_path)
+
+        with (
+            patch("furnace.cli.load_config", return_value=cfg),
+            patch("furnace.cli.FFmpegAdapter") as mock_ffmpeg_cls,
+            patch("furnace.cli.ScanService") as mock_service_cls,
+            patch("furnace.cli.render_scan_table"),
+        ):
+            mock_service_cls.return_value.scan.return_value = ([], 0)
+
+            result = runner.invoke(app, ["scan", str(src)])
+
+        assert result.exit_code == 0, result.output
+        ffmpeg_args = mock_ffmpeg_cls.call_args.args
+        assert ffmpeg_args[0] == cfg.ffmpeg
+        assert ffmpeg_args[1] == cfg.ffprobe
+        # The service is built with the ffprobe-backed adapter.
+        assert mock_service_cls.call_args.kwargs["prober"] is mock_ffmpeg_cls.return_value
+
+    def test_total_taken_from_service(self, tmp_path: Path) -> None:
+        """The summary total (M) is the count the service reports alongside rows."""
+        src = tmp_path / "movies"
+        src.mkdir()
+        cfg = _make_tool_paths(tmp_path)
+
+        with (
+            patch("furnace.cli.load_config", return_value=cfg),
+            patch("furnace.cli.FFmpegAdapter"),
+            patch("furnace.cli.ScanService") as mock_service_cls,
+            patch("furnace.cli.render_scan_table") as mock_render,
+        ):
+            mock_service_cls.return_value.scan.return_value = ([], 3)
+
+            result = runner.invoke(app, ["scan", str(src)])
+
+        assert result.exit_code == 0, result.output
+        render_kwargs = mock_render.call_args.kwargs
+        assert render_kwargs["root"] == src
+        assert render_kwargs["total"] == 3
+
+    def test_unreadable_rows_become_warnings(self, tmp_path: Path) -> None:
+        """Each unreadable row is surfaced as a stderr warning; readable rows are not."""
+        from furnace.core.scan import ScanRow
+
+        src = tmp_path / "movies"
+        src.mkdir()
+        cfg = _make_tool_paths(tmp_path)
+        good = ScanRow(
+            path=src / "good.mkv",
+            furnace_version=(1, 0, 0),
+            video_codec="hevc",
+            audio=(),
+            subtitles=(),
+        )
+        bad = ScanRow(
+            path=src / "bad.mkv",
+            furnace_version=None,
+            video_codec=None,
+            audio=(),
+            subtitles=(),
+            unreadable=True,
+        )
+
+        with (
+            patch("furnace.cli.load_config", return_value=cfg),
+            patch("furnace.cli.FFmpegAdapter"),
+            patch("furnace.cli.ScanService") as mock_service_cls,
+            patch("furnace.cli.render_scan_table") as mock_render,
+        ):
+            mock_service_cls.return_value.scan.return_value = ([good, bad], 2)
+
+            result = runner.invoke(app, ["scan", str(src)])
+
+        assert result.exit_code == 0, result.output
+        warnings = mock_render.call_args.kwargs["warnings"]
+        assert any("bad.mkv" in w for w in warnings)
+        assert all("good.mkv" not in w for w in warnings)
+
+    def test_rows_forwarded_to_renderer(self, tmp_path: Path) -> None:
+        from furnace.core.scan import ScanRow
+
+        src = tmp_path / "movies"
+        src.mkdir()
+        cfg = _make_tool_paths(tmp_path)
+        row = ScanRow(
+            path=src / "a.mkv",
+            furnace_version=(1, 0, 0),
+            video_codec="hevc",
+            audio=(),
+            subtitles=(),
+        )
+
+        with (
+            patch("furnace.cli.load_config", return_value=cfg),
+            patch("furnace.cli.FFmpegAdapter"),
+            patch("furnace.cli.ScanService") as mock_service_cls,
+            patch("furnace.cli.render_scan_table") as mock_render,
+        ):
+            mock_service_cls.return_value.scan.return_value = ([row], 1)
+
+            result = runner.invoke(app, ["scan", str(src)])
+
+        assert result.exit_code == 0, result.output
+        assert mock_render.call_args.args[0] == [row]
+
+    def test_integration_real_service_and_renderer(self, tmp_path: Path) -> None:
+        """End-to-end wiring: real ScanService + real renderer, only the prober stubbed.
+
+        Catches drift between the CLI, the service, the ``ScanRow`` model and the
+        renderer that the fully-mocked tests above cannot see.
+        """
+        src = tmp_path / "movies"
+        src.mkdir()
+        encoded = src / "encoded.mkv"
+        plain = src / "plain.mkv"
+        encoded.touch()
+        plain.touch()
+        cfg = _make_tool_paths(tmp_path)
+
+        probe_map: dict[Path, dict[str, Any]] = {
+            encoded: {
+                "streams": [
+                    {"codec_type": "video", "codec_name": "hevc"},
+                    {
+                        "codec_type": "audio",
+                        "codec_name": "eac3",
+                        "channels": 6,
+                        "tags": {"language": "rus"},
+                    },
+                ],
+                "format": {"tags": {"ENCODER": "Furnace v1.19.3"}},
+            },
+            plain: {
+                "streams": [{"codec_type": "video", "codec_name": "h264"}],
+                "format": {"tags": {"ENCODER": "Lavf60"}},
+            },
+        }
+        fake_prober = MagicMock()
+        fake_prober.probe.side_effect = lambda p: probe_map[p]
+
+        with (
+            patch("furnace.cli.load_config", return_value=cfg),
+            patch("furnace.cli.FFmpegAdapter", return_value=fake_prober),
+        ):
+            result = runner.invoke(app, ["scan", str(src)])
+
+        assert result.exit_code == 0, result.output
+        out = result.output
+        assert "encoded.mkv" in out
+        assert "Furnace v1.19.3" in out
+        assert "rus eac3 6ch" in out
+        assert "plain.mkv" in out
+        assert "h264" in out
+        assert "not encoded" in out
+        assert "2 of 2 shown" in out
+
+    def test_integration_filter_reduces_rows_below_total(self, tmp_path: Path) -> None:
+        """A filter trims rendered rows (N) below the discovered total (M), end-to-end."""
+        src = tmp_path / "movies"
+        src.mkdir()
+        encoded = src / "encoded.mkv"
+        plain = src / "plain.mkv"
+        encoded.touch()
+        plain.touch()
+        cfg = _make_tool_paths(tmp_path)
+
+        probe_map: dict[Path, dict[str, Any]] = {
+            encoded: {
+                "streams": [{"codec_type": "video", "codec_name": "hevc"}],
+                "format": {"tags": {"ENCODER": "Furnace v1.19.3"}},
+            },
+            plain: {
+                "streams": [{"codec_type": "video", "codec_name": "h264"}],
+                "format": {"tags": {"ENCODER": "Lavf60"}},
+            },
+        }
+        fake_prober = MagicMock()
+        fake_prober.probe.side_effect = lambda p: probe_map[p]
+
+        with (
+            patch("furnace.cli.load_config", return_value=cfg),
+            patch("furnace.cli.FFmpegAdapter", return_value=fake_prober),
+        ):
+            result = runner.invoke(app, ["scan", str(src), "--not-encoded"])
+
+        assert result.exit_code == 0, result.output
+        out = result.output
+        assert "plain.mkv" in out
+        assert "encoded.mkv" not in out
+        assert "1 of 2 shown" in out

@@ -37,15 +37,18 @@ from .core.models import (
     Track,
     TrackType,
 )
+from .core.scan import parse_version_arg
 from .plan import load_plan, save_plan
 from .services.analyzer import Analyzer
 from .services.disc_demuxer import DiscDemuxer
 from .services.executor import Executor
 from .services.planner import PlannerService
+from .services.scan_service import ScanService
 from .services.scanner import Scanner
 from .ui.plan_console import RichPlanReporter
 from .ui.progress import ReportPrinter
 from .ui.run_tui import RunApp
+from .ui.scan_table import render_scan_table
 from .ui.tui import (
     FileSelection,
     FileSelectorScreen,
@@ -626,3 +629,46 @@ def run(
                 logger.info("Cleaned up demux directory: %s", demux_path)
 
     logger.debug("run command finished")
+
+
+@app.command()
+def scan(
+    src: Path = typer.Argument(..., help="Video file or directory to scan"),
+    not_encoded: bool = typer.Option(
+        False, "--not-encoded", help="Show files with no parseable Furnace tag"
+    ),
+    encoded: bool = typer.Option(
+        False, "--encoded", help="Show files encoded by any Furnace version"
+    ),
+    max_version: str | None = typer.Option(
+        None, "--max-version", help="Show Furnace files at version <= X.Y.Z"
+    ),
+    config: Path | None = typer.Option(None, "--config", help="Path to config file"),
+) -> None:
+    """Inventory video files and their Furnace-encode status (read-only).
+
+    Filter flags select on encode status and union (OR): no flag shows every
+    video file. The table goes to stdout (redirect-safe); the summary and any
+    warnings go to stderr.
+    """
+    max_version_tuple: tuple[int, int, int] | None = None
+    if max_version is not None:
+        try:
+            max_version_tuple = parse_version_arg(max_version)
+        except ValueError as exc:
+            raise typer.BadParameter(
+                f"{max_version!r} is not a valid X.Y.Z version", param_hint="--max-version"
+            ) from exc
+
+    cfg = load_config(config)
+    prober = FFmpegAdapter(cfg.ffmpeg, cfg.ffprobe)
+    service = ScanService(prober=prober)
+
+    rows, total = service.scan(
+        src,
+        not_encoded=not_encoded,
+        encoded=encoded,
+        max_version=max_version_tuple,
+    )
+    warnings = [f"could not read {row.path}" for row in rows if row.unreadable]
+    render_scan_table(rows, root=src, total=total, warnings=warnings)

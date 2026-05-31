@@ -36,7 +36,7 @@ Hexagonal (Ports & Adapters). Dependency direction:
     UI --> Services --> Core <-- Adapters
 
 - **Core** (`furnace/core/`) — pure Python, no I/O. Models, enums, rules, detect, quality, ports (Protocol interfaces).
-- **Services** (`furnace/services/`) — orchestration. Scanner, analyzer, planner, executor, disc_demuxer.
+- **Services** (`furnace/services/`) — orchestration. Scanner, scan_service, analyzer, planner, executor, disc_demuxer.
 - **Adapters** (`furnace/adapters/`) — external tool wrappers. Implement Protocol interfaces from `core/ports.py`.
 - **UI** (`furnace/ui/`) — Textual TUI (plan + run phases) + Rich progress.
 

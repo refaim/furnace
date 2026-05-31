@@ -76,3 +76,15 @@ Copy eligible video streams verbatim instead of re-encoding (audio still process
 furnace plan D:\Movies -o E:\Encoded --audio-lang eng --sub-lang eng --copy-video
 ```
 Eligible streams are copied as-is (crop/deinterlace skipped); interlaced and Dolby Vision P7 FEL sources fall back to a normal encode, and the plan report shows `passthrough (copy video)` or `encode (<reason>)` per file.
+
+Inventory a folder and check Furnace-encode status (read-only — never modifies files):
+```bash
+furnace scan D:\Movies
+```
+Each video file is listed with its encode status (`Furnace vX.Y.Z`, `not encoded`, or `unreadable`) and its video, audio and subtitle tracks. Filter by encode status to find files needing a (re)encode — the flags union (OR):
+```bash
+furnace scan D:\Movies --not-encoded            # no parseable Furnace tag
+furnace scan D:\Movies --encoded                # encoded by any Furnace version
+furnace scan D:\Movies --max-version 1.19.3     # encoded by Furnace <= 1.19.3
+```
+The table prints to stdout and is redirect-safe (ASCII box, no ANSI, no truncation); the `N of M shown` summary and any warnings go to stderr, so `furnace scan D:\Movies > out.txt` yields a clean plain-text file.
