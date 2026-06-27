@@ -309,29 +309,59 @@ _TV_FPS_THRESHOLD = 48.0
 _IDET_INTERLACE_THRESHOLD = 0.05
 
 
-def needs_idet(field_order: str | None, fps: float) -> bool:
+def _is_hd(height: int) -> bool:
+    """True when the frame is HD (height >= 720).
+
+    For HD, a tt/bb field_order is trusted outright and idet is never consulted.
+    ``needs_idet`` and ``should_deinterlace`` must stay in lockstep on this: the
+    former skips idet for HD (leaving idet_ratio at its 0.0 default), the latter
+    ignores idet_ratio for HD — so the unmeasured ratio can never leak into a
+    decision. Route both through this helper so the coupling can't silently drift.
+    """
+    return height >= _HD_MIN_HEIGHT
+
+
+def needs_idet(field_order: str | None, fps: float, height: int) -> bool:
     """Determine if idet analysis is needed to confirm interlace.
 
     Returns False (no idet) when:
     - field_order is not tt/bb → clearly progressive
-    - field_order is tt/bb but fps >= 48 → clearly TV interlace
-    Returns True when field_order is tt/bb and fps < 48 → ambiguous (DVD soft telecine?)
-    """
-    if field_order not in _INTERLACED_FIELD_ORDERS:
-        return False
-    return fps < _TV_FPS_THRESHOLD
-
-
-def should_deinterlace(field_order: str | None, fps: float, idet_ratio: float) -> bool:
-    """Decide whether to deinterlace based on ffprobe metadata and idet result.
-
-    - field_order not tt/bb → progressive
-    - field_order tt/bb + fps >= 48 → TV interlace, always deinterlace
-    - field_order tt/bb + fps < 48 → idet decides (>5% interlaced → deinterlace)
+    - field_order is tt/bb but fps >= 48 → clearly TV interlace (field rate reported)
+    - field_order is tt/bb but HD (height >= 720) → genuine HD interlace; soft
+      telecine is an SD phenomenon, so the flag is authoritative and idet (which
+      under-counts combing on low-motion HD) would only mislead.
+    Returns True only when field_order is tt/bb, fps < 48 AND SD (height < 720)
+    → ambiguous (DVD soft telecine vs real SD interlace), so idet must decide.
     """
     if field_order not in _INTERLACED_FIELD_ORDERS:
         return False
     if fps >= _TV_FPS_THRESHOLD:
+        return False
+    return not _is_hd(height)
+
+
+def should_deinterlace(field_order: str | None, fps: float, idet_ratio: float, height: int) -> bool:
+    """Decide whether to deinterlace based on ffprobe metadata and idet result.
+
+    - field_order not tt/bb → progressive
+    - field_order tt/bb + fps >= 48 → TV interlace (field rate), always deinterlace
+    - field_order tt/bb + HD (height >= 720) → genuine HD interlace, always
+      deinterlace. 1080i25 broadcast reports frame rate (25) not field rate (50),
+      so the fps shortcut misses it, and idet under-counts combing on low-motion
+      HD drama. HD soft telecine does not exist, so the tt/bb flag is trusted.
+    - field_order tt/bb + SD + fps < 48 → idet decides (>5% interlaced → deinterlace)
+
+    Tradeoff: the one HD case this loses on is progressive-segmented-frame (PsF)
+    film mis-flagged tt/bb — it will be force-deinterlaced (nnedi discards a field
+    and interpolates, a quality loss on truly progressive frames). This is
+    intentional and idet cannot resolve it (PsF and low-motion 1080i both show
+    near-zero combing, so they are metadata-indistinguishable). Real interlace
+    vastly outnumbers mis-flagged PsF in this tool's broadcast/disc domain, and a
+    user can override ``deinterlace`` to false in the plan JSON when it matters.
+    """
+    if field_order not in _INTERLACED_FIELD_ORDERS:
+        return False
+    if fps >= _TV_FPS_THRESHOLD or _is_hd(height):
         return True
     return idet_ratio > _IDET_INTERLACE_THRESHOLD
 

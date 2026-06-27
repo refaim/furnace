@@ -803,6 +803,42 @@ class TestIdetPath:
         assert movie is not None
         assert movie.video.interlaced is True
 
+    def _interlaced_hd_probe_data(self) -> dict[str, Any]:
+        """1080i broadcast: field_order=tt, HD height, frame-rate (not field-rate) reported."""
+        return {
+            "streams": [
+                {
+                    "index": 0,
+                    "codec_type": "video",
+                    "codec_name": "h264",
+                    "width": 1920,
+                    "height": 1080,
+                    "avg_frame_rate": "25/1",
+                    "r_frame_rate": "25/1",
+                    "duration": "3600.0",
+                    "field_order": "tt",
+                    "pix_fmt": "yuv420p",
+                },
+            ],
+            "format": {"duration": "3600.0"},
+            "chapters": [],
+        }
+
+    def test_hd_interlace_deinterlaces_without_idet(self, tmp_path: Path) -> None:
+        """1080i25 (tt, HD, fps<48) -> deinterlace without consulting idet."""
+        scan_result = make_scan_result(tmp_path)
+        prober = make_prober(probe_data=self._interlaced_hd_probe_data())
+
+        with (
+            patch("furnace.services.analyzer.should_skip_file", return_value=(False, "")),
+            patch("furnace.services.analyzer.check_unsupported_codecs", return_value=None),
+        ):
+            movie = Analyzer(prober=prober).analyze(scan_result)
+
+        assert movie is not None
+        assert movie.video.interlaced is True
+        prober.run_idet.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # Satellite file processing

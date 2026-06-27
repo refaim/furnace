@@ -255,6 +255,8 @@ def test_hdr10_plus_silent_no_reporter_still_raises(tmp_path: Path) -> None:
 def test_idet_microop_and_progress_forwarded(tmp_path: Path) -> None:
     prober = _make_prober_simple_sdr()
     probe = _sdr_probe_dict()
+    probe["streams"][0]["width"] = 720
+    probe["streams"][0]["height"] = 576
     probe["streams"][0]["field_order"] = "tt"
     probe["streams"][0]["avg_frame_rate"] = "25/1"
     probe["streams"][0]["r_frame_rate"] = "25/1"
@@ -288,6 +290,8 @@ def test_idet_microop_and_progress_forwarded(tmp_path: Path) -> None:
 def test_idet_silent_no_reporter_does_not_pass_callback(tmp_path: Path) -> None:
     prober = _make_prober_simple_sdr()
     probe = _sdr_probe_dict()
+    probe["streams"][0]["width"] = 720
+    probe["streams"][0]["height"] = 576
     probe["streams"][0]["field_order"] = "tt"
     probe["streams"][0]["avg_frame_rate"] = "25/1"
     probe["streams"][0]["r_frame_rate"] = "25/1"
@@ -304,6 +308,8 @@ def test_idet_silent_no_reporter_does_not_pass_callback(tmp_path: Path) -> None:
 def test_idet_failure_does_not_emit_failed(tmp_path: Path) -> None:
     prober = _make_prober_simple_sdr()
     probe = _sdr_probe_dict()
+    probe["streams"][0]["width"] = 720
+    probe["streams"][0]["height"] = 576
     probe["streams"][0]["field_order"] = "tt"
     probe["streams"][0]["avg_frame_rate"] = "25/1"
     probe["streams"][0]["r_frame_rate"] = "25/1"
@@ -440,6 +446,8 @@ def test_done_summary_has_codec_resolution_audio_subs(tmp_path: Path) -> None:
 def test_summary_marks_interlaced(tmp_path: Path) -> None:
     prober = _make_prober_simple_sdr()
     probe = _sdr_probe_dict()
+    probe["streams"][0]["width"] = 720
+    probe["streams"][0]["height"] = 576
     probe["streams"][0]["field_order"] = "tt"
     probe["streams"][0]["avg_frame_rate"] = "25/1"
     probe["streams"][0]["r_frame_rate"] = "25/1"

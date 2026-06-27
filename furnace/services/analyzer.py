@@ -203,7 +203,7 @@ class Analyzer:
             r_den = 1
         fps = r_num / r_den if r_den else 0.0
         idet_ratio = 0.0
-        if needs_idet(field_order_raw, fps):
+        if needs_idet(field_order_raw, fps, video_info.height):
             if self._reporter is not None:
                 self._reporter.analyze_microop("idet", has_progress=True)
             try:
@@ -218,7 +218,7 @@ class Analyzer:
                 logger.debug("%s: idet ratio %.3f", name, idet_ratio)
             except (OSError, RuntimeError, ValueError) as exc:
                 logger.warning("idet failed for %s: %s", name, exc)
-        video_info.interlaced = should_deinterlace(field_order_raw, fps, idet_ratio)
+        video_info.interlaced = should_deinterlace(field_order_raw, fps, idet_ratio, video_info.height)
         if video_info.interlaced:
             logger.info("%s: interlaced content detected", name)
         else:
