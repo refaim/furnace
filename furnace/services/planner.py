@@ -54,7 +54,7 @@ def _format_plan_summary(movie: Movie, job: Job, fallback_reason: str | None = N
     - Plain encode jobs render ``cq <CQ>, <SrcW>x<SrcH> to <DstW>x<DstH>[, deinterlace]``.
 
     The ``DstWxDstH`` part is the *actual* encoded output (crop -> SAR ->
-    mod-8 HEVC alignment), via :func:`final_output_dimensions`. The
+    mod-8 alignment), via :func:`final_output_dimensions`. The
     resolution separator is the word ``to`` (not ``->``) so it doesn't
     collide with the reporter's ``label -> status`` arrow.
     """

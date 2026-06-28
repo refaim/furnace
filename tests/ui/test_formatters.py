@@ -417,7 +417,8 @@ class TestBuildTargetText:
         vp = make_video_params(source_width=1920, source_height=1080, cq=25)
         job = make_job(video_params=vp)
         text = _build_target_text(job)
-        assert "HEVC" in text
+        assert "AV1" in text
+        assert "HEVC" not in text
         assert "1920x1080" in text
         assert "CQ25" in text
 

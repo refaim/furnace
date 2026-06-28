@@ -19,7 +19,7 @@ def _build_cmd(
     """Helper: build mkvmerge command with minimal args and optional video_meta."""
     adapter = MkvmergeAdapter(Path("mkvmerge.exe"))
     return adapter._build_mux_cmd(
-        video_path=Path("video.hevc"),
+        video_path=Path("video.obu"),
         audio_files=audio_files or [],
         subtitle_files=subtitle_files or [],
         attachments=attachments or [],
@@ -333,7 +333,7 @@ class TestMkvmergeMuxExecution:
         adapter = MkvmergeAdapter(Path("mkvmerge.exe"))
         with patch("furnace.adapters.mkvmerge.run_tool", side_effect=fake):
             rc = adapter.mux(
-                video_path=Path("video.hevc"),
+                video_path=Path("video.obu"),
                 audio_files=[],
                 subtitle_files=[],
                 attachments=[],
@@ -348,7 +348,7 @@ class TestMkvmergeMuxExecution:
         adapter = MkvmergeAdapter(Path("mkvmerge.exe"))
         with patch("furnace.adapters.mkvmerge.run_tool", side_effect=fake):
             rc = adapter.mux(
-                video_path=Path("video.hevc"),
+                video_path=Path("video.obu"),
                 audio_files=[],
                 subtitle_files=[],
                 attachments=[],
@@ -362,7 +362,7 @@ class TestMkvmergeMuxExecution:
         adapter = MkvmergeAdapter(Path("mkvmerge.exe"))
         with patch("furnace.adapters.mkvmerge.run_tool", side_effect=fake):
             rc = adapter.mux(
-                video_path=Path("video.hevc"),
+                video_path=Path("video.obu"),
                 audio_files=[],
                 subtitle_files=[],
                 attachments=[],
@@ -388,7 +388,7 @@ class TestMkvmergeMuxExecution:
         adapter = MkvmergeAdapter(Path("mkvmerge.exe"), log_dir=tmp_path)
         with patch("furnace.adapters.mkvmerge.run_tool", side_effect=fake):
             adapter.mux(
-                video_path=Path("video.hevc"),
+                video_path=Path("video.obu"),
                 audio_files=[],
                 subtitle_files=[],
                 attachments=[],
@@ -416,7 +416,7 @@ class TestMkvmergeMuxExecution:
         adapter = MkvmergeAdapter(Path("mkvmerge.exe"))
         with patch("furnace.adapters.mkvmerge.run_tool", side_effect=fake):
             adapter.mux(
-                video_path=Path("video.hevc"),
+                video_path=Path("video.obu"),
                 audio_files=[],
                 subtitle_files=[],
                 attachments=[],
@@ -445,7 +445,7 @@ class TestMkvmergeMuxExecution:
         adapter = MkvmergeAdapter(Path("mkvmerge.exe"))
         with patch("furnace.adapters.mkvmerge.run_tool", side_effect=fake):
             adapter.mux(
-                video_path=Path("video.hevc"),
+                video_path=Path("video.obu"),
                 audio_files=[],
                 subtitle_files=[],
                 attachments=[],
@@ -472,7 +472,7 @@ class TestMkvmergeMuxExecution:
         adapter = MkvmergeAdapter(Path("mkvmerge.exe"))
         with patch("furnace.adapters.mkvmerge.run_tool", side_effect=fake):
             adapter.mux(
-                video_path=Path("video.hevc"),
+                video_path=Path("video.obu"),
                 audio_files=[],
                 subtitle_files=[],
                 attachments=[],
@@ -499,7 +499,7 @@ class TestMkvmergeMuxExecution:
         adapter = MkvmergeAdapter(Path("mkvmerge.exe"), log_dir=None)
         with patch("furnace.adapters.mkvmerge.run_tool", side_effect=fake):
             adapter.mux(
-                video_path=Path("video.hevc"),
+                video_path=Path("video.obu"),
                 audio_files=[],
                 subtitle_files=[],
                 attachments=[],

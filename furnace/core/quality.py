@@ -5,16 +5,17 @@ import math
 
 from .models import CropRect, VideoParams
 
-# CQ anchors per the Furnace spec. Deliberately different from Crucible:
-# Crucible used CRF for x264/x265 (software); Furnace uses CQ for NVENC (hardware).
-# The NVENC CQ scale is not equivalent to CRF -- these values are tuned for
-# hevc_nvenc with preset p5 + UHQ tune.
+# QVBR anchors for NVENC AV1 (hardware), preset P4 + UHQ tune. Calibrated to
+# ~VMAF 94 on clean content (RTX 5060 Ti, NVEncC 9.19); adopted from the
+# crucible AV1 pipeline. NVENC QVBR is a constant-quality control (no CRF on
+# NVENC); the value is passed verbatim as --qvbr. Preset and anchors are
+# coupled -- re-tuning one means re-tuning the other.
 CQ_ANCHORS: list[tuple[int, int]] = [
-    (409_920, 22),  # SD    854x480
-    (921_600, 24),  # 720p  1280x720
-    (2_073_600, 25),  # 1080p 1920x1080
-    (3_686_400, 28),  # 1440p 2560x1440
-    (8_294_400, 31),  # 4K    3840x2160
+    (409_920, 35),  # SD    854x480
+    (921_600, 35),  # 720p  1280x720
+    (2_073_600, 36),  # 1080p 1920x1080
+    (3_686_400, 38),  # 1440p 2560x1440
+    (8_294_400, 41),  # 4K    3840x2160
 ]
 
 
@@ -38,7 +39,10 @@ def calculate_gop(fps_num: int, fps_den: int) -> int:
 
 
 def align_dimensions(w: int, h: int, x: int = 0, y: int = 0) -> CropRect:
-    """Align dimensions to multiples of 8 (HEVC CU alignment).
+    """Align dimensions to multiples of 8.
+
+    AV1 only requires mod-2, but mod-8 is a safe superset kept from the prior
+    HEVC pipeline so existing output dimensions are unchanged.
 
     Trims symmetrically: excess pixels split evenly to offset.
     """
@@ -65,10 +69,10 @@ def correct_sar(width: int, height: int, sar_num: int, sar_den: int) -> tuple[in
 
 
 def final_output_dimensions(vp: VideoParams) -> tuple[int, int]:
-    """Return the actual (width, height) that will be encoded in the HEVC track.
+    """Return the actual (width, height) that will be encoded in the AV1 track.
 
-    Pipeline: crop (if set) -> SAR correction (if non-square) -> mod-8 HEVC
-    CU alignment. This is the single source of truth -- UI labels, plan-log
+    Pipeline: crop (if set) -> SAR correction (if non-square) -> mod-8
+    alignment. This is the single source of truth -- UI labels, plan-log
     summaries and the NVEncC ``--output-res`` flag all derive from here.
     """
     cur_w = vp.crop.w if vp.crop is not None else vp.source_width

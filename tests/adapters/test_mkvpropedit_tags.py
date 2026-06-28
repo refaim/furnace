@@ -16,10 +16,10 @@ class TestBuildTagsXml:
         assert "ENCODER_SETTINGS" not in xml
 
     def test_with_encoder_settings(self) -> None:
-        xml = _build_tags_xml("Furnace v1.4.0", "hevc_nvenc / main10 / cq=25")
+        xml = _build_tags_xml("Furnace v1.4.0", "av1_nvenc / main / qvbr=25")
         assert "<Name>ENCODER</Name>" in xml
         assert "<Name>ENCODER_SETTINGS</Name>" in xml
-        assert "<String>hevc_nvenc / main10 / cq=25</String>" in xml
+        assert "<String>av1_nvenc / main / qvbr=25</String>" in xml
 
 
 class TestSetEncoderTag:
@@ -66,7 +66,7 @@ class TestSetEncoderTag:
 
         adapter = MkvpropeditAdapter(Path("mkvpropedit.exe"))
         with patch("furnace.adapters.mkvpropedit.run_tool", side_effect=fake_run_tool):
-            adapter.set_encoder_tag(mkv_path, "Furnace v1.4.0", "hevc_nvenc / main10")
+            adapter.set_encoder_tag(mkv_path, "Furnace v1.4.0", "av1_nvenc / main")
         # After execution, no .xml temp files should remain
         xml_files = list(tmp_path.glob("furnace_tags_*.xml"))
         assert len(xml_files) == 0

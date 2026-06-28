@@ -1,6 +1,6 @@
 """NVEncC (rigaya) video encoder adapter.
 
-Implements the Encoder protocol using NVEncC for HEVC encoding with NVDEC
+Implements the Encoder protocol using NVEncC for AV1 encoding with NVDEC
 hardware decode, HDR/DV passthrough, and built-in quality metrics.
 """
 
@@ -98,11 +98,24 @@ _NVDEC_CODECS: set[str] = {
 # field-picture flags set). Software decoding of MPEG1/2 is trivial on
 # any modern CPU, so we always fall back to --avsw for those codecs.
 
+# Minimum NVEncC version for AV1 Dolby Vision (Profile 10.x RPU): 8.00.
+# Profiles 10.x added in 8.00b4; AV1 RPU interleaving fixed in 8.00b5.
+_MIN_DV_VERSION = (8, 0)
+
+
+def _version_tuple(version: str) -> tuple[int, int] | None:
+    """Parse 'MAJOR.MINOR' into a comparable (major, minor) tuple, or None."""
+    m = re.match(r"(\d+)\.(\d+)", version)
+    if not m:
+        return None
+    return int(m.group(1)), int(m.group(2))
+
 
 class NVEncCAdapter:
     """Implements Encoder protocol via NVEncC (rigaya) CLI.
 
-    Outputs raw HEVC bitstream (not MKV) -- mkvmerge handles muxing.
+    Outputs a raw AV1 OBU elementary stream (not MKV) -- mkvmerge handles
+    muxing, which also lets the Dolby Vision RPU (a T.35 metadata OBU) survive.
     """
 
     def __init__(
@@ -152,18 +165,18 @@ class NVEncCAdapter:
         Format: slash-separated, NVEncC params always present, filters only when applied.
         """
         version = self._get_version()
-        parts: list[str] = ["hevc_nvenc"]
+        parts: list[str] = ["av1_nvenc"]
         if version:
             parts.append(f"NVEncC={version}")
         parts += [
-            "main10",
+            "main",
+            "output-depth=10",
             f"qvbr={vp.cq}",
-            "preset=P5",
+            "preset=P4",
             "tune=uhq",
             "aq",
             "aq-temporal",
             "lookahead=32",
-            "lookahead-level=3",
             "multipass=2pass-quarter",
         ]
 
@@ -175,7 +188,7 @@ class NVEncCAdapter:
             parts.append(f"crop={top}:{bottom}:{left}:{right}")
 
         if vp.dv_mode is not None:
-            parts.append("dolby-vision=8.1")
+            parts.append("dolby-vision=10.1")
 
         return " / ".join(parts)
 
@@ -200,14 +213,13 @@ class NVEncCAdapter:
         use_hwdec = vp.source_codec in _NVDEC_CODECS and (vp.crop is None or vp.crop.x == 0)
         cmd.append("--avhw" if use_hwdec else "--avsw")
 
-        # Codec, profile, bit depth, tier
-        cmd += ["-c", "hevc", "--profile", "main10", "--output-depth", "10"]
-        cmd += ["--tier", "high"]
+        # Codec, profile, bit depth (AV1: no tier)
+        cmd += ["-c", "av1", "--profile", "main", "--output-depth", "10"]
 
-        # Quality / rate control
+        # Quality / rate control (AV1: no lookahead-level)
         cmd += [
             "--preset",
-            "P5",
+            "P4",
             "--tune",
             "uhq",
             "--qvbr",
@@ -216,8 +228,6 @@ class NVEncCAdapter:
             "--aq-temporal",
             "--lookahead",
             "32",
-            "--lookahead-level",
-            "3",
             "--multipass",
             "2pass-quarter",
         ]
@@ -278,7 +288,7 @@ class NVEncCAdapter:
         # --- Dolby Vision ---
         if rpu_path is not None:
             cmd += ["--dolby-vision-rpu", str(rpu_path)]
-            cmd += ["--dolby-vision-profile", "8.1"]
+            cmd += ["--dolby-vision-profile", "10.1"]
             # Adjust active area when crop is applied
             if vp.crop is not None:
                 cmd += ["--dolby-vision-rpu-prm", "crop=true"]
@@ -313,6 +323,14 @@ class NVEncCAdapter:
         rpu_path: Path | None = None,
     ) -> EncodeResult:
         """Encode video via NVEncC. Parses stderr for progress via the unified parser."""
+        if rpu_path is not None:
+            version = self._get_version()
+            parsed = _version_tuple(version)
+            if parsed is not None and parsed < _MIN_DV_VERSION:
+                raise RuntimeError(
+                    f"AV1 Dolby Vision requires NVEncC >= 8.00 (detected {version})."
+                )
+
         cmd = self._build_encode_cmd(
             input_path,
             output_path,

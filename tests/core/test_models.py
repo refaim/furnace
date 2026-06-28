@@ -30,7 +30,7 @@ class TestDvMode:
 
 class TestEncodeResult:
     def test_basic(self) -> None:
-        r = EncodeResult(return_code=0, encoder_settings="hevc_nvenc / main10")
+        r = EncodeResult(return_code=0, encoder_settings="av1_nvenc / main")
         assert r.return_code == 0
         assert r.vmaf_score is None
 

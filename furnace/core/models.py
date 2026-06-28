@@ -106,10 +106,14 @@ class DvBlCompatibility(enum.IntEnum):
 
 
 class DvMode(enum.IntEnum):
-    """DV RPU extraction mode. Values match dovi_tool -m flag."""
+    """DV RPU extraction mode. Values match dovi_tool -m flag.
+
+    Note: the extracted RPU is single-layer/8.1-style; for AV1 output NVEncC
+    re-tags it as Dolby Vision Profile 10.1 (--dolby-vision-profile 10.1).
+    """
 
     COPY = 0  # extract RPU as-is (no -m flag)
-    TO_8_1 = 2  # convert P7 FEL -> P8.1 (-m 2)
+    TO_8_1 = 2  # convert P7 FEL -> single-layer 8.1 RPU (-m 2); AV1 output tags 10.1
 
 
 class DiscType(enum.Enum):
@@ -281,7 +285,7 @@ class VideoParams:
     source_bitrate: int = 0  # video stream bitrate in bps (from ffprobe)
     sar_num: int = 1  # sample aspect ratio numerator
     sar_den: int = 1  # sample aspect ratio denominator
-    dv_mode: DvMode | None = None  # None=no DV, COPY=as-is, TO_8_1=P7->P8.1
+    dv_mode: DvMode | None = None  # None=no DV, COPY=as-is, TO_8_1=P7->single-layer (AV1 out=10.1)
     passthrough: bool = False  # True = copy video stream verbatim (no re-encode)
 
 

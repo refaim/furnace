@@ -132,7 +132,9 @@ class DoviProcessor(Protocol):
         """Extract RPU from HEVC stream.
 
         mode=COPY: extract as-is (no -m flag).
-        mode=TO_8_1: convert P7 FEL -> P8.1 (-m 2).
+        mode=TO_8_1: convert P7 FEL -> single-layer 8.1 RPU (-m 2).
+        The RPU is codec-independent; for AV1 output the encoder re-tags it as
+        Dolby Vision Profile 10.1.
         Returns exit code.
         """
         ...

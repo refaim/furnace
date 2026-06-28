@@ -6,6 +6,8 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from furnace.adapters.nvencc import NVEncCAdapter, _parse_content_light
 from furnace.core.models import CropRect, DvMode, HdrMetadata, VideoParams
 from furnace.core.progress import ProgressSample
@@ -42,7 +44,7 @@ def _adapter() -> NVEncCAdapter:
 def _cmd(vp: VideoParams, *, vmaf_enabled: bool = False, rpu_path: Path | None = None) -> list[str]:
     """Build command and convert all elements to str for easier assertion."""
     raw = _adapter()._build_encode_cmd(
-        Path("input.mkv"), Path("output.hevc"), vp,
+        Path("input.mkv"), Path("output.obu"), vp,
         vmaf_enabled=vmaf_enabled, rpu_path=rpu_path,
     )
     return [str(x) for x in raw]
@@ -51,25 +53,33 @@ def _cmd(vp: VideoParams, *, vmaf_enabled: bool = False, rpu_path: Path | None =
 class TestNVEncCBasicCommand:
     """Core encoder flags: codec, profile, output depth, preset, tune, qvbr."""
 
-    def test_hevc_codec_present(self) -> None:
+    def test_av1_codec_present(self) -> None:
         cmd = _cmd(_make_vp())
         idx = cmd.index("-c")
-        assert cmd[idx + 1] == "hevc"
+        assert cmd[idx + 1] == "av1"
 
-    def test_profile_main10(self) -> None:
+    def test_profile_main(self) -> None:
         cmd = _cmd(_make_vp())
         idx = cmd.index("--profile")
-        assert cmd[idx + 1] == "main10"
+        assert cmd[idx + 1] == "main"
+
+    def test_no_tier_flag(self) -> None:
+        cmd = _cmd(_make_vp())
+        assert "--tier" not in cmd
 
     def test_output_depth_10(self) -> None:
         cmd = _cmd(_make_vp())
         idx = cmd.index("--output-depth")
         assert cmd[idx + 1] == "10"
 
-    def test_preset_p5(self) -> None:
+    def test_preset_p4(self) -> None:
         cmd = _cmd(_make_vp())
         idx = cmd.index("--preset")
-        assert cmd[idx + 1] == "P5"
+        assert cmd[idx + 1] == "P4"
+
+    def test_no_lookahead_level(self) -> None:
+        cmd = _cmd(_make_vp())
+        assert "--lookahead-level" not in cmd
 
     def test_tune_uhq(self) -> None:
         cmd = _cmd(_make_vp())
@@ -134,7 +144,7 @@ class TestNVEncCBasicCommand:
         idx_i = cmd.index("-i")
         assert cmd[idx_i + 1] == "input.mkv"
         idx_o = cmd.index("-o")
-        assert cmd[idx_o + 1] == "output.hevc"
+        assert cmd[idx_o + 1] == "output.obu"
 
 
 class TestNVEncCCrop:
@@ -208,11 +218,12 @@ class TestNVEncCDolbyVision:
         idx = cmd.index("--dolby-vision-rpu")
         assert cmd[idx + 1] == "rpu.bin"
 
-    def test_dv_profile_81(self) -> None:
+    def test_dv_profile_101(self) -> None:
+        """AV1 Dolby Vision uses Profile 10.1 (HEVC's 8.1 analogue)."""
         vp = _make_vp(dv_mode=DvMode.TO_8_1)
         cmd = _cmd(vp, rpu_path=Path("rpu.bin"))
         idx = cmd.index("--dolby-vision-profile")
-        assert cmd[idx + 1] == "8.1"
+        assert cmd[idx + 1] == "10.1"
 
     def test_no_dv_without_rpu(self) -> None:
         vp = _make_vp(dv_mode=DvMode.TO_8_1)
@@ -420,14 +431,17 @@ class TestNVEncCEncoderSettings:
         adapter = _adapter()
         vp = _make_vp()
         settings = adapter._build_encoder_settings(vp)
-        assert settings.startswith("hevc_nvenc")
-        assert "main10" in settings
+        assert settings.startswith("av1_nvenc")
+        assert "main" in settings
+        assert "main10" not in settings
+        assert "output-depth=10" in settings
         assert "qvbr=31" in settings
-        assert "preset=P5" in settings
+        assert "preset=P4" in settings
         assert "tune=uhq" in settings
         assert "aq" in settings
         assert "aq-temporal" in settings
         assert "lookahead=32" in settings
+        assert "lookahead-level" not in settings
         assert "multipass=2pass-quarter" in settings
 
     def test_settings_with_deinterlace(self) -> None:
@@ -453,7 +467,7 @@ class TestNVEncCEncoderSettings:
         adapter = _adapter()
         vp = _make_vp(dv_mode=DvMode.TO_8_1)
         settings = adapter._build_encoder_settings(vp)
-        assert "dolby-vision=8.1" in settings
+        assert "dolby-vision=10.1" in settings
 
     def test_settings_slash_separated(self) -> None:
         adapter = _adapter()
@@ -461,17 +475,11 @@ class TestNVEncCEncoderSettings:
         settings = adapter._build_encoder_settings(vp)
         parts = settings.split(" / ")
         assert len(parts) >= 8
-        assert parts[0] == "hevc_nvenc"
+        assert parts[0] == "av1_nvenc"
 
 
 class TestNVEncCOutputFormat:
-    """Output must be raw HEVC, not MKV."""
-
-    def test_output_uses_hevc_extension(self) -> None:
-        cmd = _cmd(_make_vp())
-        idx = cmd.index("-o")
-        output = cmd[idx + 1]
-        assert output.endswith(".hevc")
+    """Output path is passed through verbatim (executor picks .obu)."""
 
     def test_output_flag_is_dash_o(self) -> None:
         cmd = _cmd(_make_vp())
@@ -603,9 +611,9 @@ class TestNVEncCEncode:
         with patch("furnace.adapters.nvencc.subprocess.run") as mock_sub:
             mock_sub.return_value.stdout = "NVEncC (x64) 7.72 (r2856)"
             with patch("furnace.adapters.nvencc.run_tool", side_effect=fake_run_tool):
-                result = adapter.encode(Path("input.mkv"), Path("output.hevc"), vp)
+                result = adapter.encode(Path("input.mkv"), Path("output.obu"), vp)
         assert result.return_code == 0
-        assert "hevc_nvenc" in result.encoder_settings
+        assert "av1_nvenc" in result.encoder_settings
 
     def test_encode_ssim_parsing(self) -> None:
         adapter = _adapter()
@@ -625,7 +633,7 @@ class TestNVEncCEncode:
         with patch("furnace.adapters.nvencc.subprocess.run") as mock_sub:
             mock_sub.return_value.stdout = ""
             with patch("furnace.adapters.nvencc.run_tool", side_effect=fake_run_tool):
-                result = adapter.encode(Path("input.mkv"), Path("output.hevc"), vp)
+                result = adapter.encode(Path("input.mkv"), Path("output.obu"), vp)
         assert result.ssim_score is not None
         assert abs(result.ssim_score - 0.9842) < 0.001
 
@@ -647,7 +655,7 @@ class TestNVEncCEncode:
         with patch("furnace.adapters.nvencc.subprocess.run") as mock_sub:
             mock_sub.return_value.stdout = ""
             with patch("furnace.adapters.nvencc.run_tool", side_effect=fake_run_tool):
-                result = adapter.encode(Path("input.mkv"), Path("output.hevc"), vp)
+                result = adapter.encode(Path("input.mkv"), Path("output.obu"), vp)
         assert result.vmaf_score is not None
         assert abs(result.vmaf_score - 95.31) < 0.01
 
@@ -670,7 +678,7 @@ class TestNVEncCEncode:
         with patch("furnace.adapters.nvencc.subprocess.run") as mock_sub:
             mock_sub.return_value.stdout = ""
             with patch("furnace.adapters.nvencc.run_tool", side_effect=fake_run_tool):
-                adapter.encode(Path("input.mkv"), Path("output.hevc"), vp, on_progress=samples.append)
+                adapter.encode(Path("input.mkv"), Path("output.obu"), vp, on_progress=samples.append)
         assert len(samples) == 1
         assert abs(samples[0].fraction - 0.5) < 0.01  # type: ignore[operator]
 
@@ -692,7 +700,7 @@ class TestNVEncCEncode:
         with patch("furnace.adapters.nvencc.subprocess.run") as mock_sub:
             mock_sub.return_value.stdout = ""
             with patch("furnace.adapters.nvencc.run_tool", side_effect=fake_run_tool):
-                adapter.encode(Path("input.mkv"), Path("output.hevc"), vp)
+                adapter.encode(Path("input.mkv"), Path("output.obu"), vp)
         assert captured_kwargs["log_path"] == tmp_path / "nvencc_encode.log"
 
     def test_encode_no_on_output(self) -> None:
@@ -716,7 +724,7 @@ class TestNVEncCEncode:
         with patch("furnace.adapters.nvencc.subprocess.run") as mock_sub:
             mock_sub.return_value.stdout = ""
             with patch("furnace.adapters.nvencc.run_tool", side_effect=fake_run_tool):
-                result = adapter.encode(Path("in.mkv"), Path("out.hevc"), vp)
+                result = adapter.encode(Path("in.mkv"), Path("out.obu"), vp)
         assert result.ssim_score is not None
         assert result.vmaf_score is not None
 
@@ -740,7 +748,7 @@ class TestNVEncCEncode:
         with patch("furnace.adapters.nvencc.subprocess.run") as mock_sub:
             mock_sub.return_value.stdout = ""
             with patch("furnace.adapters.nvencc.run_tool", side_effect=fake_run_tool):
-                result = adapter.encode(Path("in.mkv"), Path("out.hevc"), vp, on_progress=None)
+                result = adapter.encode(Path("in.mkv"), Path("out.obu"), vp, on_progress=None)
         assert result.return_code == 0
 
     def test_encode_on_output_non_metric_lines(self) -> None:
@@ -764,7 +772,7 @@ class TestNVEncCEncode:
         with patch("furnace.adapters.nvencc.subprocess.run") as mock_sub:
             mock_sub.return_value.stdout = ""
             with patch("furnace.adapters.nvencc.run_tool", side_effect=fake_run_tool):
-                result = adapter.encode(Path("in.mkv"), Path("out.hevc"), vp)
+                result = adapter.encode(Path("in.mkv"), Path("out.obu"), vp)
         assert result.ssim_score is None
         assert result.vmaf_score is None
         assert "encode started" in output_lines
@@ -789,7 +797,7 @@ class TestNVEncCEncode:
         with patch("furnace.adapters.nvencc.subprocess.run") as mock_sub:
             mock_sub.return_value.stdout = ""
             with patch("furnace.adapters.nvencc.run_tool", side_effect=fake_run_tool):
-                adapter.encode(Path("in.mkv"), Path("out.hevc"), vp)
+                adapter.encode(Path("in.mkv"), Path("out.obu"), vp)
         assert results == [False]
 
     def test_encode_ssim_line_without_numeric_skipped(self) -> None:
@@ -812,7 +820,7 @@ class TestNVEncCEncode:
         with patch("furnace.adapters.nvencc.subprocess.run") as mock_sub:
             mock_sub.return_value.stdout = ""
             with patch("furnace.adapters.nvencc.run_tool", side_effect=fake_run_tool):
-                result = adapter.encode(Path("in.mkv"), Path("out.hevc"), vp)
+                result = adapter.encode(Path("in.mkv"), Path("out.obu"), vp)
         assert result.ssim_score is None
 
     def test_encode_vmaf_line_without_numeric_skipped(self) -> None:
@@ -835,5 +843,55 @@ class TestNVEncCEncode:
         with patch("furnace.adapters.nvencc.subprocess.run") as mock_sub:
             mock_sub.return_value.stdout = ""
             with patch("furnace.adapters.nvencc.run_tool", side_effect=fake_run_tool):
-                result = adapter.encode(Path("in.mkv"), Path("out.hevc"), vp)
+                result = adapter.encode(Path("in.mkv"), Path("out.obu"), vp)
         assert result.vmaf_score is None
+
+
+def _ok_run_tool(
+    cmd: Any,
+    on_output: Any = None,
+    on_progress_line: Any = None,
+    log_path: Any = None,
+    cwd: Any = None,
+) -> tuple[int, str]:
+    """run_tool stub that succeeds without producing output."""
+    return 0, ""
+
+
+class TestNVEncCDvVersionGate:
+    """DV encodes require NVEncC >= 8.00 (Profile 10.x RPU support)."""
+
+    def test_dv_with_old_version_raises(self) -> None:
+        adapter = _adapter()
+        vp = _make_vp(dv_mode=DvMode.COPY)
+        with patch("furnace.adapters.nvencc.subprocess.run") as mock_sub:
+            mock_sub.return_value.stdout = "NVEncC (x64) 7.72 (r2856)"
+            with patch("furnace.adapters.nvencc.run_tool", side_effect=_ok_run_tool):
+                with pytest.raises(RuntimeError, match=r"8\.00"):
+                    adapter.encode(Path("in.mkv"), Path("out.obu"), vp, rpu_path=Path("rpu.bin"))
+
+    def test_dv_with_new_version_ok(self) -> None:
+        adapter = _adapter()
+        vp = _make_vp(dv_mode=DvMode.COPY)
+        with patch("furnace.adapters.nvencc.subprocess.run") as mock_sub:
+            mock_sub.return_value.stdout = "NVEncC (x64) 9.19 (r3716)"
+            with patch("furnace.adapters.nvencc.run_tool", side_effect=_ok_run_tool):
+                result = adapter.encode(Path("in.mkv"), Path("out.obu"), vp, rpu_path=Path("rpu.bin"))
+        assert result.return_code == 0
+
+    def test_dv_with_unknown_version_ok(self) -> None:
+        adapter = _adapter()
+        vp = _make_vp(dv_mode=DvMode.COPY)
+        with patch("furnace.adapters.nvencc.subprocess.run", side_effect=OSError("not found")):
+            with patch("furnace.adapters.nvencc.run_tool", side_effect=_ok_run_tool):
+                result = adapter.encode(Path("in.mkv"), Path("out.obu"), vp, rpu_path=Path("rpu.bin"))
+        assert result.return_code == 0
+
+    def test_non_dv_old_version_not_gated(self) -> None:
+        adapter = _adapter()
+        vp = _make_vp()  # no dv_mode, no rpu
+        with patch("furnace.adapters.nvencc.subprocess.run") as mock_sub:
+            mock_sub.return_value.stdout = "NVEncC (x64) 7.72 (r2856)"
+            with patch("furnace.adapters.nvencc.run_tool", side_effect=_ok_run_tool):
+                result = adapter.encode(Path("in.mkv"), Path("out.obu"), vp)
+        assert result.return_code == 0

@@ -16,24 +16,24 @@ from furnace.core.quality import (
 
 class TestInterpolateCq:
     def test_sd_anchor(self) -> None:
-        """Exact SD anchor -> CQ 22."""
-        assert interpolate_cq(409_920) == 22
+        """Exact SD anchor -> QVBR 35."""
+        assert interpolate_cq(409_920) == 35
 
     def test_720p_anchor(self) -> None:
-        """Exact 720p anchor -> CQ 24."""
-        assert interpolate_cq(921_600) == 24
+        """Exact 720p anchor -> QVBR 35."""
+        assert interpolate_cq(921_600) == 35
 
     def test_1080p_anchor(self) -> None:
-        """Exact 1080p anchor -> CQ 25."""
-        assert interpolate_cq(2_073_600) == 25
+        """Exact 1080p anchor -> QVBR 36."""
+        assert interpolate_cq(2_073_600) == 36
 
     def test_1440p_anchor(self) -> None:
-        """Exact 1440p anchor -> CQ 28."""
-        assert interpolate_cq(3_686_400) == 28
+        """Exact 1440p anchor -> QVBR 38."""
+        assert interpolate_cq(3_686_400) == 38
 
     def test_4k_anchor(self) -> None:
-        """Exact 4K anchor -> CQ 31."""
-        assert interpolate_cq(8_294_400) == 31
+        """Exact 4K anchor -> QVBR 41."""
+        assert interpolate_cq(8_294_400) == 41
 
     def test_below_sd_clamps_to_sd(self) -> None:
         """Pixel area below SD -> returns SD CQ (clamped at bottom)."""
@@ -84,37 +84,33 @@ class TestInterpolateCq:
         assert cqs == sorted(cqs)
 
     def test_just_above_sd_anchor(self) -> None:
-        """Pixel area one above SD anchor -> still CQ 22 (close to y0=22)."""
-        # At x0+1, t ~ 0, round(22 + ~0*(24-22)) = 22
-        assert interpolate_cq(409_921) == 22
+        """One above SD anchor -> still 35 (SD==720p anchor, flat region)."""
+        assert interpolate_cq(409_921) == 35
 
     def test_just_below_4k_anchor(self) -> None:
-        """Pixel area one below 4K anchor -> CQ 31 (very close to y1=31)."""
-        # At x1-1, t ~ 1, round(28 + ~1*(31-28)) = 31
-        assert interpolate_cq(8_294_399) == 31
+        """One below 4K anchor -> 41 (t~1, round(38 + ~1*3) = 41)."""
+        assert interpolate_cq(8_294_399) == 41
 
     def test_midpoint_sd_720p_exact(self) -> None:
-        """Midpoint between SD and 720p: t=0.5 -> round(22 + 0.5*2) = 23."""
+        """SD(35) and 720p(35) are equal -> midpoint is 35."""
         x0, _ = CQ_ANCHORS[0]
         x1, _ = CQ_ANCHORS[1]
         mid = (x0 + x1) // 2
-        # t ~= 0.5, y = 22 + 0.5*2 = 23.0
-        assert interpolate_cq(mid) == 23
+        assert interpolate_cq(mid) == 35
 
     def test_midpoint_1440p_4k_exact(self) -> None:
-        """Midpoint between 1440p and 4K: t=0.5 -> round(28 + 0.5*3) = round(29.5) = 30."""
+        """Midpoint 1440p(38)->4K(41): t=0.5 -> round(38 + 0.5*3) = round(39.5) = 40."""
         x0, _ = CQ_ANCHORS[3]
         x1, _ = CQ_ANCHORS[4]
         mid = (x0 + x1) // 2
-        # t ~= 0.5, y = 28 + 0.5*3 = 29.5 -> banker's rounding -> 30
-        assert interpolate_cq(mid) == 30
+        assert interpolate_cq(mid) == 40
 
     def test_quarter_720p_to_1080p(self) -> None:
-        """Quarter point between 720p (24) and 1080p (25): t=0.25 -> round(24.25) = 24."""
+        """Quarter point 720p(35)->1080p(36): t=0.25 -> round(35.25) = 35."""
         x0, _ = CQ_ANCHORS[1]
         x1, _ = CQ_ANCHORS[2]
         q = x0 + (x1 - x0) // 4
-        assert interpolate_cq(q) == 24
+        assert interpolate_cq(q) == 35
 
 
 # ---------------------------------------------------------------------------
@@ -264,7 +260,7 @@ def _vp(
 
 class TestFinalOutputDimensions:
     """`final_output_dimensions` is the single source of truth for the encoded
-    output (width, height): crop -> SAR correction -> mod-8 HEVC alignment."""
+    output (width, height): crop -> SAR correction -> mod-8 alignment."""
 
     def test_no_crop_square_sar_mod8_passthrough(self) -> None:
         """1920x1080, square SAR, no crop -> unchanged."""

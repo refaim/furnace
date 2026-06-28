@@ -24,7 +24,7 @@ from furnace.core.models import (
 )
 from furnace.core.progress import ProgressSample
 from furnace.plan import load_plan, save_plan
-from furnace.services.executor import Executor
+from furnace.services.executor import Executor, _video_intermediate_name
 from tests.conftest import (
     make_audio_instruction,
     make_job,
@@ -3344,3 +3344,13 @@ class TestRunPipelinePassthrough:
         output_path.parent.mkdir(parents=True, exist_ok=True)
         # Should not raise — callback simply skips the size push
         executor._run_pipeline(job, output_path, tmp_path)
+
+
+class TestVideoIntermediateName:
+    """The encode/copier video output filename feeding the final mux."""
+
+    def test_encode_branch_uses_obu(self) -> None:
+        assert _video_intermediate_name(passthrough=False) == "video.obu"
+
+    def test_passthrough_branch_uses_mkv(self) -> None:
+        assert _video_intermediate_name(passthrough=True) == "video.mkv"

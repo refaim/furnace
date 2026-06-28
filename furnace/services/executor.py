@@ -43,6 +43,7 @@ from furnace.core.progress import ProgressSample, ProgressTracker
 from furnace.plan import update_job_status
 
 logger = logging.getLogger(__name__)
+
 MAX_STDERR_LINES = 6
 
 # Extension mapping for audio codec names to file extensions
@@ -103,6 +104,16 @@ def _codec_supported_by_eac3to(codec_name: str) -> bool:
 # -removeDialnorm) instead, exactly like the multichannel downmix path. DTS,
 # TrueHD, AAC, MP3, FLAC etc. decode full range in ffmpeg already.
 _FFMPEG_DRC_CODECS: frozenset[str] = frozenset({"ac3", "eac3"})
+
+
+def _video_intermediate_name(*, passthrough: bool) -> str:
+    """Filename for the encoder/copier video output before final muxing.
+
+    Encode -> raw AV1 OBU elementary stream (mkvmerge muxes it and preserves
+    the Dolby Vision RPU; a direct NVEncC MKV mux can drop the T.35 OBU).
+    Passthrough -> MKV (verbatim ffmpeg stream copy of the source codec).
+    """
+    return "video.mkv" if passthrough else "video.obu"
 
 
 class Executor:
@@ -338,7 +349,7 @@ class Executor:
         if self._shutdown_event.is_set():
             return
 
-        video_output = temp_dir / "video.mkv"
+        video_output = temp_dir / _video_intermediate_name(passthrough=passthrough)
 
         _, base_video_on_progress = self._make_progress_callback(
             total_s=job.duration_s or None,

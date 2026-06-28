@@ -7,7 +7,7 @@ throughout for Windows compatibility.
 Layout:
     +-- [1/3] Movie Name (2020) ----------------------------------+
     +-- Source -------------------------+-- Target ----------------+
-    | Video: H.264 1920x1080 8.5Mbps   | Video: HEVC 1920x800 CQ25|
+    | Video: H.264 1920x1080 8.5Mbps   | Video: AV1 1920x800 CQ25 |
     | Audio: DTS 5.1 755kbps           | Audio: DTS 5.1 (denorm)  |
     +-----------------------------------+--------------------------+
     +-- Steps ------+-- Output ------------------------------------+
@@ -229,7 +229,7 @@ def _build_target_text(job: Job) -> str:
     vp = job.video_params
     final_w, final_h = final_output_dimensions(vp)
     res = f"{final_w}x{final_h}"
-    lines.append(f"Video: HEVC {res} CQ{vp.cq}")
+    lines.append(f"Video: AV1 {res} CQ{vp.cq}")
 
     for i, audio_instr in enumerate(job.audio):
         prefix = "Audio:" if i == 0 else "      "
