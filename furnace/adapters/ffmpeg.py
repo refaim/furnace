@@ -21,7 +21,10 @@ from ._subprocess import OutputCallback, run_tool
 logger = logging.getLogger(__name__)
 
 _PROFILE_WINDOW_SEC = 20.0
-_PROFILE_STEREO_POINTS: tuple[float, ...] = (0.30, 0.60)
+# 12 evenly-spaced interior points (i/13). Two windows carried enough sampling
+# variance to land on quiet, centered-dialogue scenes and false-flag real
+# stereo as mono; 12 windows stabilise the aggregate L/R correlation.
+_PROFILE_STEREO_POINTS: tuple[float, ...] = tuple(i / 13 for i in range(1, 13))
 _PROFILE_MULTI_POINTS: tuple[float, ...] = (0.15, 0.35, 0.55, 0.75)
 _PROFILE_SAMPLE_RATE = 48000
 _DIGITAL_SILENCE_DB = -120.0

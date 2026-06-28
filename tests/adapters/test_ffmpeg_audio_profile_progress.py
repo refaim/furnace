@@ -16,7 +16,7 @@ def _fake_window(channels: int) -> np.ndarray:
     return np.zeros((48000, channels), dtype=np.float32)
 
 
-def test_profile_audio_track_stereo_emits_2_progress_events() -> None:
+def test_profile_audio_track_stereo_emits_12_progress_events() -> None:
     adapter = FFmpegAdapter(Path("ffmpeg"), Path("ffprobe"))
     samples: list[ProgressSample] = []
     with patch.object(
@@ -31,7 +31,7 @@ def test_profile_audio_track_stereo_emits_2_progress_events() -> None:
             duration_s=1000.0,
             on_progress=samples.append,
         )
-    assert len(samples) == 2
+    assert len(samples) == 12
     assert samples[-1].fraction == 1.0
 
 

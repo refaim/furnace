@@ -242,6 +242,31 @@ class TestProfileAudioTrack:
         assert metrics.corr_lb_ls == 0.0
         assert metrics.corr_rb_rs == 0.0
 
+    def test_stereo_samples_twelve_spread_windows(self) -> None:
+        """Stereo profiling samples 12 windows spread across the whole runtime.
+
+        Two windows (the old scheme) carried enough sampling variance to land
+        on quiet, centered-dialogue scenes and false-flag real stereo as mono;
+        12 windows stabilise the aggregate correlation.
+        """
+        adapter = _adapter()
+        starts: list[float] = []
+
+        def rec(
+            path: Path, stream_index: int, channels: int,
+            layout: str, start_s: float, dur_s: float,
+        ) -> np.ndarray:
+            starts.append(start_s)
+            return np.zeros((480, channels), dtype=np.float32)
+
+        with patch.object(adapter, "_decode_pcm_window", side_effect=rec):
+            adapter.profile_audio_track(Path("v.mkv"), 0, 2, duration_s=600.0)
+
+        assert len(starts) == 12
+        assert len(set(starts)) == 12            # all windows distinct
+        assert starts == sorted(starts)          # ordered front-to-back
+        assert max(starts) - min(starts) > 0.7 * 600.0  # spread across runtime
+
     def test_partial_windows_drop_empty_chunks(self) -> None:
         """If some windows fail and some succeed, only successful windows
         contribute to the concatenation — exercise the ``if window.size > 0``
