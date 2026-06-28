@@ -254,9 +254,8 @@ def hdr_transfer_for_cropdetect(color_transfer: str | None) -> str | None:
 CROP_EDGE_TOLERANCE = 8
 """Pixels: cropdetect's per-edge jitter merged into a single cluster.
 
-Comfortably above the +-2px centering wobble seen in practice yet well below
-``round=16`` (the cropdetect rounding), so genuinely distinct crops are never
-merged."""
+Comfortably above the +-2px centering wobble seen in practice yet far below
+the size of any real black bar, so genuinely distinct crops are never merged."""
 
 
 def _dominant_edge(values: list[int], tolerance: int) -> int:
@@ -305,9 +304,16 @@ def aggregate_crop(
     Raises ``ValueError`` if the dominant edges invert (left past right, or top
     past bottom): the independent per-edge medians carry no joint invariant, so
     a pathological set of wildly inconsistent samples could do this. Real
-    cropdetect output (stable bars, ``x+w <= width``, w/h a multiple of 16)
-    never does -- and the planner catches the ValueError and treats it as "no
-    reliable crop" rather than letting a degenerate rectangle reach the encoder.
+    cropdetect output (stable bars, ``x+w <= width``, w/h even) never does --
+    and the planner catches the ValueError and treats it as "no reliable crop"
+    rather than letting a degenerate rectangle reach the encoder.
+
+    Each final edge is snapped outward to an even coordinate. cropdetect's
+    ``round=2`` keeps w/h even but places the offset on the raw bar edge, which
+    can be odd on a real pillarbox; an odd left/top lands between 4:2:0 chroma
+    samples and shifts color a pixel. Snapping left/top down and right/bottom up
+    keeps every offset and dimension even, enlarging the kept area by at most
+    1px of black bar and never cutting into the picture.
 
     Requires a non-empty list.
     """
@@ -320,6 +326,10 @@ def aggregate_crop(
             f"cropdetect samples too inconsistent to crop: "
             f"x {left}..{right}, y {top}..{bottom}",
         )
+    left -= left % 2
+    top -= top % 2
+    right += right % 2
+    bottom += bottom % 2
     return CropRect(w=right - left, h=bottom - top, x=left, y=top)
 
 

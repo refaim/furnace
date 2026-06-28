@@ -195,6 +195,16 @@ class FFmpegAdapter:
     # leave pure-black-bar content (e.g. pillarboxed cartoons) unchanged.
     _CROP_DETECT_LIMIT = 40
 
+    # cropdetect rounds the detected w/h DOWN to a multiple of this, shaving
+    # real picture to fit the grid. Must be 2 (the minimum), NOT the
+    # macroblock-era 16: 4:2:0 only requires *even* dimensions, and 1080 is not
+    # a multiple of 16, so round=16 crops every bar-free 1080p source to 1072
+    # (1080 % 16 = 8 -> 4px off each edge) even with zero black bars. AV1
+    # superblocks are 64/128 and padded internally regardless, so 16-alignment
+    # buys no compression -- it only discards picture. aggregate_crop snaps the
+    # final offsets to even so the whole crop stays yuv420-valid.
+    _CROP_DETECT_ROUND = 2
+
     @staticmethod
     def _crop_sample_batches(per_batch: int, max_batches: int) -> list[list[float]]:
         """Timeline fractions split into ``max_batches`` interleaved batches.
@@ -276,7 +286,9 @@ class FFmpegAdapter:
             # below limited-range black. Force 8-bit so the threshold keeps
             # its intended meaning.
             parts.append("format=yuv420p")
-        parts.append(f"cropdetect={self._CROP_DETECT_LIMIT}:16:0")
+        parts.append(
+            f"cropdetect={self._CROP_DETECT_LIMIT}:{self._CROP_DETECT_ROUND}:0",
+        )
         vf = ",".join(parts)
 
         crop_values: list[CropRect] = []

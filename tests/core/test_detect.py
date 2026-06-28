@@ -621,6 +621,27 @@ class TestAggregateCrop:
         crops = [CropRect(1920, 1080, 0, 0)] * 10
         assert aggregate_crop(crops) == CropRect(1920, 1080, 0, 0)
 
+    def test_odd_horizontal_offsets_snap_to_even(self) -> None:
+        """Odd left/right edges snap outward to even (yuv420 needs even crop).
+
+        round=2 places cropdetect's offset on the raw bar edge, which can be
+        odd on a real pillarbox. An odd left offset lands between 4:2:0 chroma
+        samples and shifts color a pixel, so each edge is snapped outward --
+        left down, right up -- keeping at most 1px more black bar, never cutting
+        the picture. left 137 -> 136, right 1783 -> 1784.
+        """
+        crops = [CropRect(1646, 1080, 137, 0)]
+        assert aggregate_crop(crops) == CropRect(1648, 1080, 136, 0)
+
+    def test_odd_vertical_offsets_snap_to_even(self) -> None:
+        """Odd top/bottom edges snap outward to even, same as the horizontal axis.
+
+        top 139 -> 138, bottom 941 -> 942, so a 802-high content box becomes
+        804 high, never losing real picture.
+        """
+        crops = [CropRect(1920, 802, 0, 139)]
+        assert aggregate_crop(crops) == CropRect(1920, 804, 0, 138)
+
     def test_inconsistent_clusters_raise(self) -> None:
         """Per-edge clusters that invert raise ValueError (planner -> no crop).
 
