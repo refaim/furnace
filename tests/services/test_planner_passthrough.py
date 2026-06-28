@@ -1,22 +1,24 @@
-"""Tests for Task 3: planner passthrough classification and fallback.
+"""Tests for planner passthrough behaviour and fallback.
 
 The ``--copy-video`` flow asks the planner to copy a source video stream
-verbatim instead of re-encoding it. Eligibility is decided per source video:
+verbatim instead of re-encoding it. Eligibility is decided per source video by
+``furnace.core.detect.classify_passthrough`` (unit-tested in core); these tests
+cover how the planner *acts* on that verdict end-to-end:
 
-- progressive, non-DV-P7-FEL, non-HDR10+ -> passthrough
-- interlaced -> fall back to encode (reason "interlaced")
-- Dolby Vision Profile 7 FEL -> fall back to encode (reason "DV P7 FEL")
+- progressive, non-DV-P7-FEL, non-HDR10+ -> passthrough (crop forced off)
+- interlaced -> fall back to encode (deinterlace on)
+- Dolby Vision Profile 7 FEL -> fall back to encode (dv_mode TO_8_1)
 - HDR10+ -> rejected with ValueError (unchanged)
 """
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import MagicMock
 
 import pytest
 
 from furnace.core.models import (
     AudioCodecId,
+    CropRect,
     DvBlCompatibility,
     DvMode,
     HdrMetadata,
@@ -90,40 +92,11 @@ def _dv_hdr(profile: int) -> HdrMetadata:
     )
 
 
-class TestClassifyPassthrough:
-    """Unit tests for the per-video classification helper."""
-
-    def test_copy_video_disabled_no_passthrough(self) -> None:
-        planner = PlannerService(prober=MagicMock(), previewer=None)
-        video = _make_video()
-        assert planner._classify_passthrough(video, copy_video=False) == (False, None)
-
-    def test_progressive_non_dv_eligible(self) -> None:
-        planner = PlannerService(prober=MagicMock(), previewer=None)
-        video = _make_video()
-        assert planner._classify_passthrough(video, copy_video=True) == (True, None)
-
-    def test_interlaced_falls_back(self) -> None:
-        planner = PlannerService(prober=MagicMock(), previewer=None)
-        video = _make_video(interlaced=True)
-        assert planner._classify_passthrough(video, copy_video=True) == (False, "interlaced")
-
-    def test_dv_p7_fel_falls_back(self) -> None:
-        planner = PlannerService(prober=MagicMock(), previewer=None)
-        video = _make_video(hdr=_dv_hdr(7))
-        assert planner._classify_passthrough(video, copy_video=True) == (False, "DV P7 FEL")
-
-    def test_dv_p8_eligible(self) -> None:
-        planner = PlannerService(prober=MagicMock(), previewer=None)
-        video = _make_video(hdr=_dv_hdr(8))
-        assert planner._classify_passthrough(video, copy_video=True) == (True, None)
-
-
 class TestBuildVideoParamsPassthrough:
     """`passthrough=True` makes crop/deinterlace inert, keeps color/HDR/SAR."""
 
     def test_passthrough_sets_flag_and_inert_fields(self) -> None:
-        planner = PlannerService(prober=MagicMock(), previewer=None)
+        planner = PlannerService(previewer=None)
         video = _make_video(hdr=_dv_hdr(8))
         vp = planner._build_video_params(
             video,
@@ -144,7 +117,7 @@ class TestBuildVideoParamsPassthrough:
         assert vp.dv_mode == DvMode.COPY
 
     def test_passthrough_forces_deinterlace_false_even_if_interlaced(self) -> None:
-        planner = PlannerService(prober=MagicMock(), previewer=None)
+        planner = PlannerService(previewer=None)
         video = _make_video(interlaced=True)
         vp = planner._build_video_params(
             video,
@@ -156,7 +129,7 @@ class TestBuildVideoParamsPassthrough:
         assert vp.deinterlace is False
 
     def test_non_passthrough_default_unchanged(self) -> None:
-        planner = PlannerService(prober=MagicMock(), previewer=None)
+        planner = PlannerService(previewer=None)
         video = _make_video(interlaced=True)
         vp = planner._build_video_params(
             video,
@@ -171,58 +144,69 @@ class TestBuildVideoParamsPassthrough:
 class TestCreatePlanCopyVideo:
     """End-to-end through create_plan with the copy_video flag."""
 
-    def test_progressive_passthrough_skips_cropdetect(self, tmp_path: Path) -> None:
+    def test_progressive_passthrough(self, tmp_path: Path) -> None:
         movie = _make_movie(tmp_path, _make_video())
-        prober = MagicMock()
-        planner = PlannerService(prober=prober, previewer=None)
+        planner = PlannerService(previewer=None)
 
         plan = planner.create_plan(
             [(movie, tmp_path / "out.mkv")],
             audio_lang_filter=["eng"],
             sub_lang_filter=["eng"],
             vmaf_enabled=False,
-            dry_run=False,
             copy_video=True,
         )
 
         vp = plan.jobs[0].video_params
         assert vp.passthrough is True
         assert vp.crop is None
-        prober.detect_crop.assert_not_called()
 
-    def test_interlaced_falls_back_to_encode(self, tmp_path: Path) -> None:
-        movie = _make_movie(tmp_path, _make_video(interlaced=True))
-        prober = MagicMock()
-        prober.detect_crop.return_value = None
-        planner = PlannerService(prober=prober, previewer=None)
+    def test_passthrough_forces_crop_none_even_with_precomputed_crop(self, tmp_path: Path) -> None:
+        """A passthrough job drops any crop the map supplies for its file."""
+        movie = _make_movie(tmp_path, _make_video())
+        planner = PlannerService(previewer=None)
 
         plan = planner.create_plan(
             [(movie, tmp_path / "out.mkv")],
             audio_lang_filter=["eng"],
             sub_lang_filter=["eng"],
             vmaf_enabled=False,
-            dry_run=False,
+            precomputed_crops={movie.main_file: CropRect(w=3840, h=1600, x=0, y=280)},
+            copy_video=True,
+        )
+
+        vp = plan.jobs[0].video_params
+        assert vp.passthrough is True
+        assert vp.crop is None
+
+    def test_interlaced_falls_back_to_encode(self, tmp_path: Path) -> None:
+        movie = _make_movie(tmp_path, _make_video(interlaced=True))
+        planner = PlannerService(previewer=None)
+
+        plan = planner.create_plan(
+            [(movie, tmp_path / "out.mkv")],
+            audio_lang_filter=["eng"],
+            sub_lang_filter=["eng"],
+            vmaf_enabled=False,
+            # interlaced is an encode, so a precomputed crop IS honoured
+            precomputed_crops={movie.main_file: CropRect(w=3840, h=1600, x=0, y=280)},
             copy_video=True,
         )
 
         vp = plan.jobs[0].video_params
         assert vp.passthrough is False
         assert vp.deinterlace is True
-        # interlaced still runs cropdetect (encode path)
-        prober.detect_crop.assert_called_once()
+        assert vp.crop is not None
+        assert (vp.crop.w, vp.crop.h) == (3840, 1600)
 
     def test_dv_p7_fel_falls_back_preserving_to_8_1(self, tmp_path: Path) -> None:
         movie = _make_movie(tmp_path, _make_video(hdr=_dv_hdr(7)))
-        prober = MagicMock()
-        prober.detect_crop.return_value = None
-        planner = PlannerService(prober=prober, previewer=None)
+        planner = PlannerService(previewer=None)
 
         plan = planner.create_plan(
             [(movie, tmp_path / "out.mkv")],
             audio_lang_filter=["eng"],
             sub_lang_filter=["eng"],
             vmaf_enabled=False,
-            dry_run=False,
             copy_video=True,
         )
 
@@ -232,8 +216,7 @@ class TestCreatePlanCopyVideo:
 
     def test_hdr10_plus_still_raises(self, tmp_path: Path) -> None:
         movie = _make_movie(tmp_path, _make_video(hdr=HdrMetadata(is_hdr10_plus=True)))
-        prober = MagicMock()
-        planner = PlannerService(prober=prober, previewer=None)
+        planner = PlannerService(previewer=None)
 
         with pytest.raises(ValueError, match="HDR10\\+"):
             planner.create_plan(
@@ -241,23 +224,18 @@ class TestCreatePlanCopyVideo:
                 audio_lang_filter=["eng"],
                 sub_lang_filter=["eng"],
                 vmaf_enabled=False,
-                dry_run=False,
                 copy_video=True,
             )
 
     def test_copy_video_default_false_unchanged(self, tmp_path: Path) -> None:
         movie = _make_movie(tmp_path, _make_video())
-        prober = MagicMock()
-        prober.detect_crop.return_value = None
-        planner = PlannerService(prober=prober, previewer=None)
+        planner = PlannerService(previewer=None)
 
         plan = planner.create_plan(
             [(movie, tmp_path / "out.mkv")],
             audio_lang_filter=["eng"],
             sub_lang_filter=["eng"],
             vmaf_enabled=False,
-            dry_run=False,
         )
 
         assert plan.jobs[0].video_params.passthrough is False
-        prober.detect_crop.assert_called_once()

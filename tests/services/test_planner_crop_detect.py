@@ -1,10 +1,11 @@
-"""Tests for crop detection in non-dry-run mode (planner lines 142-176)."""
+"""Planner threads a precomputed crop map into each Job's VideoParams.
+
+The planner no longer runs cropdetect itself (the prober dependency is gone);
+it just looks up ``movie.main_file`` in the supplied ``precomputed_crops`` map.
+"""
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import MagicMock
-
-import pytest
 
 from furnace.core.models import (
     AudioCodecId,
@@ -16,8 +17,8 @@ from furnace.services.planner import PlannerService
 from tests.conftest import make_movie, make_track, make_video_info
 
 
-def _make_movie(tmp_path: Path, *, width: int = 1920, height: int = 1080) -> Movie:
-    main = tmp_path / "movie.mkv"
+def _make_movie(tmp_path: Path, name: str = "movie.mkv", *, width: int = 1920, height: int = 1080) -> Movie:
+    main = tmp_path / name
     main.write_bytes(b"")
     return make_movie(
         main_file=main,
@@ -43,197 +44,71 @@ def _make_movie(tmp_path: Path, *, width: int = 1920, height: int = 1080) -> Mov
     )
 
 
-class TestCropDetectNonDryRun:
-    def test_real_crop_applied(self, tmp_path: Path) -> None:
-        """detect_crop returns a real crop rect -> crop is set in VideoParams."""
+class TestPrecomputedCropMap:
+    def test_real_crop_from_map_applied(self, tmp_path: Path) -> None:
+        """A crop entry keyed by main_file is written into VideoParams verbatim."""
         movie = _make_movie(tmp_path)
-        prober = MagicMock()
-        prober.detect_crop.return_value = CropRect(w=1920, h=800, x=0, y=140)
-        planner = PlannerService(prober=prober, previewer=None)
+        planner = PlannerService(previewer=None)
 
         plan = planner.create_plan(
             [(movie, tmp_path / "out.mkv")],
             audio_lang_filter=["eng"],
             sub_lang_filter=["eng"],
             vmaf_enabled=False,
-            dry_run=False,
+            precomputed_crops={movie.main_file: CropRect(w=1920, h=804, x=0, y=138)},
         )
 
         assert len(plan.jobs) == 1
         vp = plan.jobs[0].video_params
         assert vp.crop is not None
-        assert vp.crop.w == 1920
-        assert vp.crop.h == 800
+        assert (vp.crop.w, vp.crop.h, vp.crop.x, vp.crop.y) == (1920, 804, 0, 138)
 
-    def test_full_frame_crop_becomes_none(self, tmp_path: Path) -> None:
-        """detect_crop returns full-frame crop (same as source) -> crop becomes None."""
-        movie = _make_movie(tmp_path, width=1920, height=1080)
-        prober = MagicMock()
-        prober.detect_crop.return_value = CropRect(w=1920, h=1080, x=0, y=0)
-        planner = PlannerService(prober=prober, previewer=None)
+    def test_crop_applied_only_to_matching_movie(self, tmp_path: Path) -> None:
+        """In a multi-movie plan, each job gets only its own file's crop."""
+        movie_a = _make_movie(tmp_path, "a.mkv")
+        movie_b = _make_movie(tmp_path, "b.mkv")
+        planner = PlannerService(previewer=None)
 
+        crops = {movie_a.main_file: CropRect(w=1920, h=816, x=0, y=132)}
         plan = planner.create_plan(
-            [(movie, tmp_path / "out.mkv")],
+            [(movie_a, tmp_path / "a_out.mkv"), (movie_b, tmp_path / "b_out.mkv")],
             audio_lang_filter=["eng"],
             sub_lang_filter=["eng"],
             vmaf_enabled=False,
-            dry_run=False,
+            precomputed_crops=crops,
         )
 
-        assert len(plan.jobs) == 1
-        assert plan.jobs[0].video_params.crop is None
+        crop_a = plan.jobs[0].video_params.crop
+        assert crop_a is not None
+        assert (crop_a.w, crop_a.h) == (1920, 816)
+        # movie_b has no entry in the map -> no crop
+        assert plan.jobs[1].video_params.crop is None
 
-    def test_crop_none_returns_no_crop(self, tmp_path: Path) -> None:
-        """detect_crop returns None -> crop is None."""
+    def test_empty_map_means_no_crop(self, tmp_path: Path) -> None:
+        """An empty crop map -> crop is None (no entry for the file)."""
         movie = _make_movie(tmp_path)
-        prober = MagicMock()
-        prober.detect_crop.return_value = None
-        planner = PlannerService(prober=prober, previewer=None)
+        planner = PlannerService(previewer=None)
 
         plan = planner.create_plan(
             [(movie, tmp_path / "out.mkv")],
             audio_lang_filter=["eng"],
             sub_lang_filter=["eng"],
             vmaf_enabled=False,
-            dry_run=False,
-        )
-
-        assert len(plan.jobs) == 1
-        assert plan.jobs[0].video_params.crop is None
-
-    def test_oserror_logged_and_crop_none(self, tmp_path: Path) -> None:
-        """detect_crop raises OSError -> warning logged, crop is None."""
-        movie = _make_movie(tmp_path)
-        prober = MagicMock()
-        prober.detect_crop.side_effect = OSError("ffmpeg crashed")
-        planner = PlannerService(prober=prober, previewer=None)
-
-        plan = planner.create_plan(
-            [(movie, tmp_path / "out.mkv")],
-            audio_lang_filter=["eng"],
-            sub_lang_filter=["eng"],
-            vmaf_enabled=False,
-            dry_run=False,
-        )
-
-        assert len(plan.jobs) == 1
-        assert plan.jobs[0].video_params.crop is None
-
-    def test_runtime_error_logged_and_crop_none(self, tmp_path: Path) -> None:
-        """detect_crop raises RuntimeError -> warning logged, crop is None."""
-        movie = _make_movie(tmp_path)
-        prober = MagicMock()
-        prober.detect_crop.side_effect = RuntimeError("bad frame")
-        planner = PlannerService(prober=prober, previewer=None)
-
-        plan = planner.create_plan(
-            [(movie, tmp_path / "out.mkv")],
-            audio_lang_filter=["eng"],
-            sub_lang_filter=["eng"],
-            vmaf_enabled=False,
-            dry_run=False,
-        )
-
-        assert len(plan.jobs) == 1
-        assert plan.jobs[0].video_params.crop is None
-
-    def test_value_error_logged_and_crop_none(self, tmp_path: Path) -> None:
-        """detect_crop raises ValueError -> warning logged, crop is None."""
-        movie = _make_movie(tmp_path)
-        prober = MagicMock()
-        prober.detect_crop.side_effect = ValueError("bad params")
-        planner = PlannerService(prober=prober, previewer=None)
-
-        plan = planner.create_plan(
-            [(movie, tmp_path / "out.mkv")],
-            audio_lang_filter=["eng"],
-            sub_lang_filter=["eng"],
-            vmaf_enabled=False,
-            dry_run=False,
-        )
-
-        assert len(plan.jobs) == 1
-        assert plan.jobs[0].video_params.crop is None
-
-    def test_full_frame_crop_log_message(self, tmp_path: Path) -> None:
-        """Full-frame crop logs 'no black bars detected'."""
-        movie = _make_movie(tmp_path)
-        prober = MagicMock()
-        prober.detect_crop.return_value = CropRect(w=1920, h=1080, x=0, y=0)
-        planner = PlannerService(prober=prober, previewer=None)
-
-        plan = planner.create_plan(
-            [(movie, tmp_path / "out.mkv")],
-            audio_lang_filter=["eng"],
-            sub_lang_filter=["eng"],
-            vmaf_enabled=False,
-            dry_run=False,
+            precomputed_crops={},
         )
 
         assert plan.jobs[0].video_params.crop is None
 
-    def test_real_crop_log_message(self, tmp_path: Path) -> None:
-        """Real crop logs the crop rect dimensions."""
+    def test_none_map_means_no_crop(self, tmp_path: Path) -> None:
+        """precomputed_crops=None (default) -> crop is None."""
         movie = _make_movie(tmp_path)
-        prober = MagicMock()
-        prober.detect_crop.return_value = CropRect(w=1920, h=800, x=0, y=140)
-        planner = PlannerService(prober=prober, previewer=None)
+        planner = PlannerService(previewer=None)
 
         plan = planner.create_plan(
             [(movie, tmp_path / "out.mkv")],
             audio_lang_filter=["eng"],
             sub_lang_filter=["eng"],
             vmaf_enabled=False,
-            dry_run=False,
         )
 
-        assert plan.jobs[0].video_params.crop is not None
-
-
-class TestCropDetectHdrTransferKwarg:
-    """Planner must pass the right `hdr_transfer` kwarg to detect_crop."""
-
-    @pytest.mark.parametrize(
-        ("color_transfer", "expected_kwarg"),
-        [
-            ("bt709", None),
-            ("smpte170m", None),
-            ("smpte2084", "smpte2084"),
-            ("arib-std-b67", "arib-std-b67"),
-            (None, None),
-        ],
-    )
-    def test_planner_passes_hdr_transfer(
-        self, tmp_path: Path,
-        color_transfer: str | None, expected_kwarg: str | None,
-    ) -> None:
-        main = tmp_path / "movie.mkv"
-        main.write_bytes(b"")
-        movie = make_movie(
-            main_file=main,
-            video=make_video_info(
-                width=3840, height=2160, source_file=main,
-                bitrate=20_000_000, color_transfer=color_transfer,
-            ),
-            audio_tracks=[
-                make_track(
-                    index=1, track_type=TrackType.AUDIO,
-                    codec_name="aac", codec_id=AudioCodecId.AAC_LC,
-                    language="eng", is_default=True, source_file=main,
-                    channels=2, bitrate=192_000,
-                ),
-            ],
-        )
-        prober = MagicMock()
-        prober.detect_crop.return_value = None
-        planner = PlannerService(prober=prober, previewer=None)
-        planner.create_plan(
-            [(movie, tmp_path / "out.mkv")],
-            audio_lang_filter=["eng"],
-            sub_lang_filter=["eng"],
-            vmaf_enabled=False,
-            dry_run=False,
-        )
-        prober.detect_crop.assert_called_once()
-        _, kwargs = prober.detect_crop.call_args
-        assert kwargs["hdr_transfer"] == expected_kwarg
+        assert plan.jobs[0].video_params.crop is None

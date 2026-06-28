@@ -1,8 +1,6 @@
 """Tests for guard branches in _build_audio_instruction and _build_subtitle_instruction."""
 from __future__ import annotations
 
-from unittest.mock import MagicMock
-
 from furnace.core.models import (
     AudioAction,
     AudioCodecId,
@@ -23,7 +21,7 @@ class TestBuildAudioInstructionGuards:
             channels=2,
             bitrate=128_000,
         )
-        planner = PlannerService(prober=MagicMock(), previewer=None)
+        planner = PlannerService(previewer=None)
         instr = planner._build_audio_instruction(track, is_default=True)
         assert instr.action == AudioAction.FFMPEG_ENCODE
 
@@ -35,7 +33,7 @@ class TestBuildAudioInstructionGuards:
             channels=2,
             bitrate=0,
         )
-        planner = PlannerService(prober=MagicMock(), previewer=None)
+        planner = PlannerService(previewer=None)
         instr = planner._build_audio_instruction(track, is_default=False)
         assert instr.action == AudioAction.FFMPEG_ENCODE
 
@@ -47,7 +45,7 @@ class TestBuildAudioInstructionGuards:
             channels=2,
             bitrate=0,
         )
-        planner = PlannerService(prober=MagicMock(), previewer=None)
+        planner = PlannerService(previewer=None)
         instr = planner._build_audio_instruction(track, is_default=True)
         assert instr.action == AudioAction.FFMPEG_ENCODE
 
@@ -59,7 +57,7 @@ class TestBuildAudioInstructionGuards:
             channels=6,
             bitrate=640_000,
         )
-        planner = PlannerService(prober=MagicMock(), previewer=None)
+        planner = PlannerService(previewer=None)
         instr = planner._build_audio_instruction(track, is_default=True)
         assert instr.action == AudioAction.DENORM
 
@@ -73,7 +71,7 @@ class TestBuildSubtitleInstructionGuards:
             codec_id=None,
             channels=None,
         )
-        planner = PlannerService(prober=MagicMock(), previewer=None)
+        planner = PlannerService(previewer=None)
         instr = planner._build_subtitle_instruction(track, is_default=False)
         assert instr.action == SubtitleAction.COPY
 
@@ -85,7 +83,7 @@ class TestBuildSubtitleInstructionGuards:
             codec_id=AudioCodecId.AAC_LC,
             channels=None,
         )
-        planner = PlannerService(prober=MagicMock(), previewer=None)
+        planner = PlannerService(previewer=None)
         instr = planner._build_subtitle_instruction(track, is_default=False)
         assert instr.action == SubtitleAction.COPY
 
@@ -97,7 +95,7 @@ class TestBuildSubtitleInstructionGuards:
             codec_id=SubtitleCodecId.UNKNOWN,
             channels=None,
         )
-        planner = PlannerService(prober=MagicMock(), previewer=None)
+        planner = PlannerService(previewer=None)
         instr = planner._build_subtitle_instruction(track, is_default=True)
         assert instr.action == SubtitleAction.COPY
 
@@ -109,7 +107,7 @@ class TestBuildSubtitleInstructionGuards:
             codec_id=SubtitleCodecId.SRT,
             channels=None,
         )
-        planner = PlannerService(prober=MagicMock(), previewer=None)
+        planner = PlannerService(previewer=None)
         instr = planner._build_subtitle_instruction(track, is_default=False)
         assert instr.action == SubtitleAction.COPY_RECODE
 
@@ -121,6 +119,6 @@ class TestBuildSubtitleInstructionGuards:
             codec_id=SubtitleCodecId.PGS,
             channels=None,
         )
-        planner = PlannerService(prober=MagicMock(), previewer=None)
+        planner = PlannerService(previewer=None)
         instr = planner._build_subtitle_instruction(track, is_default=True)
         assert instr.action == SubtitleAction.COPY

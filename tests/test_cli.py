@@ -11,7 +11,7 @@ from unittest.mock import MagicMock, patch
 from typer.testing import CliRunner
 
 from furnace.cli import _setup_logging, app
-from furnace.core.models import JobStatus, TrackType
+from furnace.core.models import AnalysisOutcome, AnalyzeStatus, JobStatus, TrackType
 from tests.conftest import make_job, make_movie, make_plan, make_track
 
 runner = CliRunner()
@@ -212,7 +212,9 @@ class TestPlanDryRun:
         ):
             mock_demuxer_cls.return_value.detect.return_value = []
             mock_scanner_cls.return_value.scan.return_value = [scan_result]
-            mock_analyzer_cls.return_value.analyze.return_value = movie
+            mock_analyzer_cls.return_value.analyze.return_value = AnalysisOutcome(
+                movie, AnalyzeStatus.DONE, "h264 1920x1080 24fps SDR, 1 audio (jpn), 1 subs"
+            )
             mock_planner_cls.return_value.create_plan.return_value = plan_obj
 
             result = runner.invoke(
@@ -730,7 +732,7 @@ class TestPlanDemuxDirAssignment:
 
 class TestPlanAnalyzerNone:
     def test_analyzer_none_skips_movie(self, tmp_path: Path) -> None:
-        """When analyzer.analyze returns None, movie is skipped."""
+        """When analyzer.analyze yields a SKIPPED outcome (no movie), it is skipped."""
         from furnace.core.models import ScanResult
 
         source = tmp_path / "src"
@@ -759,7 +761,9 @@ class TestPlanAnalyzerNone:
         ):
             mock_demuxer_cls.return_value.detect.return_value = []
             mock_scanner_cls.return_value.scan.return_value = [scan_result]
-            mock_analyzer_cls.return_value.analyze.return_value = None
+            mock_analyzer_cls.return_value.analyze.return_value = AnalysisOutcome(
+                None, AnalyzeStatus.SKIPPED, "already encoded"
+            )
             mock_planner_cls.return_value.create_plan.return_value = plan_obj
 
             result = runner.invoke(
@@ -2003,6 +2007,7 @@ class TestPlanDiscInteractive:
             patch("furnace.cli._run_disc_demux_interactive") as mock_interactive,
             patch("furnace.cli.Scanner") as mock_scanner_cls,
             patch("furnace.cli.Analyzer"),
+            patch("furnace.cli.AnalysisPipeline") as mock_pipeline_cls,
             patch("furnace.cli.PlannerService") as mock_planner_cls,
             patch("furnace.cli.save_plan"),
         ):
@@ -2010,6 +2015,8 @@ class TestPlanDiscInteractive:
             mock_demuxer_cls.return_value.list_titles.return_value = []
             mock_interactive.return_value = (source / ".furnace_demux", [demuxed], {demuxed})
             mock_scanner_cls.return_value.scan.return_value = []
+            mock_pipeline_cls.return_value.run.return_value.movies = []
+            mock_pipeline_cls.return_value.run.return_value.crops = {}
             mock_planner_cls.return_value.create_plan.return_value = plan_obj
 
             result = runner.invoke(
@@ -2144,14 +2151,14 @@ class TestPlanDetectRelPathFallback:
 
 
 # ---------------------------------------------------------------------------
-# plan: analyzer raises ValueError (HDR10+ branch)
+# plan: HDR10+ source (FAILED batch outcome, no exception)
 # ---------------------------------------------------------------------------
 
 
-class TestPlanAnalyzerValueError:
-    """Analyzer.analyze() raising ValueError is logged and skipped, not propagated."""
+class TestPlanHdr10Plus:
+    """An HDR10+ source yields a FAILED batch outcome: no job, no exception."""
 
-    def test_analyzer_value_error_skipped(self, tmp_path: Path) -> None:
+    def test_hdr10_plus_surfaces_failed_line_and_no_job(self, tmp_path: Path) -> None:
         from furnace.core.models import ScanResult
 
         source = tmp_path / "src"
@@ -2177,10 +2184,15 @@ class TestPlanAnalyzerValueError:
             patch("furnace.cli.Scanner") as mock_scanner_cls,
             patch("furnace.cli.Analyzer") as mock_analyzer_cls,
             patch("furnace.cli.PlannerService") as mock_planner_cls,
+            patch("furnace.cli.RichPlanReporter") as mock_reporter_cls,
         ):
+            reporter_inst = mock_reporter_cls.return_value
             mock_demuxer_cls.return_value.detect.return_value = []
             mock_scanner_cls.return_value.scan.return_value = [scan_result]
-            mock_analyzer_cls.return_value.analyze.side_effect = ValueError("HDR10+ not supported")
+            # analyze() no longer raises for HDR10+; it returns a FAILED outcome.
+            mock_analyzer_cls.return_value.analyze.return_value = AnalysisOutcome(
+                None, AnalyzeStatus.FAILED, "HDR10+ not supported"
+            )
             mock_planner_cls.return_value.create_plan.return_value = plan_obj
 
             result = runner.invoke(
@@ -2188,10 +2200,153 @@ class TestPlanAnalyzerValueError:
                 ["plan", str(source), "-o", str(output), "-al", "eng", "-sl", "eng", "--dry-run"],
             )
 
+        # No exception escapes the command (the old try/except ValueError is gone).
         assert result.exit_code == 0, result.output
-        # Planner sees no movies because analyze raised.
+        # The FAILED outcome is surfaced as a batch line for that file.
+        reporter_inst.analyze_batch_item.assert_called_once_with(
+            "movie.mkv", "HDR10+ not supported", status=AnalyzeStatus.FAILED
+        )
+        # Planner sees no movies because the HDR10+ file produced no job.
         call_kwargs = mock_planner_cls.return_value.create_plan.call_args.kwargs
         assert call_kwargs["movies"] == []
+
+
+# ---------------------------------------------------------------------------
+# plan: --jobs / parallel analysis worker count
+# ---------------------------------------------------------------------------
+
+
+class TestPlanJobs:
+    """The --jobs flag controls how many AnalysisPipeline workers are used."""
+
+    @staticmethod
+    def _invoke_capturing_pipeline(
+        tmp_path: Path,
+        extra_args: list[str],
+        *,
+        cpu_count: int | None = 8,
+    ) -> Any:
+        """Run ``plan --dry-run`` with AnalysisPipeline patched; return its mock class."""
+        from furnace.services.analysis_pipeline import AnalysisBatchResult
+
+        source = tmp_path / "src"
+        source.mkdir()
+        output = tmp_path / "out"
+
+        cfg = _make_tool_paths(tmp_path)
+        plan_obj = make_plan(jobs=[])
+
+        with (
+            patch("furnace.cli.load_config", return_value=cfg),
+            patch("furnace.cli._setup_logging"),
+            patch("furnace.cli.FFmpegAdapter"),
+            patch("furnace.cli.MpvAdapter"),
+            patch("furnace.cli.Eac3toAdapter"),
+            patch("furnace.cli.MakemkvAdapter"),
+            patch("furnace.cli.DiscDemuxer") as mock_demuxer_cls,
+            patch("furnace.cli.Scanner") as mock_scanner_cls,
+            patch("furnace.cli.AnalysisPipeline") as mock_pipeline_cls,
+            patch("furnace.cli.PlannerService") as mock_planner_cls,
+            patch("furnace.cli.os.cpu_count", return_value=cpu_count),
+        ):
+            mock_demuxer_cls.return_value.detect.return_value = []
+            mock_scanner_cls.return_value.scan.return_value = []
+            mock_pipeline_cls.return_value.run.return_value = AnalysisBatchResult(movies=[], crops={})
+            mock_planner_cls.return_value.create_plan.return_value = plan_obj
+
+            result = runner.invoke(
+                app,
+                [
+                    "plan", str(source), "-o", str(output),
+                    "-al", "eng", "-sl", "eng", "--dry-run", *extra_args,
+                ],
+            )
+
+        assert result.exit_code == 0, result.output
+        return mock_pipeline_cls
+
+    def test_jobs_flag_forwards_max_workers(self, tmp_path: Path) -> None:
+        """``--jobs 4`` reaches AnalysisPipeline as max_workers=4."""
+        pipeline_cls = self._invoke_capturing_pipeline(tmp_path, ["--jobs", "4"])
+        assert pipeline_cls.call_args.kwargs["max_workers"] == 4
+
+    def test_jobs_short_flag_forwards_max_workers(self, tmp_path: Path) -> None:
+        """``-j 3`` reaches AnalysisPipeline as max_workers=3."""
+        pipeline_cls = self._invoke_capturing_pipeline(tmp_path, ["-j", "3"])
+        assert pipeline_cls.call_args.kwargs["max_workers"] == 3
+
+    def test_jobs_flag_floored_at_one(self, tmp_path: Path) -> None:
+        """``--jobs 0`` is floored up to a single worker."""
+        pipeline_cls = self._invoke_capturing_pipeline(tmp_path, ["--jobs", "0"])
+        assert pipeline_cls.call_args.kwargs["max_workers"] == 1
+
+    def test_default_workers_is_cpu_count_minus_two(self, tmp_path: Path) -> None:
+        """Without --jobs, workers default to max(1, os.cpu_count() - 2)."""
+        pipeline_cls = self._invoke_capturing_pipeline(tmp_path, [], cpu_count=8)
+        assert pipeline_cls.call_args.kwargs["max_workers"] == 6
+
+    def test_default_workers_floored_when_few_cpus(self, tmp_path: Path) -> None:
+        """A one-core machine still yields at least one worker."""
+        pipeline_cls = self._invoke_capturing_pipeline(tmp_path, [], cpu_count=1)
+        assert pipeline_cls.call_args.kwargs["max_workers"] == 1
+
+    def test_default_workers_when_cpu_count_none(self, tmp_path: Path) -> None:
+        """os.cpu_count() returning None falls back to a single worker."""
+        pipeline_cls = self._invoke_capturing_pipeline(tmp_path, [], cpu_count=None)
+        assert pipeline_cls.call_args.kwargs["max_workers"] == 1
+
+    def test_jobs_one_yields_same_plan_as_default(self, tmp_path: Path) -> None:
+        """``--jobs 1`` is accepted and feeds the planner the same movies as the default."""
+        from furnace.core.models import ScanResult
+
+        source = tmp_path / "src"
+        source.mkdir()
+        output = tmp_path / "out"
+
+        cfg = _make_tool_paths(tmp_path)
+        scan_result = ScanResult(
+            main_file=source / "movie.mkv",
+            satellite_files=[],
+            output_path=output / "movie" / "movie.mkv",
+        )
+        movie = make_movie(main_file=source / "movie.mkv")
+        outcome = AnalysisOutcome(movie, AnalyzeStatus.DONE, "summary")
+        plan_obj = make_plan(jobs=[])
+
+        def _run(extra_args: list[str]) -> Any:
+            with (
+                patch("furnace.cli.load_config", return_value=cfg),
+                patch("furnace.cli._setup_logging"),
+                patch("furnace.cli.FFmpegAdapter"),
+                patch("furnace.cli.MpvAdapter"),
+                patch("furnace.cli.Eac3toAdapter"),
+                patch("furnace.cli.MakemkvAdapter"),
+                patch("furnace.cli.DiscDemuxer") as mock_demuxer_cls,
+                patch("furnace.cli.Scanner") as mock_scanner_cls,
+                patch("furnace.cli.Analyzer") as mock_analyzer_cls,
+                patch("furnace.cli.PlannerService") as mock_planner_cls,
+            ):
+                mock_demuxer_cls.return_value.detect.return_value = []
+                mock_scanner_cls.return_value.scan.return_value = [scan_result]
+                mock_analyzer_cls.return_value.analyze.return_value = outcome
+                mock_planner_cls.return_value.create_plan.return_value = plan_obj
+
+                result = runner.invoke(
+                    app,
+                    [
+                        "plan", str(source), "-o", str(output),
+                        "-al", "eng", "-sl", "eng", "--dry-run", *extra_args,
+                    ],
+                )
+            assert result.exit_code == 0, result.output
+            return mock_planner_cls.return_value.create_plan.call_args.kwargs["movies"]
+
+        expected = [(movie, output / "movie" / "movie.mkv")]
+        default_movies = _run([])
+        jobs1_movies = _run(["--jobs", "1"])
+
+        assert default_movies == expected
+        assert jobs1_movies == expected
 
 
 # ---------------------------------------------------------------------------

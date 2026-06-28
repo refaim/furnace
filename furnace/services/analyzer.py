@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -16,9 +17,18 @@ from furnace.core.detect import (
     should_deinterlace,
     should_skip_file,
 )
-from furnace.core.models import Attachment, Movie, ScanResult, SubtitleCodecId, Track, TrackType, VideoInfo
-from furnace.core.ports import PlanReporter, Prober
-from furnace.core.progress import ProgressSample
+from furnace.core.models import (
+    AnalysisOutcome,
+    AnalyzeStatus,
+    Attachment,
+    Movie,
+    ScanResult,
+    SubtitleCodecId,
+    Track,
+    TrackType,
+    VideoInfo,
+)
+from furnace.core.ports import Prober
 from furnace.core.rules import parse_audio_codec, parse_subtitle_codec
 
 _PROFILEABLE_CHANNEL_COUNTS = frozenset({2, 6, 8})
@@ -80,51 +90,48 @@ def _format_analyze_summary(
 
 
 class Analyzer:
-    def __init__(self, prober: Prober, reporter: PlanReporter | None = None, *, force: bool = False) -> None:
+    def __init__(self, prober: Prober, *, force: bool = False) -> None:
         self._prober = prober
-        self._reporter = reporter
         self._force = force
 
-    def _forward_progress(self, sample: ProgressSample) -> None:
-        """Adapter callback: forward fraction-bearing samples to ``analyze_progress``.
-
-        Called by long-running adapter ops (``run_idet``, ``profile_audio_track``)
-        once per sample point. Samples without a fraction (start markers) are
-        ignored. Caller guarantees ``self._reporter is not None``.
-        """
-        if self._reporter is not None and sample.fraction is not None:
-            self._reporter.analyze_progress(sample.fraction)
-
-    def analyze(self, scan_result: ScanResult) -> Movie | None:
+    def analyze(
+        self,
+        scan_result: ScanResult,
+        *,
+        on_progress: Callable[[float], None] | None = None,
+    ) -> AnalysisOutcome:
         """Probe main file + satellites. Parse video/audio/subtitle/attachments.
-        Return None if: unknown codecs, should_skip.
-        Raise ValueError for HDR10+ content.
+
+        Returns an ``AnalysisOutcome``:
+        - ``DONE`` with the built ``Movie`` and a one-line summary on success.
+        - ``SKIPPED`` (movie ``None``) when the file is already encoded, has no
+          video stream, or uses unsupported codecs.
+        - ``FAILED`` (movie ``None``) when probing/parsing fails or the content
+          is HDR10+.
+
+        ``on_progress`` (when supplied) receives the analyze-phase fraction in
+        ``[0, 1]``: it advances by one step per completed heavy stage (idet, then
+        one per profileable audio track) and is called once more with ``1.0``
+        when analysis finishes. Files with no heavy stages report only the final
+        ``1.0``. Used by the parallel pipeline to drive a smooth batch bar.
         """
         main_file = scan_result.main_file
         output_path = scan_result.output_path
         name = main_file.name
-        if self._reporter is not None:
-            self._reporter.analyze_file_start(name)
 
         # Check skip conditions on the output path
         encoder_tag = self._prober.get_encoder_tag(main_file)
         skip, reason = should_skip_file(output_path, encoder_tag, force=self._force)
         if skip:
             logger.info("Skipping %s: %s", name, reason)
-            if self._reporter is not None:
-                self._reporter.analyze_file_skipped(reason)
-            return None
+            return AnalysisOutcome(None, AnalyzeStatus.SKIPPED, reason)
 
         # Probe the main file
-        if self._reporter is not None:
-            self._reporter.analyze_microop("probing", has_progress=False)
         try:
             probe_data = self._prober.probe(main_file)
         except (OSError, RuntimeError, ValueError):
             logger.exception("Failed to probe %s", main_file)
-            if self._reporter is not None:
-                self._reporter.analyze_file_failed("probe failed")
-            return None
+            return AnalysisOutcome(None, AnalyzeStatus.FAILED, "probe failed")
 
         streams = probe_data.get("streams", [])
         format_data = probe_data.get("format", {})
@@ -134,29 +141,18 @@ class Analyzer:
         video_streams = [s for s in streams if s.get("codec_type") == "video"]
         if not video_streams:
             logger.warning("No video stream found in %s, skipping", name)
-            if self._reporter is not None:
-                self._reporter.analyze_file_skipped("no video stream")
-            return None
+            return AnalysisOutcome(None, AnalyzeStatus.SKIPPED, "no video stream")
 
         video_stream = video_streams[0]
-        # HDR side data probing happens inside _parse_video_info for PQ/HLG content;
-        # surface it as a microop here so the CLI can announce the extra ffprobe call.
-        color_transfer_raw = video_stream.get("color_transfer")
-        if color_transfer_raw in ("smpte2084", "arib-std-b67") and self._reporter is not None:
-            self._reporter.analyze_microop("HDR side data", has_progress=False)
         try:
             video_info = self._parse_video_info(video_stream, format_data, main_file)
         except (KeyError, ValueError, IndexError, TypeError):
             logger.exception("Failed to parse video info for %s", main_file)
-            if self._reporter is not None:
-                self._reporter.analyze_file_failed("parse failed")
-            return None
+            return AnalysisOutcome(None, AnalyzeStatus.FAILED, "parse failed")
 
-        # HDR10+ not supported — raise error
+        # HDR10+ not supported
         if video_info.hdr.is_hdr10_plus:
-            if self._reporter is not None:
-                self._reporter.analyze_file_failed("HDR10+ not supported")
-            raise ValueError(f"HDR10+ not supported: {name}")
+            return AnalysisOutcome(None, AnalyzeStatus.FAILED, "HDR10+ not supported")
         # DV content proceeds to planning (no skip)
 
         # Parse tracks from main file
@@ -188,7 +184,7 @@ class Analyzer:
         codec_warning = check_unsupported_codecs(audio_tracks, subtitle_tracks)
         if codec_warning:
             logger.warning("Skipping %s: %s", main_file.name, codec_warning)
-            return None
+            return AnalysisOutcome(None, AnalyzeStatus.SKIPPED, codec_warning)
 
         # Detect interlace: ffprobe field_order + idet when ambiguous
         # Use r_frame_rate (field rate) for interlace detection, not avg_frame_rate
@@ -202,22 +198,28 @@ class Analyzer:
             r_num = int(float(r_fps_str))
             r_den = 1
         fps = r_num / r_den if r_den else 0.0
+
+        # Plan the heavy analysis stages so the batch progress bar advances across
+        # them: idet (when needed) plus one per profileable audio track. ``_emit``
+        # reports the running fraction after each stage completes.
+        idet_will_run = needs_idet(field_order_raw, fps, video_info.height)
+        n_profileable = sum(1 for t in audio_tracks if t.channels in _PROFILEABLE_CHANNEL_COUNTS)
+        total_stages = (1 if idet_will_run else 0) + n_profileable
+        stages_done = 0
+
+        def _emit() -> None:
+            if on_progress is not None:
+                on_progress(stages_done / total_stages)
+
         idet_ratio = 0.0
-        if needs_idet(field_order_raw, fps, video_info.height):
-            if self._reporter is not None:
-                self._reporter.analyze_microop("idet", has_progress=True)
+        if idet_will_run:
             try:
-                if self._reporter is not None:
-                    idet_ratio = self._prober.run_idet(
-                        main_file,
-                        video_info.duration_s,
-                        on_progress=self._forward_progress,
-                    )
-                else:
-                    idet_ratio = self._prober.run_idet(main_file, video_info.duration_s)
+                idet_ratio = self._prober.run_idet(main_file, video_info.duration_s)
                 logger.debug("%s: idet ratio %.3f", name, idet_ratio)
             except (OSError, RuntimeError, ValueError) as exc:
                 logger.warning("idet failed for %s: %s", name, exc)
+            stages_done += 1
+            _emit()
         video_info.interlaced = should_deinterlace(field_order_raw, fps, idet_ratio, video_info.height)
         if video_info.interlaced:
             logger.info("%s: interlaced content detected", name)
@@ -232,48 +234,36 @@ class Analyzer:
         for track in audio_tracks:
             if track.channels not in _PROFILEABLE_CHANNEL_COUNTS:
                 continue
-            if self._reporter is not None:
-                self._reporter.analyze_microop(
-                    f"audio profile track {track.index}", has_progress=True,
-                )
             logger.info(
                 "Profiling audio track %d (%s %s %dch)",
                 track.index, track.codec_name, track.language, track.channels,
             )
             try:
-                if self._reporter is not None:
-                    metrics = self._prober.profile_audio_track(
-                        path=main_file,
-                        stream_index=track.index,
-                        channels=track.channels,
-                        duration_s=video_info.duration_s,
-                        on_progress=self._forward_progress,
-                    )
-                else:
-                    metrics = self._prober.profile_audio_track(
-                        path=main_file,
-                        stream_index=track.index,
-                        channels=track.channels,
-                        duration_s=video_info.duration_s,
-                    )
+                metrics = self._prober.profile_audio_track(
+                    path=main_file,
+                    stream_index=track.index,
+                    channels=track.channels,
+                    duration_s=video_info.duration_s,
+                )
                 track.audio_profile = classify_audio(metrics)
             except Exception as exc:  # noqa: BLE001 -- fail-soft by design
                 logger.warning(
                     "profile_audio_track failed for track %d: %s", track.index, exc,
                 )
-                continue
-            logger.info(
-                "Profiled track %d: %s (score %d)",
-                track.index, track.audio_profile.verdict.value, track.audio_profile.score,
-            )
+            else:
+                logger.info(
+                    "Profiled track %d: %s (score %d)",
+                    track.index, track.audio_profile.verdict.value, track.audio_profile.score,
+                )
+            stages_done += 1
+            _emit()
+
+        if on_progress is not None:
+            on_progress(1.0)
 
         file_size = main_file.stat().st_size
 
-        if self._reporter is not None:
-            summary = _format_analyze_summary(video_info, audio_tracks, subtitle_tracks)
-            self._reporter.analyze_file_done(summary)
-
-        return Movie(
+        movie = Movie(
             main_file=main_file,
             satellite_files=scan_result.satellite_files,
             video=video_info,
@@ -283,6 +273,8 @@ class Analyzer:
             has_chapters=has_chapters,
             file_size=file_size,
         )
+        summary = _format_analyze_summary(video_info, audio_tracks, subtitle_tracks)
+        return AnalysisOutcome(movie, AnalyzeStatus.DONE, summary)
 
     def _parse_video_info(self, stream: dict[str, Any], format_data: dict[str, Any], path: Path) -> VideoInfo:
         """Extract VideoInfo from ffprobe stream data."""

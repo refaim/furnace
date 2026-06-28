@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import MagicMock
 
 from furnace.core.models import Movie
 from furnace.services.planner import PlannerService
@@ -26,16 +25,12 @@ class TestJobDurationS:
         movie = _make_movie_dur(duration_s=1234.5)
         output_path = Path("/out/movie.mkv")
 
-        prober = MagicMock()
-        prober.detect_crop.return_value = None
-
-        planner = PlannerService(prober=prober, previewer=None)
+        planner = PlannerService(previewer=None)
         plan = planner.create_plan(
             movies=[(movie, output_path)],
             audio_lang_filter=["eng"],
             sub_lang_filter=["eng"],
             vmaf_enabled=False,
-            dry_run=True,
         )
 
         assert len(plan.jobs) == 1
@@ -46,16 +41,12 @@ class TestJobDurationS:
         movie = _make_movie_dur(duration_s=0.0)
         output_path = Path("/out/movie.mkv")
 
-        prober = MagicMock()
-        prober.detect_crop.return_value = None
-
-        planner = PlannerService(prober=prober, previewer=None)
+        planner = PlannerService(previewer=None)
         plan = planner.create_plan(
             movies=[(movie, output_path)],
             audio_lang_filter=["eng"],
             sub_lang_filter=["eng"],
             vmaf_enabled=False,
-            dry_run=True,
         )
 
         assert len(plan.jobs) == 1

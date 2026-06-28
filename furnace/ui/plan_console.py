@@ -14,7 +14,7 @@ from rich.console import Console
 from rich.progress import Progress, ProgressColumn, SpinnerColumn, Task, TaskID, TextColumn
 from rich.text import Text
 
-from furnace.core.models import DiscType
+from furnace.core.models import AnalyzeStatus, DiscType
 
 _DISC_TYPE_NAMES: dict[DiscType, str] = {
     DiscType.BLURAY: "BDMV",
@@ -25,6 +25,13 @@ _ASCII_SPINNER = "line"  # Rich built-in ASCII spinner: |/-\
 
 # Visual nesting for demux titles under their disc — disc name remains flush left.
 _TITLE_INDENT = "  "
+
+# Per-status prefix for an analyze batch result line ("<name> -> <prefix><detail>").
+_BATCH_STATUS_PREFIX: dict[AnalyzeStatus, str] = {
+    AnalyzeStatus.DONE: "",
+    AnalyzeStatus.SKIPPED: "SKIPPED — ",
+    AnalyzeStatus.FAILED: "FAILED — ",
+}
 
 
 class _ChunkBarColumn(ProgressColumn):
@@ -69,7 +76,6 @@ class RichPlanReporter:
         self._progress: Progress | None = None
         self._task_id: TaskID | None = None
         self._scan_started = False
-        self._analyze_started = False
         self._current_file: str | None = None
         self._plan_started = False
         # Tracks whether any phase header has been emitted yet — controls the
@@ -258,59 +264,51 @@ class RichPlanReporter:
 
     # -- Analyze --------------------------------------------------------------
 
-    def _ensure_analyze_header(self) -> None:
-        if not self._analyze_started:
-            self._emit_phase_header("Analyze")
-            self._analyze_started = True
+    def analyze_batch_start(self, total: int) -> None:
+        """Begin the parallel analyze batch: header + a persistent count bar.
 
-    def analyze_file_start(self, name: str) -> None:
+        Called only from the pipeline's main thread; no locking needed.
+        """
         self._stop_progress()
-        self._current_file = name
-
-    def analyze_microop(self, label: str, *, has_progress: bool) -> None:
-        self._stop_progress()
-        if self._current_file is None:
+        self._emit_phase_header("Analyze")
+        if not self._console.is_terminal:
+            self._progress = None
             return
-        progress = self._start_progress(has_progress=has_progress)
-        if progress is None:
-            return  # non-TTY: skip floating bar entirely
-        desc = f"{self._current_file} -> {label}"
-        self._task_id = progress.add_task(desc, total=100 if has_progress else None)
+        progress = Progress(
+            TextColumn("Analyzing"),
+            _ChunkBarColumn(),
+            TextColumn("{task.completed:>4.1f}/{task.total:.0f}"),
+            console=self._console,
+            transient=True,
+            expand=False,
+        )
+        progress.start()
+        self._progress = progress
+        self._task_id = progress.add_task("", total=total)
 
-    def analyze_progress(self, fraction: float) -> None:
-        if self._progress is None or self._task_id is None:
-            return
-        self._progress.update(self._task_id, completed=fraction * 100)
+    def analyze_batch_progress(self, completed: float) -> None:
+        """Set the batch bar's fractional completion (main thread only).
 
-    def analyze_file_done(self, summary: str) -> None:
+        Driven by the pipeline's aggregated per-file progress; ``completed`` is a
+        float in ``[0, total]``. No-op on a non-TTY console (no bar to move).
+        """
+        if self._progress is not None and self._task_id is not None:
+            self._progress.update(self._task_id, completed=completed)
+
+    def analyze_batch_item(self, name: str, detail: str, *, status: AnalyzeStatus) -> None:
+        """Print one file's result line above the bar.
+
+        The bar's fill is driven separately by :meth:`analyze_batch_progress`;
+        this only emits the persistent result line.
+        """
+        line = f"{name} -> {_BATCH_STATUS_PREFIX[status]}{detail}"
+        if self._progress is not None and self._task_id is not None:
+            self._progress.console.print(line, highlight=False)
+        else:
+            self._console.print(line, highlight=False)
+
+    def analyze_batch_finish(self) -> None:
         self._stop_progress()
-        if self._current_file is not None:
-            self._ensure_analyze_header()
-            self._console.print(
-                f"{self._current_file} -> {summary}",
-                highlight=False,
-            )
-        self._current_file = None
-
-    def analyze_file_failed(self, reason: str) -> None:
-        self._stop_progress()
-        if self._current_file is not None:
-            self._ensure_analyze_header()
-            self._console.print(
-                f"{self._current_file} -> FAILED — {reason}",
-                highlight=False,
-            )
-        self._current_file = None
-
-    def analyze_file_skipped(self, reason: str) -> None:
-        self._stop_progress()
-        if self._current_file is not None:
-            self._ensure_analyze_header()
-            self._console.print(
-                f"{self._current_file} -> SKIPPED — {reason}",
-                highlight=False,
-            )
-        self._current_file = None
 
     # -- Plan -----------------------------------------------------------------
 
@@ -322,21 +320,6 @@ class RichPlanReporter:
     def plan_file_start(self, name: str) -> None:
         self._stop_progress()
         self._current_file = name
-
-    def plan_microop(self, label: str, *, has_progress: bool) -> None:
-        self._stop_progress()
-        if self._current_file is None:
-            return
-        progress = self._start_progress(has_progress=has_progress)
-        if progress is None:
-            return  # non-TTY: skip floating bar entirely
-        desc = f"{self._current_file} -> {label}"
-        self._task_id = progress.add_task(desc, total=100 if has_progress else None)
-
-    def plan_progress(self, fraction: float) -> None:
-        if self._progress is None or self._task_id is None:
-            return
-        self._progress.update(self._task_id, completed=fraction * 100)
 
     def plan_file_done(self, summary: str) -> None:
         self._stop_progress()
@@ -367,5 +350,5 @@ class RichPlanReporter:
         self._stop_progress()
 
     def resume(self) -> None:
-        # Next *_microop call will recreate the Progress; nothing to do here
+        # Next progress-creating call recreates the Progress; nothing to do here
         return

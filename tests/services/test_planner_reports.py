@@ -1,21 +1,16 @@
 """PlannerService emits PlanReporter events for the per-movie plan loop.
 
 Covers:
-- ``plan_file_start(name)`` -> ``plan_microop("cropdetect", has_progress=True)``
-  -> ``plan_progress(fraction)`` -> ``plan_file_done(summary)``
-- ``dry_run=True`` skips the cropdetect microop entirely
+- ``plan_file_start(name)`` -> ``plan_file_done(summary)`` (the planner no
+  longer runs cropdetect, so it emits no ``plan_microop``/``plan_progress``)
 - ``reporter=None`` keeps the planner fully silent (legacy headless behavior)
 - ``_format_plan_summary`` formats with/without crop and with/without deinterlace
-- ``_on_crop_progress`` forwards samples only when both reporter and
-  ``sample.fraction`` are non-None
 """
 
 from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
-from typing import Any
-from unittest.mock import MagicMock
 
 from furnace.core.models import (
     CropRect,
@@ -24,7 +19,6 @@ from furnace.core.models import (
     Movie,
     VideoInfo,
 )
-from furnace.core.progress import ProgressSample
 from furnace.services.planner import PlannerService, _format_plan_summary
 from tests.fakes.recording_reporter import RecordingPlanReporter
 
@@ -66,122 +60,49 @@ def _make_movie() -> Movie:
     )
 
 
-def test_plan_file_emits_start_microop_done() -> None:
-    prober = MagicMock()
-    prober.detect_crop.return_value = None
+def test_plan_file_emits_start_and_done() -> None:
     reporter = RecordingPlanReporter()
-    planner = PlannerService(prober=prober, previewer=None, reporter=reporter)
+    planner = PlannerService(previewer=None, reporter=reporter)
     planner.create_plan(
         movies=[(_make_movie(), Path("/out/x.mkv"))],
         audio_lang_filter=["eng"],
         sub_lang_filter=[],
         vmaf_enabled=False,
-        dry_run=False,
     )
 
     methods = [e.method for e in reporter.events]
     assert "plan_file_start" in methods
-    triples = [(e.method, e.args, e.kwargs) for e in reporter.events]
-    assert ("plan_microop", ("cropdetect",), (("has_progress", True),)) in triples
     # plan_file_done is the final event emitted by the planner itself
     # (plan_saved is the CLI's responsibility, per the spec).
     assert methods[-1] == "plan_file_done"
-
-
-def test_plan_dry_run_skips_cropdetect_microop() -> None:
-    prober = MagicMock()
-    reporter = RecordingPlanReporter()
-    planner = PlannerService(prober=prober, previewer=None, reporter=reporter)
-    planner.create_plan(
-        movies=[(_make_movie(), Path("/out/x.mkv"))],
-        audio_lang_filter=["eng"],
-        sub_lang_filter=[],
-        vmaf_enabled=False,
-        dry_run=True,
-    )
-
-    labels = [e.args[0] for e in reporter.events if e.method == "plan_microop"]
-    assert "cropdetect" not in labels  # has_progress lives in kwargs
+    # cropdetect is gone, so the planner emits no microop/progress events.
+    assert "plan_microop" not in methods
+    assert "plan_progress" not in methods
 
 
 def test_plan_without_reporter_is_silent() -> None:
-    prober = MagicMock()
-    prober.detect_crop.return_value = None
-    planner = PlannerService(prober=prober, previewer=None)  # no reporter
+    planner = PlannerService(previewer=None)  # no reporter
     plan = planner.create_plan(
         movies=[(_make_movie(), Path("/out/x.mkv"))],
         audio_lang_filter=["eng"],
         sub_lang_filter=[],
         vmaf_enabled=False,
-        dry_run=False,
     )
 
     assert len(plan.jobs) == 1
 
 
-def test_cropdetect_progress_samples_forwarded_to_reporter() -> None:
-    """Samples passed to ``on_progress`` flow through to ``plan_progress``."""
-
-    def fake_detect_crop(
-        path: Path,
-        duration_s: float,
-        *,
-        interlaced: bool = False,
-        is_dvd: bool = False,
-        hdr_transfer: str | None = None,
-        on_progress: Any = None,
-    ) -> CropRect | None:
-        assert on_progress is not None
-        on_progress(ProgressSample(fraction=0.25))
-        on_progress(ProgressSample(fraction=0.75))
-        return None
-
-    prober = MagicMock()
-    prober.detect_crop.side_effect = fake_detect_crop
-    reporter = RecordingPlanReporter()
-    planner = PlannerService(prober=prober, previewer=None, reporter=reporter)
-    planner.create_plan(
-        movies=[(_make_movie(), Path("/out/x.mkv"))],
-        audio_lang_filter=["eng"],
-        sub_lang_filter=[],
-        vmaf_enabled=False,
-        dry_run=False,
-    )
-
-    fractions = [e.args[0] for e in reporter.events if e.method == "plan_progress"]
-    assert fractions == [0.25, 0.75]
-
-
-def test_cropdetect_progress_sample_without_fraction_is_dropped() -> None:
-    """Samples whose ``fraction`` is None must not produce ``plan_progress`` events."""
-    reporter = RecordingPlanReporter()
-    planner = PlannerService(prober=MagicMock(), previewer=None, reporter=reporter)
-    # processed_s only -> fraction is None -> nothing forwarded
-    planner._on_crop_progress(ProgressSample(processed_s=10.0))
-
-    assert [e for e in reporter.events if e.method == "plan_progress"] == []
-
-
-def test_on_crop_progress_no_reporter_is_noop() -> None:
-    """Without a reporter, the helper must not raise even with a fraction set."""
-    planner = PlannerService(prober=MagicMock(), previewer=None)  # no reporter
-    # Should silently do nothing.
-    planner._on_crop_progress(ProgressSample(fraction=0.5))
-
-
 def test_format_plan_summary_no_crop_no_deinterlace() -> None:
     """Without a crop or deinterlace flag, summary uses source dims only."""
-    prober = MagicMock()
-    prober.detect_crop.return_value = None
-    planner = PlannerService(prober=prober, previewer=None)
+    movie = _make_movie()
+    planner = PlannerService(previewer=None)
     plan = planner.create_plan(
-        movies=[(_make_movie(), Path("/out/x.mkv"))],
+        movies=[(movie, Path("/out/x.mkv"))],
         audio_lang_filter=["eng"],
         sub_lang_filter=[],
         vmaf_enabled=False,
-        dry_run=False,
     )
-    summary = _format_plan_summary(_make_movie(), plan.jobs[0])
+    summary = _format_plan_summary(movie, plan.jobs[0])
     assert summary.endswith("1920x1080 to 1920x1080")
     assert summary.startswith("cq ")
     assert "deinterlace" not in summary
@@ -189,17 +110,16 @@ def test_format_plan_summary_no_crop_no_deinterlace() -> None:
 
 def test_format_plan_summary_with_crop_uses_cropped_dims() -> None:
     """When a crop is set, summary destination dims come from the crop rect."""
-    prober = MagicMock()
-    prober.detect_crop.return_value = CropRect(w=1920, h=800, x=0, y=140)
-    planner = PlannerService(prober=prober, previewer=None)
+    movie = _make_movie()
+    planner = PlannerService(previewer=None)
     plan = planner.create_plan(
-        movies=[(_make_movie(), Path("/out/x.mkv"))],
+        movies=[(movie, Path("/out/x.mkv"))],
         audio_lang_filter=["eng"],
         sub_lang_filter=[],
         vmaf_enabled=False,
-        dry_run=False,
+        precomputed_crops={movie.main_file: CropRect(w=1920, h=800, x=0, y=140)},
     )
-    summary = _format_plan_summary(_make_movie(), plan.jobs[0])
+    summary = _format_plan_summary(movie, plan.jobs[0])
     assert "1920x1080 to 1920x800" in summary
 
 
@@ -207,15 +127,12 @@ def test_format_plan_summary_includes_deinterlace_flag() -> None:
     """When ``deinterlace`` is set on video params, summary appends it."""
     interlaced_video = replace(_make_video_info(), interlaced=True)
     movie = replace(_make_movie(), video=interlaced_video)
-    prober = MagicMock()
-    prober.detect_crop.return_value = None
-    planner = PlannerService(prober=prober, previewer=None)
+    planner = PlannerService(previewer=None)
     plan = planner.create_plan(
         movies=[(movie, Path("/out/x.mkv"))],
         audio_lang_filter=["eng"],
         sub_lang_filter=[],
         vmaf_enabled=False,
-        dry_run=False,
     )
     summary = _format_plan_summary(movie, plan.jobs[0])
     assert summary.endswith(", deinterlace")
@@ -231,15 +148,13 @@ def test_format_plan_summary_anamorphic_dvd_uses_real_output_dims() -> None:
         sar_num=16, sar_den=15,
     )
     movie = replace(_make_movie(), video=pal_dvd_video)
-    prober = MagicMock()
-    prober.detect_crop.return_value = CropRect(w=704, h=400, x=8, y=88)
-    planner = PlannerService(prober=prober, previewer=None)
+    planner = PlannerService(previewer=None)
     plan = planner.create_plan(
         movies=[(movie, Path("/out/x.mkv"))],
         audio_lang_filter=["eng"],
         sub_lang_filter=[],
         vmaf_enabled=False,
-        dry_run=False,
+        precomputed_crops={movie.main_file: CropRect(w=704, h=400, x=8, y=88)},
     )
     summary = _format_plan_summary(movie, plan.jobs[0])
     assert "720x576 to 744x400" in summary
@@ -247,16 +162,13 @@ def test_format_plan_summary_anamorphic_dvd_uses_real_output_dims() -> None:
 
 def test_plan_file_done_summary_is_emitted_via_reporter() -> None:
     """End-to-end: the reporter receives a ``plan_file_done`` with a usable summary."""
-    prober = MagicMock()
-    prober.detect_crop.return_value = None
     reporter = RecordingPlanReporter()
-    planner = PlannerService(prober=prober, previewer=None, reporter=reporter)
+    planner = PlannerService(previewer=None, reporter=reporter)
     planner.create_plan(
         movies=[(_make_movie(), Path("/out/x.mkv"))],
         audio_lang_filter=["eng"],
         sub_lang_filter=[],
         vmaf_enabled=False,
-        dry_run=False,
     )
 
     done_events = [e for e in reporter.events if e.method == "plan_file_done"]
@@ -269,34 +181,28 @@ def test_plan_file_done_summary_is_emitted_via_reporter() -> None:
 
 def test_format_plan_summary_passthrough() -> None:
     """A passthrough job renders the copy-video label, not encode settings."""
-    prober = MagicMock()
-    planner = PlannerService(prober=prober, previewer=None)
-    plan = planner.create_plan(
-        movies=[(_make_movie(), Path("/out/x.mkv"))],
-        audio_lang_filter=["eng"],
-        sub_lang_filter=[],
-        vmaf_enabled=False,
-        dry_run=False,
-        copy_video=True,
-    )
-    summary = _format_plan_summary(_make_movie(), plan.jobs[0])
-    assert summary == "passthrough (copy video)"
-    # passthrough skips cropdetect entirely
-    prober.detect_crop.assert_not_called()
-
-
-def test_format_plan_summary_interlaced_fallback() -> None:
-    """An interlaced fallback-to-encode job is labelled with its reason."""
-    movie = replace(_make_movie(), video=replace(_make_video_info(), interlaced=True))
-    prober = MagicMock()
-    prober.detect_crop.return_value = None
-    planner = PlannerService(prober=prober, previewer=None)
+    movie = _make_movie()
+    planner = PlannerService(previewer=None)
     plan = planner.create_plan(
         movies=[(movie, Path("/out/x.mkv"))],
         audio_lang_filter=["eng"],
         sub_lang_filter=[],
         vmaf_enabled=False,
-        dry_run=False,
+        copy_video=True,
+    )
+    summary = _format_plan_summary(movie, plan.jobs[0])
+    assert summary == "passthrough (copy video)"
+
+
+def test_format_plan_summary_interlaced_fallback() -> None:
+    """An interlaced fallback-to-encode job is labelled with its reason."""
+    movie = replace(_make_movie(), video=replace(_make_video_info(), interlaced=True))
+    planner = PlannerService(previewer=None)
+    plan = planner.create_plan(
+        movies=[(movie, Path("/out/x.mkv"))],
+        audio_lang_filter=["eng"],
+        sub_lang_filter=[],
+        vmaf_enabled=False,
         copy_video=True,
     )
     summary = _format_plan_summary(movie, plan.jobs[0], "interlaced")
@@ -316,15 +222,12 @@ def _make_dv_p7_movie() -> Movie:
 def test_format_plan_summary_dv_p7_fallback() -> None:
     """A genuine DV P7 FEL source falls back to encode and is labelled accordingly."""
     movie = _make_dv_p7_movie()
-    prober = MagicMock()
-    prober.detect_crop.return_value = None
-    planner = PlannerService(prober=prober, previewer=None)
+    planner = PlannerService(previewer=None)
     plan = planner.create_plan(
         movies=[(movie, Path("/out/x.mkv"))],
         audio_lang_filter=["eng"],
         sub_lang_filter=[],
         vmaf_enabled=False,
-        dry_run=False,
         copy_video=True,
     )
     job = plan.jobs[0]
@@ -339,15 +242,12 @@ def test_format_plan_summary_dv_p7_fallback() -> None:
 def test_format_plan_summary_normal_encode_has_no_reason_prefix() -> None:
     """Without a fallback reason (copy-video off), summary is the plain encode line."""
     movie = _make_movie()
-    prober = MagicMock()
-    prober.detect_crop.return_value = None
-    planner = PlannerService(prober=prober, previewer=None)
+    planner = PlannerService(previewer=None)
     plan = planner.create_plan(
         movies=[(movie, Path("/out/x.mkv"))],
         audio_lang_filter=["eng"],
         sub_lang_filter=[],
         vmaf_enabled=False,
-        dry_run=False,
     )
     summary = _format_plan_summary(movie, plan.jobs[0])
     assert summary.startswith("cq ")
@@ -357,15 +257,13 @@ def test_format_plan_summary_normal_encode_has_no_reason_prefix() -> None:
 
 def test_passthrough_summary_emitted_via_reporter() -> None:
     """End-to-end: a passthrough job's plan_file_done summary says copy video."""
-    prober = MagicMock()
     reporter = RecordingPlanReporter()
-    planner = PlannerService(prober=prober, previewer=None, reporter=reporter)
+    planner = PlannerService(previewer=None, reporter=reporter)
     planner.create_plan(
         movies=[(_make_movie(), Path("/out/x.mkv"))],
         audio_lang_filter=["eng"],
         sub_lang_filter=[],
         vmaf_enabled=False,
-        dry_run=False,
         copy_video=True,
     )
     done = [e for e in reporter.events if e.method == "plan_file_done"]
@@ -376,16 +274,13 @@ def test_passthrough_summary_emitted_via_reporter() -> None:
 def test_interlaced_fallback_reason_emitted_via_reporter() -> None:
     """End-to-end: an interlaced fallback surfaces its reason in the report path."""
     movie = replace(_make_movie(), video=replace(_make_video_info(), interlaced=True))
-    prober = MagicMock()
-    prober.detect_crop.return_value = None
     reporter = RecordingPlanReporter()
-    planner = PlannerService(prober=prober, previewer=None, reporter=reporter)
+    planner = PlannerService(previewer=None, reporter=reporter)
     planner.create_plan(
         movies=[(movie, Path("/out/x.mkv"))],
         audio_lang_filter=["eng"],
         sub_lang_filter=[],
         vmaf_enabled=False,
-        dry_run=False,
         copy_video=True,
     )
     done = [e for e in reporter.events if e.method == "plan_file_done"]
@@ -397,16 +292,13 @@ def test_interlaced_fallback_reason_emitted_via_reporter() -> None:
 def test_dv_p7_fallback_reason_emitted_via_reporter() -> None:
     """End-to-end: a genuine DV P7 FEL fallback surfaces its reason in the report path."""
     movie = _make_dv_p7_movie()
-    prober = MagicMock()
-    prober.detect_crop.return_value = None
     reporter = RecordingPlanReporter()
-    planner = PlannerService(prober=prober, previewer=None, reporter=reporter)
+    planner = PlannerService(previewer=None, reporter=reporter)
     planner.create_plan(
         movies=[(movie, Path("/out/x.mkv"))],
         audio_lang_filter=["eng"],
         sub_lang_filter=[],
         vmaf_enabled=False,
-        dry_run=False,
         copy_video=True,
     )
     done = [e for e in reporter.events if e.method == "plan_file_done"]

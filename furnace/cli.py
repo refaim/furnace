@@ -39,6 +39,7 @@ from .core.models import (
 )
 from .core.scan import parse_version_arg
 from .plan import load_plan, save_plan
+from .services.analysis_pipeline import AnalysisPipeline
 from .services.analyzer import Analyzer
 from .services.disc_demuxer import DiscDemuxer
 from .services.executor import Executor
@@ -390,6 +391,9 @@ def plan(
     force: bool = typer.Option(
         False, "--force", "-f", help="Process files even if already encoded by Furnace or output exists"
     ),
+    jobs: int | None = typer.Option(
+        None, "--jobs", "-j", help="Parallel analysis workers (default: CPU cores - 2)"
+    ),
     config: Path | None = typer.Option(None, "--config", help="Path to config file"),
 ) -> None:
     """Scan source, show TUI for track selection, save JSON plan."""
@@ -475,17 +479,17 @@ def plan(
         for mkv_path in demuxed_paths:
             reporter.scan_file(mkv_path.name)
 
-        analyzer = Analyzer(prober=ffmpeg_adapter, reporter=reporter, force=force)
-        movies_with_paths: list[tuple[Movie, Path]] = []
-        for sr in scan_results:
-            try:
-                movie = analyzer.analyze(sr)
-            except ValueError as exc:
-                # analyze() raises for HDR10+; reporter already saw analyze_file_failed
-                logger.warning("analyze raised: %s", exc)
-                continue
-            if movie is not None:
-                movies_with_paths.append((movie, sr.output_path))
+        workers = max(1, jobs) if jobs is not None else max(1, (os.cpu_count() or 1) - 2)
+        analyzer = Analyzer(prober=ffmpeg_adapter, force=force)
+        pipeline = AnalysisPipeline(
+            analyzer=analyzer,
+            prober=ffmpeg_adapter,
+            reporter=reporter,
+            max_workers=workers,
+        )
+        batch = pipeline.run(scan_results, copy_video=copy_video, dry_run=dry_run)
+        movies_with_paths = batch.movies
+        precomputed_crops = batch.crops
 
         downmix_overrides: dict[tuple[Path, int], DownmixMode] = {}
 
@@ -498,7 +502,6 @@ def plan(
         if not dry_run:
             reporter.pause()
         planner = PlannerService(
-            prober=ffmpeg_adapter,
             previewer=mpv_adapter,
             track_selector=_track_selector if not dry_run else None,
             und_resolver=_und_resolver if not dry_run else None,
@@ -512,9 +515,9 @@ def plan(
             audio_lang_filter=audio_lang_list,
             sub_lang_filter=sub_lang_list,
             vmaf_enabled=vmaf,
-            dry_run=dry_run,
             sar_overrides=sar_override_paths,
             downmix_overrides=downmix_overrides,
+            precomputed_crops=precomputed_crops,
             copy_video=copy_video,
         )
         _apply_demux_dir_to_plan(plan_obj, demux_dir)

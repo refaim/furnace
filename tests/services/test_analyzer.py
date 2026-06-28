@@ -8,6 +8,8 @@ import pytest
 
 from furnace.core.audio_profile import AudioMetrics, Verdict
 from furnace.core.models import (
+    AnalysisOutcome,
+    AnalyzeStatus,
     AudioCodecId,
     HdrMetadata,
     ScanResult,
@@ -151,8 +153,11 @@ class TestAnalyzerParsesTracks:
         # Patch should_skip_file to always allow processing
         with patch("furnace.services.analyzer.should_skip_file", return_value=(False, "")):
             analyzer = Analyzer(prober=prober)
-            movie = analyzer.analyze(scan_result)
+            outcome = analyzer.analyze(scan_result)
 
+        assert outcome.status is AnalyzeStatus.DONE
+        assert outcome.detail == "h264 1920x1080 23fps SDR, 2 audio (eng,rus), 1 subs"
+        movie = outcome.movie
         assert movie is not None
         # Video info
         assert movie.video.codec_name == "h264"
@@ -181,8 +186,10 @@ class TestAnalyzerParsesTracks:
 
         with patch("furnace.services.analyzer.should_skip_file", return_value=(False, "")):
             analyzer = Analyzer(prober=prober)
-            movie = analyzer.analyze(scan_result)
+            outcome = analyzer.analyze(scan_result)
 
+        assert outcome.status is AnalyzeStatus.DONE
+        movie = outcome.movie
         assert movie is not None
         eng_track = next(t for t in movie.audio_tracks if t.language == "eng")
         assert eng_track.is_default is True
@@ -201,8 +208,10 @@ class TestAnalyzerDVProceeds:
                 mock_detect_hdr.return_value = HdrMetadata(is_dolby_vision=True)
                 with patch("furnace.services.analyzer.check_unsupported_codecs", return_value=None):
                     analyzer = Analyzer(prober=prober)
-                    movie = analyzer.analyze(scan_result)
+                    outcome = analyzer.analyze(scan_result)
 
+        assert outcome.status is AnalyzeStatus.DONE
+        movie = outcome.movie
         assert movie is not None
         assert movie.video.codec_name == "dvhe"
 
@@ -247,8 +256,10 @@ class TestAnalyzerHdrSideDataMerge:
         with patch("furnace.services.analyzer.should_skip_file", return_value=(False, "")):
             with patch("furnace.services.analyzer.check_unsupported_codecs", return_value=None):
                 analyzer = Analyzer(prober=prober)
-                movie = analyzer.analyze(scan_result)
+                outcome = analyzer.analyze(scan_result)
 
+        assert outcome.status is AnalyzeStatus.DONE
+        movie = outcome.movie
         assert movie is not None
         hdr = movie.video.hdr
         assert hdr.is_dolby_vision is True
@@ -272,8 +283,8 @@ class TestAnalyzerHdrSideDataMerge:
 
 
 class TestAnalyzerHDR10PlusError:
-    def test_analyzer_hdr10plus_raises(self, tmp_path: Path) -> None:
-        """HDR10+ content -> analyze raises ValueError."""
+    def test_analyzer_hdr10plus_returns_failed(self, tmp_path: Path) -> None:
+        """HDR10+ content -> analyze returns a FAILED outcome (no raise)."""
         scan_result = make_scan_result(tmp_path)
         prober = make_prober(probe_data=_dv_probe_data())
 
@@ -281,8 +292,91 @@ class TestAnalyzerHDR10PlusError:
             with patch("furnace.services.analyzer.detect_hdr") as mock_detect_hdr:
                 mock_detect_hdr.return_value = HdrMetadata(is_hdr10_plus=True)
                 analyzer = Analyzer(prober=prober)
-                with pytest.raises(ValueError, match="HDR10\\+ not supported"):
-                    analyzer.analyze(scan_result)
+                outcome = analyzer.analyze(scan_result)
+
+        assert outcome == AnalysisOutcome(None, AnalyzeStatus.FAILED, "HDR10+ not supported")
+
+
+class TestAnalyzerHdrSummary:
+    """The analyze summary reflects the source HDR class and interlaced marker."""
+
+    @staticmethod
+    def _probe_with_transfer(transfer: str) -> dict[str, Any]:
+        data = _h264_probe_data()
+        data["streams"][0]["color_transfer"] = transfer
+        return data
+
+    def test_smpte2084_transfer_summarised_as_hdr10(self, tmp_path: Path) -> None:
+        scan_result = make_scan_result(tmp_path)
+        prober = make_prober(probe_data=self._probe_with_transfer("smpte2084"))
+
+        with patch("furnace.services.analyzer.should_skip_file", return_value=(False, "")):
+            analyzer = Analyzer(prober=prober)
+            outcome = analyzer.analyze(scan_result)
+
+        assert outcome.status is AnalyzeStatus.DONE
+        assert outcome.detail == "h264 1920x1080 23fps HDR10, 2 audio (eng,rus), 1 subs"
+
+    def test_hlg_transfer_summarised_as_hlg(self, tmp_path: Path) -> None:
+        scan_result = make_scan_result(tmp_path)
+        prober = make_prober(probe_data=self._probe_with_transfer("arib-std-b67"))
+
+        with patch("furnace.services.analyzer.should_skip_file", return_value=(False, "")):
+            analyzer = Analyzer(prober=prober)
+            outcome = analyzer.analyze(scan_result)
+
+        assert outcome.status is AnalyzeStatus.DONE
+        assert outcome.detail == "h264 1920x1080 23fps HLG, 2 audio (eng,rus), 1 subs"
+
+    def test_dolby_vision_summary_locks_profile_and_bl(self, tmp_path: Path) -> None:
+        data = _dv_probe_data()
+        data["streams"][0]["side_data_list"] = [
+            {
+                "side_data_type": "DOVI configuration record",
+                "dv_profile": 8,
+                "dv_bl_signal_compatibility_id": 1,
+            },
+        ]
+        scan_result = make_scan_result(tmp_path)
+        prober = make_prober(probe_data=data)
+
+        with patch("furnace.services.analyzer.should_skip_file", return_value=(False, "")):
+            analyzer = Analyzer(prober=prober)
+            outcome = analyzer.analyze(scan_result)
+
+        assert outcome.status is AnalyzeStatus.DONE
+        assert outcome.detail == "dvhe 3840x2160 24fps DV P8 (BL=HDR10), 0 audio, 0 subs"
+
+    def test_interlaced_marker_in_summary(self, tmp_path: Path) -> None:
+        data = _h264_probe_data()
+        data["streams"][0]["field_order"] = "tt"  # HD tt -> always deinterlace
+        scan_result = make_scan_result(tmp_path)
+        prober = make_prober(probe_data=data)
+
+        with patch("furnace.services.analyzer.should_skip_file", return_value=(False, "")):
+            analyzer = Analyzer(prober=prober)
+            outcome = analyzer.analyze(scan_result)
+
+        assert outcome.status is AnalyzeStatus.DONE
+        assert outcome.detail == "h264 1920x1080 23fps SDR (interlaced), 2 audio (eng,rus), 1 subs"
+
+
+class TestAnalyzerProgress:
+    """``analyze(on_progress=...)`` reports the running stage fraction then 1.0."""
+
+    def test_on_progress_reports_stage_fractions(self, tmp_path: Path) -> None:
+        scan_result = make_scan_result(tmp_path)
+        # _h264 has two profileable audio tracks and no idet -> two heavy stages.
+        prober = make_prober(probe_data=_h264_probe_data())
+        fractions: list[float] = []
+
+        with patch("furnace.services.analyzer.should_skip_file", return_value=(False, "")):
+            analyzer = Analyzer(prober=prober)
+            outcome = analyzer.analyze(scan_result, on_progress=fractions.append)
+
+        assert outcome.status is AnalyzeStatus.DONE
+        # After each of the two audio stages (1/2, 2/2), then a final 1.0.
+        assert fractions == [0.5, 1.0, 1.0]
 
 
 class TestAnalyzerDelay:
@@ -323,8 +417,10 @@ class TestAnalyzerDelay:
             with patch("furnace.services.analyzer.detect_hdr", return_value=HdrMetadata()):
                 with patch("furnace.services.analyzer.check_unsupported_codecs", return_value=None):
                     analyzer = Analyzer(prober=prober)
-                    movie = analyzer.analyze(scan_result)
+                    outcome = analyzer.analyze(scan_result)
 
+        assert outcome.status is AnalyzeStatus.DONE
+        movie = outcome.movie
         assert movie is not None
         assert movie.audio_tracks[0].delay_ms == 500
 
@@ -365,8 +461,10 @@ class TestAnalyzerDelay:
             with patch("furnace.services.analyzer.detect_hdr", return_value=HdrMetadata()):
                 with patch("furnace.services.analyzer.check_unsupported_codecs", return_value=None):
                     analyzer = Analyzer(prober=prober)
-                    movie = analyzer.analyze(scan_result)
+                    outcome = analyzer.analyze(scan_result)
 
+        assert outcome.status is AnalyzeStatus.DONE
+        movie = outcome.movie
         assert movie is not None
         assert movie.audio_tracks[0].delay_ms == 500
 
@@ -406,8 +504,10 @@ class TestAnalyzerDelay:
             with patch("furnace.services.analyzer.detect_hdr", return_value=HdrMetadata()):
                 with patch("furnace.services.analyzer.check_unsupported_codecs", return_value=None):
                     analyzer = Analyzer(prober=prober)
-                    movie = analyzer.analyze(scan_result)
+                    outcome = analyzer.analyze(scan_result)
 
+        assert outcome.status is AnalyzeStatus.DONE
+        movie = outcome.movie
         assert movie is not None
         assert movie.audio_tracks[0].delay_ms == 0
 
@@ -450,18 +550,20 @@ class TestAnalyzeEarlyReturns:
     """Cover early-return branches in analyze()."""
 
     def test_skip_when_should_skip_file_returns_true(self, tmp_path: Path) -> None:
-        """should_skip_file returns (True, reason) -> analyze returns None."""
+        """should_skip_file returns (True, reason) -> analyze returns SKIPPED."""
         scan_result = make_scan_result(tmp_path)
         prober = make_prober(probe_data=_h264_probe_data(), encoder_tag="Furnace 1.0")
 
         # should_skip_file recognises "Furnace" prefix in encoder tag
         analyzer = Analyzer(prober=prober)
-        result = analyzer.analyze(scan_result)
+        outcome = analyzer.analyze(scan_result)
 
-        assert result is None
+        assert outcome.movie is None
+        assert outcome.status is AnalyzeStatus.SKIPPED
+        assert outcome.detail == "file already encoded by Furnace (tag: Furnace 1.0)"
 
     def test_skip_when_output_exists(self, tmp_path: Path) -> None:
-        """Output file already exists -> should_skip_file -> None."""
+        """Output file already exists -> should_skip_file -> SKIPPED."""
         scan_result = make_scan_result(tmp_path)
         # Create the output so should_skip_file sees it
         scan_result.output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -469,9 +571,11 @@ class TestAnalyzeEarlyReturns:
         prober = make_prober(probe_data=_h264_probe_data())
 
         analyzer = Analyzer(prober=prober)
-        result = analyzer.analyze(scan_result)
+        outcome = analyzer.analyze(scan_result)
 
-        assert result is None
+        assert outcome.movie is None
+        assert outcome.status is AnalyzeStatus.SKIPPED
+        assert outcome.detail == f"output file already exists: {scan_result.output_path}"
 
     def test_force_processes_furnace_tagged_file(self, tmp_path: Path) -> None:
         """force=True -> a Furnace-tagged source is analyzed instead of skipped."""
@@ -479,8 +583,10 @@ class TestAnalyzeEarlyReturns:
         prober = make_prober(probe_data=_h264_probe_data(), encoder_tag="Furnace 1.17.0")
 
         analyzer = Analyzer(prober=prober, force=True)
-        result = analyzer.analyze(scan_result)
+        outcome = analyzer.analyze(scan_result)
 
+        assert outcome.status is AnalyzeStatus.DONE
+        result = outcome.movie
         assert result is not None
 
     def test_force_processes_when_output_exists(self, tmp_path: Path) -> None:
@@ -491,46 +597,54 @@ class TestAnalyzeEarlyReturns:
         prober = make_prober(probe_data=_h264_probe_data())
 
         analyzer = Analyzer(prober=prober, force=True)
-        result = analyzer.analyze(scan_result)
+        outcome = analyzer.analyze(scan_result)
 
+        assert outcome.status is AnalyzeStatus.DONE
+        result = outcome.movie
         assert result is not None
 
     def test_probe_raises_oserror(self, tmp_path: Path) -> None:
-        """prober.probe raises OSError -> analyze returns None."""
+        """prober.probe raises OSError -> analyze returns FAILED."""
         scan_result = make_scan_result(tmp_path)
         prober = make_prober()
         prober.probe.side_effect = OSError("disk failure")
 
         with patch("furnace.services.analyzer.should_skip_file", return_value=(False, "")):
             analyzer = Analyzer(prober=prober)
-            result = analyzer.analyze(scan_result)
+            outcome = analyzer.analyze(scan_result)
 
-        assert result is None
+        assert outcome.movie is None
+        assert outcome.status is AnalyzeStatus.FAILED
+        assert outcome.detail == "probe failed"
 
     def test_probe_raises_runtime_error(self, tmp_path: Path) -> None:
-        """prober.probe raises RuntimeError -> analyze returns None."""
+        """prober.probe raises RuntimeError -> analyze returns FAILED."""
         scan_result = make_scan_result(tmp_path)
         prober = make_prober()
         prober.probe.side_effect = RuntimeError("ffprobe crash")
 
         with patch("furnace.services.analyzer.should_skip_file", return_value=(False, "")):
-            result = Analyzer(prober=prober).analyze(scan_result)
+            outcome = Analyzer(prober=prober).analyze(scan_result)
 
-        assert result is None
+        assert outcome.movie is None
+        assert outcome.status is AnalyzeStatus.FAILED
+        assert outcome.detail == "probe failed"
 
     def test_probe_raises_value_error(self, tmp_path: Path) -> None:
-        """prober.probe raises ValueError -> analyze returns None."""
+        """prober.probe raises ValueError -> analyze returns FAILED."""
         scan_result = make_scan_result(tmp_path)
         prober = make_prober()
         prober.probe.side_effect = ValueError("bad data")
 
         with patch("furnace.services.analyzer.should_skip_file", return_value=(False, "")):
-            result = Analyzer(prober=prober).analyze(scan_result)
+            outcome = Analyzer(prober=prober).analyze(scan_result)
 
-        assert result is None
+        assert outcome.movie is None
+        assert outcome.status is AnalyzeStatus.FAILED
+        assert outcome.detail == "probe failed"
 
     def test_no_video_stream(self, tmp_path: Path) -> None:
-        """Probe data with no video stream -> returns None."""
+        """Probe data with no video stream -> returns SKIPPED."""
         scan_result = make_scan_result(tmp_path)
         prober = make_prober(probe_data={
             "streams": [
@@ -543,12 +657,14 @@ class TestAnalyzeEarlyReturns:
         })
 
         with patch("furnace.services.analyzer.should_skip_file", return_value=(False, "")):
-            result = Analyzer(prober=prober).analyze(scan_result)
+            outcome = Analyzer(prober=prober).analyze(scan_result)
 
-        assert result is None
+        assert outcome.movie is None
+        assert outcome.status is AnalyzeStatus.SKIPPED
+        assert outcome.detail == "no video stream"
 
     def test_parse_video_info_raises_key_error(self, tmp_path: Path) -> None:
-        """_parse_video_info raises KeyError -> analyze returns None."""
+        """_parse_video_info raises KeyError -> analyze returns FAILED."""
         scan_result = make_scan_result(tmp_path)
         # Provide a video stream but patch _parse_video_info to raise
         prober = make_prober(probe_data={
@@ -560,12 +676,14 @@ class TestAnalyzeEarlyReturns:
         with patch("furnace.services.analyzer.should_skip_file", return_value=(False, "")):
             analyzer = Analyzer(prober=prober)
             with patch.object(analyzer, "_parse_video_info", side_effect=KeyError("missing")):
-                result = analyzer.analyze(scan_result)
+                outcome = analyzer.analyze(scan_result)
 
-        assert result is None
+        assert outcome.movie is None
+        assert outcome.status is AnalyzeStatus.FAILED
+        assert outcome.detail == "parse failed"
 
     def test_check_unsupported_codecs_returns_warning(self, tmp_path: Path) -> None:
-        """check_unsupported_codecs returns a string -> analyze returns None."""
+        """check_unsupported_codecs returns a string -> analyze returns SKIPPED."""
         scan_result = make_scan_result(tmp_path)
         prober = make_prober(probe_data=_h264_probe_data())
 
@@ -576,9 +694,11 @@ class TestAnalyzeEarlyReturns:
                 return_value="unsupported codecs detected: audio stream #1",
             ),
         ):
-            result = Analyzer(prober=prober).analyze(scan_result)
+            outcome = Analyzer(prober=prober).analyze(scan_result)
 
-        assert result is None
+        assert outcome.movie is None
+        assert outcome.status is AnalyzeStatus.SKIPPED
+        assert outcome.detail == "unsupported codecs detected: audio stream #1"
 
 
 # ---------------------------------------------------------------------------
@@ -702,8 +822,10 @@ class TestParseVideoInfoFallbacks:
         prober = make_prober(probe_data=probe_data)
 
         with patch("furnace.services.analyzer.should_skip_file", return_value=(False, "")):
-            movie = Analyzer(prober=prober).analyze(scan_result)
+            outcome = Analyzer(prober=prober).analyze(scan_result)
 
+        assert outcome.status is AnalyzeStatus.DONE
+        movie = outcome.movie
         assert movie is not None
         eng_track = next(t for t in movie.audio_tracks if t.language == "eng")
         assert eng_track.sample_rate is None
@@ -749,8 +871,10 @@ class TestIdetPath:
             patch("furnace.services.analyzer.should_skip_file", return_value=(False, "")),
             patch("furnace.services.analyzer.check_unsupported_codecs", return_value=None),
         ):
-            movie = Analyzer(prober=prober).analyze(scan_result)
+            outcome = Analyzer(prober=prober).analyze(scan_result)
 
+        assert outcome.status is AnalyzeStatus.DONE
+        movie = outcome.movie
         assert movie is not None
         assert movie.video.interlaced is True
         prober.run_idet.assert_called_once()
@@ -765,8 +889,10 @@ class TestIdetPath:
             patch("furnace.services.analyzer.should_skip_file", return_value=(False, "")),
             patch("furnace.services.analyzer.check_unsupported_codecs", return_value=None),
         ):
-            movie = Analyzer(prober=prober).analyze(scan_result)
+            outcome = Analyzer(prober=prober).analyze(scan_result)
 
+        assert outcome.status is AnalyzeStatus.DONE
+        movie = outcome.movie
         assert movie is not None
         assert movie.video.interlaced is False
 
@@ -780,8 +906,10 @@ class TestIdetPath:
             patch("furnace.services.analyzer.should_skip_file", return_value=(False, "")),
             patch("furnace.services.analyzer.check_unsupported_codecs", return_value=None),
         ):
-            movie = Analyzer(prober=prober).analyze(scan_result)
+            outcome = Analyzer(prober=prober).analyze(scan_result)
 
+        assert outcome.status is AnalyzeStatus.DONE
+        movie = outcome.movie
         assert movie is not None
         # idet failed with ratio=0.0, field_order=tt, fps=25 -> should_deinterlace(tt,25,0.0)=False
         assert movie.video.interlaced is False
@@ -798,8 +926,10 @@ class TestIdetPath:
             patch("furnace.services.analyzer.should_skip_file", return_value=(False, "")),
             patch("furnace.services.analyzer.check_unsupported_codecs", return_value=None),
         ):
-            movie = Analyzer(prober=prober).analyze(scan_result)
+            outcome = Analyzer(prober=prober).analyze(scan_result)
 
+        assert outcome.status is AnalyzeStatus.DONE
+        movie = outcome.movie
         assert movie is not None
         assert movie.video.interlaced is True
 
@@ -833,8 +963,10 @@ class TestIdetPath:
             patch("furnace.services.analyzer.should_skip_file", return_value=(False, "")),
             patch("furnace.services.analyzer.check_unsupported_codecs", return_value=None),
         ):
-            movie = Analyzer(prober=prober).analyze(scan_result)
+            outcome = Analyzer(prober=prober).analyze(scan_result)
 
+        assert outcome.status is AnalyzeStatus.DONE
+        movie = outcome.movie
         assert movie is not None
         assert movie.video.interlaced is True
         prober.run_idet.assert_not_called()
@@ -871,8 +1003,10 @@ class TestExternalSubtitle:
             mock_result.best.return_value = mock_best
             mock_from_path.return_value = mock_result
 
-            movie = Analyzer(prober=prober).analyze(scan_result)
+            outcome = Analyzer(prober=prober).analyze(scan_result)
 
+        assert outcome.status is AnalyzeStatus.DONE
+        movie = outcome.movie
         assert movie is not None
         # Should have original PGS sub + external SRT
         sat_subs = [t for t in movie.subtitle_tracks if t.source_file == srt_path]
@@ -905,8 +1039,10 @@ class TestExternalSubtitle:
             mock_result.best.return_value = mock_best
             mock_from_path.return_value = mock_result
 
-            movie = Analyzer(prober=prober).analyze(scan_result)
+            outcome = Analyzer(prober=prober).analyze(scan_result)
 
+        assert outcome.status is AnalyzeStatus.DONE
+        movie = outcome.movie
         assert movie is not None
         sat_subs = [t for t in movie.subtitle_tracks if t.source_file == srt_path]
         assert len(sat_subs) == 1
@@ -926,8 +1062,10 @@ class TestExternalSubtitle:
         prober = make_prober(probe_data=_h264_probe_data())
 
         with patch("furnace.services.analyzer.should_skip_file", return_value=(False, "")):
-            movie = Analyzer(prober=prober).analyze(scan_result)
+            outcome = Analyzer(prober=prober).analyze(scan_result)
 
+        assert outcome.status is AnalyzeStatus.DONE
+        movie = outcome.movie
         assert movie is not None
         sat_subs = [t for t in movie.subtitle_tracks if t.source_file == sup_path]
         assert len(sat_subs) == 1
@@ -958,8 +1096,10 @@ class TestExternalSubtitle:
             mock_result.best.return_value = mock_best
             mock_from_path.return_value = mock_result
 
-            movie = Analyzer(prober=prober).analyze(scan_result)
+            outcome = Analyzer(prober=prober).analyze(scan_result)
 
+        assert outcome.status is AnalyzeStatus.DONE
+        movie = outcome.movie
         assert movie is not None
         sat_subs = [t for t in movie.subtitle_tracks if t.source_file == ass_path]
         assert len(sat_subs) == 1
@@ -1012,8 +1152,10 @@ class TestExternalAudio:
         prober.probe.side_effect = probe_side_effect
 
         with patch("furnace.services.analyzer.should_skip_file", return_value=(False, "")):
-            movie = Analyzer(prober=prober).analyze(scan_result)
+            outcome = Analyzer(prober=prober).analyze(scan_result)
 
+        assert outcome.status is AnalyzeStatus.DONE
+        movie = outcome.movie
         assert movie is not None
         sat_audio = [t for t in movie.audio_tracks if t.source_file == flac_path]
         assert len(sat_audio) == 1
@@ -1048,8 +1190,10 @@ class TestExternalAudio:
         prober.probe.side_effect = probe_side_effect
 
         with patch("furnace.services.analyzer.should_skip_file", return_value=(False, "")):
-            movie = Analyzer(prober=prober).analyze(scan_result)
+            outcome = Analyzer(prober=prober).analyze(scan_result)
 
+        assert outcome.status is AnalyzeStatus.DONE
+        movie = outcome.movie
         assert movie is not None
         # Only the 2 audio tracks from main file
         assert len(movie.audio_tracks) == 2
@@ -1075,8 +1219,10 @@ class TestExternalAudio:
         prober.probe.side_effect = probe_side_effect
 
         with patch("furnace.services.analyzer.should_skip_file", return_value=(False, "")):
-            movie = Analyzer(prober=prober).analyze(scan_result)
+            outcome = Analyzer(prober=prober).analyze(scan_result)
 
+        assert outcome.status is AnalyzeStatus.DONE
+        movie = outcome.movie
         assert movie is not None
         assert len(movie.audio_tracks) == 2  # only main tracks
 
@@ -1112,8 +1258,10 @@ class TestAttachments:
         prober = make_prober(probe_data=probe_data)
 
         with patch("furnace.services.analyzer.should_skip_file", return_value=(False, "")):
-            movie = Analyzer(prober=prober).analyze(scan_result)
+            outcome = Analyzer(prober=prober).analyze(scan_result)
 
+        assert outcome.status is AnalyzeStatus.DONE
+        movie = outcome.movie
         assert movie is not None
         assert len(movie.attachments) == 2
         assert movie.attachments[0].filename == "Arial.ttf"
@@ -1133,8 +1281,10 @@ class TestAttachments:
         prober = make_prober(probe_data=probe_data)
 
         with patch("furnace.services.analyzer.should_skip_file", return_value=(False, "")):
-            movie = Analyzer(prober=prober).analyze(scan_result)
+            outcome = Analyzer(prober=prober).analyze(scan_result)
 
+        assert outcome.status is AnalyzeStatus.DONE
+        movie = outcome.movie
         assert movie is not None
         assert len(movie.attachments) == 0
 
@@ -1218,8 +1368,10 @@ class TestNumFramesParsing:
         prober = make_prober(probe_data=probe_data)
 
         with patch("furnace.services.analyzer.should_skip_file", return_value=(False, "")):
-            movie = Analyzer(prober=prober).analyze(scan_result)
+            outcome = Analyzer(prober=prober).analyze(scan_result)
 
+        assert outcome.status is AnalyzeStatus.DONE
+        movie = outcome.movie
         assert movie is not None
         sub = movie.subtitle_tracks[0]
         assert sub.num_frames == 120
@@ -1235,8 +1387,10 @@ class TestNumFramesParsing:
         prober = make_prober(probe_data=probe_data)
 
         with patch("furnace.services.analyzer.should_skip_file", return_value=(False, "")):
-            movie = Analyzer(prober=prober).analyze(scan_result)
+            outcome = Analyzer(prober=prober).analyze(scan_result)
 
+        assert outcome.status is AnalyzeStatus.DONE
+        movie = outcome.movie
         assert movie is not None
         sub = movie.subtitle_tracks[0]
         assert sub.num_frames == 250
@@ -1249,8 +1403,10 @@ class TestNumFramesParsing:
         prober = make_prober(probe_data=probe_data)
 
         with patch("furnace.services.analyzer.should_skip_file", return_value=(False, "")):
-            movie = Analyzer(prober=prober).analyze(scan_result)
+            outcome = Analyzer(prober=prober).analyze(scan_result)
 
+        assert outcome.status is AnalyzeStatus.DONE
+        movie = outcome.movie
         assert movie is not None
         sub = movie.subtitle_tracks[0]
         assert sub.num_frames is None
@@ -1275,8 +1431,10 @@ class TestAudioBitrateParsing:
         prober = make_prober(probe_data=probe_data)
 
         with patch("furnace.services.analyzer.should_skip_file", return_value=(False, "")):
-            movie = Analyzer(prober=prober).analyze(scan_result)
+            outcome = Analyzer(prober=prober).analyze(scan_result)
 
+        assert outcome.status is AnalyzeStatus.DONE
+        movie = outcome.movie
         assert movie is not None
         rus_track = next(t for t in movie.audio_tracks if t.language == "rus")
         assert rus_track.bitrate == 640000
@@ -1318,8 +1476,10 @@ class TestSatelliteUnknownExtension:
         prober = make_prober(probe_data=_h264_probe_data())
 
         with patch("furnace.services.analyzer.should_skip_file", return_value=(False, "")):
-            movie = Analyzer(prober=prober).analyze(scan_result)
+            outcome = Analyzer(prober=prober).analyze(scan_result)
 
+        assert outcome.status is AnalyzeStatus.DONE
+        movie = outcome.movie
         assert movie is not None
         # Track counts unchanged from main file
         assert len(movie.audio_tracks) == 2
@@ -1397,8 +1557,10 @@ class TestAudioNoBitrate:
         prober = make_prober(probe_data=probe_data)
 
         with patch("furnace.services.analyzer.should_skip_file", return_value=(False, "")):
-            movie = Analyzer(prober=prober).analyze(scan_result)
+            outcome = Analyzer(prober=prober).analyze(scan_result)
 
+        assert outcome.status is AnalyzeStatus.DONE
+        movie = outcome.movie
         assert movie is not None
         eng_track = next(t for t in movie.audio_tracks if t.language == "eng")
         assert eng_track.bitrate is None
@@ -1419,8 +1581,10 @@ class TestSubtitleNoFramesTags:
         prober = make_prober(probe_data=probe_data)
 
         with patch("furnace.services.analyzer.should_skip_file", return_value=(False, "")):
-            movie = Analyzer(prober=prober).analyze(scan_result)
+            outcome = Analyzer(prober=prober).analyze(scan_result)
 
+        assert outcome.status is AnalyzeStatus.DONE
+        movie = outcome.movie
         assert movie is not None
         assert movie.subtitle_tracks[0].num_frames is None
 
@@ -1456,8 +1620,10 @@ class TestExternalSubtitleNoLanguageCode:
             mock_result.best.return_value = mock_best
             mock_from_path.return_value = mock_result
 
-            movie = Analyzer(prober=prober).analyze(scan_result)
+            outcome = Analyzer(prober=prober).analyze(scan_result)
 
+        assert outcome.status is AnalyzeStatus.DONE
+        movie = outcome.movie
         assert movie is not None
         sat_subs = [t for t in movie.subtitle_tracks if t.source_file == srt_path]
         assert len(sat_subs) == 1
@@ -1486,8 +1652,10 @@ class TestExternalSubtitleNoLanguageCode:
             mock_result.best.return_value = mock_best
             mock_from_path.return_value = mock_result
 
-            movie = Analyzer(prober=prober).analyze(scan_result)
+            outcome = Analyzer(prober=prober).analyze(scan_result)
 
+        assert outcome.status is AnalyzeStatus.DONE
+        movie = outcome.movie
         assert movie is not None
         sat_subs = [t for t in movie.subtitle_tracks if t.source_file == srt_path]
         assert len(sat_subs) == 1
@@ -1565,8 +1733,10 @@ class TestAudioNoSampleRate:
             patch("furnace.services.analyzer.detect_hdr", return_value=HdrMetadata()),
             patch("furnace.services.analyzer.check_unsupported_codecs", return_value=None),
         ):
-            movie = Analyzer(prober=prober).analyze(scan_result)
+            outcome = Analyzer(prober=prober).analyze(scan_result)
 
+        assert outcome.status is AnalyzeStatus.DONE
+        movie = outcome.movie
         assert movie is not None
         assert movie.audio_tracks[0].sample_rate is None
 
@@ -1595,8 +1765,10 @@ class TestExternalSubtitleReturnsNone:
         with patch("furnace.services.analyzer.should_skip_file", return_value=(False, "")):
             analyzer = Analyzer(prober=prober)
             with patch.object(analyzer, "_parse_external_subtitle", return_value=None):
-                movie = analyzer.analyze(scan_result)
+                outcome = analyzer.analyze(scan_result)
 
+        assert outcome.status is AnalyzeStatus.DONE
+        movie = outcome.movie
         assert movie is not None
         # Only the embedded PGS subtitle, no satellite
         assert len(movie.subtitle_tracks) == 1
@@ -1647,8 +1819,10 @@ class TestAudioProfiling:
             patch("furnace.services.analyzer.detect_hdr", return_value=HdrMetadata()),
             patch("furnace.services.analyzer.check_unsupported_codecs", return_value=None),
         ):
-            movie = Analyzer(prober=prober).analyze(scan_result)
+            outcome = Analyzer(prober=prober).analyze(scan_result)
 
+        assert outcome.status is AnalyzeStatus.DONE
+        movie = outcome.movie
         assert movie is not None
         assert movie.audio_tracks[0].audio_profile is not None
         assert movie.audio_tracks[0].audio_profile.verdict == Verdict.REAL
@@ -1681,8 +1855,10 @@ class TestAudioProfiling:
             patch("furnace.services.analyzer.detect_hdr", return_value=HdrMetadata()),
             patch("furnace.services.analyzer.check_unsupported_codecs", return_value=None),
         ):
-            movie = Analyzer(prober=prober).analyze(scan_result)
+            outcome = Analyzer(prober=prober).analyze(scan_result)
 
+        assert outcome.status is AnalyzeStatus.DONE
+        movie = outcome.movie
         assert movie is not None
         assert movie.audio_tracks[0].audio_profile is None
         prober.profile_audio_track.assert_not_called()

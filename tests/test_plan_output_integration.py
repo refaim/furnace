@@ -9,6 +9,7 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import MagicMock
 
+from furnace.services.analysis_pipeline import AnalysisPipeline
 from furnace.services.analyzer import Analyzer
 from furnace.services.planner import PlannerService
 from furnace.services.scanner import Scanner
@@ -50,28 +51,26 @@ def test_plan_emits_full_event_sequence(tmp_path: Path) -> None:
     scan_results = scanner.scan(src, out)
     assert len(scan_results) == 1
 
-    analyzer = Analyzer(prober=prober, reporter=reporter)
-    movies = []
-    for sr in scan_results:
-        m = analyzer.analyze(sr)
-        if m is not None:
-            movies.append((m, sr.output_path))
+    analyzer = Analyzer(prober=prober)
+    pipeline = AnalysisPipeline(
+        analyzer=analyzer, prober=prober, reporter=reporter, max_workers=1,
+    )
+    batch = pipeline.run(scan_results, copy_video=False, dry_run=False)
+    assert len(batch.movies) == 1
 
-    planner = PlannerService(prober=prober, previewer=None, reporter=reporter)
+    planner = PlannerService(previewer=None, reporter=reporter)
     planner.create_plan(
-        movies=movies,
+        movies=batch.movies,
         audio_lang_filter=["eng"],
         sub_lang_filter=[],
         vmaf_enabled=False,
-        dry_run=False,
+        precomputed_crops=batch.crops,
     )
 
     methods = [e.method for e in reporter.events]
     assert methods[0] == "scan_file"
-    assert "analyze_file_start" in methods
-    assert "analyze_file_done" in methods
+    assert "analyze_batch_start" in methods
+    assert "analyze_batch_item" in methods
+    assert "analyze_batch_finish" in methods
     assert "plan_file_start" in methods
-    assert ("plan_microop", ("cropdetect",), (("has_progress", True),)) in [
-        (e.method, e.args, e.kwargs) for e in reporter.events
-    ]
     assert "plan_file_done" in methods

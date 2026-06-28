@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import MagicMock
 
 from furnace.core.models import (
     AudioCodecId,
@@ -42,16 +41,13 @@ def _make_movie_sar(tmp_path: Path, sar_num: int = 1, sar_den: int = 1) -> Movie
 class TestSarOverrides:
     def test_sar_override_applied(self, tmp_path: Path) -> None:
         movie = _make_movie_sar(tmp_path, sar_num=1, sar_den=1)
-        prober = MagicMock()
-        prober.detect_crop.return_value = None
-        planner = PlannerService(prober=prober, previewer=None)
+        planner = PlannerService(previewer=None)
 
         plan = planner.create_plan(
             [(movie, tmp_path / "out.mkv")],
             audio_lang_filter=["eng"],
             sub_lang_filter=["eng"],
             vmaf_enabled=False,
-            dry_run=True,
             sar_overrides={movie.main_file},
         )
 
@@ -61,16 +57,13 @@ class TestSarOverrides:
 
     def test_sar_not_overridden_when_path_not_in_set(self, tmp_path: Path) -> None:
         movie = _make_movie_sar(tmp_path, sar_num=1, sar_den=1)
-        prober = MagicMock()
-        prober.detect_crop.return_value = None
-        planner = PlannerService(prober=prober, previewer=None)
+        planner = PlannerService(previewer=None)
 
         plan = planner.create_plan(
             [(movie, tmp_path / "out.mkv")],
             audio_lang_filter=["eng"],
             sub_lang_filter=["eng"],
             vmaf_enabled=False,
-            dry_run=True,
             sar_overrides=set(),
         )
 
@@ -81,16 +74,13 @@ class TestSarOverrides:
     def test_sar_overrides_none_behaves_as_empty(self, tmp_path: Path) -> None:
         """Omitting sar_overrides (None default) must leave SAR at source."""
         movie = _make_movie_sar(tmp_path, sar_num=1, sar_den=1)
-        prober = MagicMock()
-        prober.detect_crop.return_value = None
-        planner = PlannerService(prober=prober, previewer=None)
+        planner = PlannerService(previewer=None)
 
         plan = planner.create_plan(
             [(movie, tmp_path / "out.mkv")],
             audio_lang_filter=["eng"],
             sub_lang_filter=["eng"],
             vmaf_enabled=False,
-            dry_run=True,
         )
 
         vp = plan.jobs[0].video_params
@@ -102,16 +92,13 @@ class TestSarOverrides:
         movie = _make_movie_sar(tmp_path, sar_num=1, sar_den=1)
         original_num = movie.video.sar_num
         original_den = movie.video.sar_den
-        prober = MagicMock()
-        prober.detect_crop.return_value = None
-        planner = PlannerService(prober=prober, previewer=None)
+        planner = PlannerService(previewer=None)
 
         planner.create_plan(
             [(movie, tmp_path / "out.mkv")],
             audio_lang_filter=["eng"],
             sub_lang_filter=["eng"],
             vmaf_enabled=False,
-            dry_run=True,
             sar_overrides={movie.main_file},
         )
 

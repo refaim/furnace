@@ -6,7 +6,26 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .models import AudioCodecId, CropRect, DvBlCompatibility, HdrMetadata, SubtitleCodecId, Track
+from .models import AudioCodecId, CropRect, DvBlCompatibility, HdrMetadata, SubtitleCodecId, Track, VideoInfo
+
+DV_PROFILE_FEL = 7  # Dolby Vision FEL — needs a P7 → P8.1 re-encode (no passthrough)
+
+
+def classify_passthrough(video: VideoInfo, *, copy_video: bool) -> tuple[bool, str | None]:
+    """Decide whether a source video can be copied verbatim.
+
+    (False, None)         -> copy_video not requested (normal encode)
+    (False, "interlaced") -> must deinterlace
+    (False, "DV P7 FEL")  -> P7 FEL needs the P7 -> P8.1 conversion
+    (True, None)          -> copy the stream verbatim
+    """
+    if not copy_video:
+        return False, None
+    if video.interlaced:
+        return False, "interlaced"
+    if video.hdr.is_dolby_vision and video.hdr.dv_profile == DV_PROFILE_FEL:
+        return False, "DV P7 FEL"
+    return True, None
 
 
 class VideoSystem(enum.Enum):

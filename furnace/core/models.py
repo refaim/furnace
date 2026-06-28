@@ -10,6 +10,8 @@ from .downmix import STEREO_CHANNELS, SURROUND_5_1_CHANNELS, DownmixMode
 __all__ = [
     "STEREO_CHANNELS",
     "SURROUND_5_1_CHANNELS",
+    "AnalysisOutcome",
+    "AnalyzeStatus",
     "Attachment",
     "AudioAction",
     "AudioCodecId",
@@ -94,6 +96,12 @@ class JobStatus(enum.Enum):
     PENDING = "pending"
     DONE = "done"
     ERROR = "error"
+
+
+class AnalyzeStatus(enum.Enum):
+    DONE = "done"
+    SKIPPED = "skipped"
+    FAILED = "failed"
 
 
 class DvBlCompatibility(enum.IntEnum):
@@ -238,6 +246,13 @@ class Movie:
     attachments: list[Attachment]
     has_chapters: bool
     file_size: int
+
+
+@dataclass(frozen=True)
+class AnalysisOutcome:
+    movie: Movie | None
+    status: AnalyzeStatus
+    detail: str  # DONE: summary line; SKIPPED/FAILED: reason
 
 
 @dataclass

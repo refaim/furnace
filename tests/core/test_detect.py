@@ -5,9 +5,11 @@ from pathlib import Path
 import pytest
 
 from furnace.core.detect import (
+    DV_PROFILE_FEL,
     VideoSystem,
     aggregate_crop,
     check_unsupported_codecs,
+    classify_passthrough,
     detect_forced_subtitles,
     detect_hdr,
     hdr_transfer_for_cropdetect,
@@ -19,9 +21,11 @@ from furnace.core.models import (
     AudioCodecId,
     CropRect,
     DvBlCompatibility,
+    HdrMetadata,
     SubtitleCodecId,
     Track,
     TrackType,
+    VideoInfo,
 )
 from tests.conftest import make_track
 
@@ -740,6 +744,53 @@ class TestHdrTransferForCropdetect:
         self, color_transfer: str | None, expected: str | None,
     ) -> None:
         assert hdr_transfer_for_cropdetect(color_transfer) == expected
+
+
+# ---------------------------------------------------------------------------
+# test_classify_passthrough
+# ---------------------------------------------------------------------------
+
+def _vi(
+    *,
+    interlaced: bool = False,
+    dv: bool = False,
+    dv_profile: int | None = None,
+) -> VideoInfo:
+    return VideoInfo(
+        index=0,
+        codec_name="hevc",
+        width=1920,
+        height=1080,
+        pixel_area=1920 * 1080,
+        fps_num=24,
+        fps_den=1,
+        duration_s=10.0,
+        interlaced=interlaced,
+        color_matrix_raw=None,
+        color_range=None,
+        color_transfer=None,
+        color_primaries=None,
+        pix_fmt="yuv420p10le",
+        hdr=HdrMetadata(is_dolby_vision=dv, dv_profile=dv_profile),
+        source_file=Path("x.mkv"),
+    )
+
+
+def test_classify_passthrough_disabled_returns_encode() -> None:
+    assert classify_passthrough(_vi(), copy_video=False) == (False, None)
+
+
+def test_classify_passthrough_interlaced_falls_back() -> None:
+    assert classify_passthrough(_vi(interlaced=True), copy_video=True) == (False, "interlaced")
+
+
+def test_classify_passthrough_dv_p7_fel_falls_back() -> None:
+    assert DV_PROFILE_FEL == 7
+    assert classify_passthrough(_vi(dv=True, dv_profile=7), copy_video=True) == (False, "DV P7 FEL")
+
+
+def test_classify_passthrough_eligible_passes_through() -> None:
+    assert classify_passthrough(_vi(dv=True, dv_profile=8), copy_video=True) == (True, None)
 
 
 # ---------------------------------------------------------------------------

@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from furnace.core.models import DiscType
+from furnace.core.models import AnalyzeStatus, DiscType
 
 
 @dataclass(frozen=True)
@@ -71,33 +71,21 @@ class RecordingPlanReporter:
         self._record("scan_skipped", (name, reason), {})
 
     # Analyze
-    def analyze_file_start(self, name: str) -> None:
-        self._record("analyze_file_start", (name,), {})
+    def analyze_batch_start(self, total: int) -> None:
+        self._record("analyze_batch_start", (total,), {})
 
-    def analyze_microop(self, label: str, *, has_progress: bool) -> None:
-        self._record("analyze_microop", (label,), {"has_progress": has_progress})
+    def analyze_batch_progress(self, completed: float) -> None:
+        self._record("analyze_batch_progress", (completed,), {})
 
-    def analyze_progress(self, fraction: float) -> None:
-        self._record("analyze_progress", (fraction,), {})
+    def analyze_batch_item(self, name: str, detail: str, *, status: AnalyzeStatus) -> None:
+        self._record("analyze_batch_item", (name, detail), {"status": status})
 
-    def analyze_file_done(self, summary: str) -> None:
-        self._record("analyze_file_done", (summary,), {})
-
-    def analyze_file_failed(self, reason: str) -> None:
-        self._record("analyze_file_failed", (reason,), {})
-
-    def analyze_file_skipped(self, reason: str) -> None:
-        self._record("analyze_file_skipped", (reason,), {})
+    def analyze_batch_finish(self) -> None:
+        self._record("analyze_batch_finish", (), {})
 
     # Plan
     def plan_file_start(self, name: str) -> None:
         self._record("plan_file_start", (name,), {})
-
-    def plan_microop(self, label: str, *, has_progress: bool) -> None:
-        self._record("plan_microop", (label,), {"has_progress": has_progress})
-
-    def plan_progress(self, fraction: float) -> None:
-        self._record("plan_progress", (fraction,), {})
 
     def plan_file_done(self, summary: str) -> None:
         self._record("plan_file_done", (summary,), {})

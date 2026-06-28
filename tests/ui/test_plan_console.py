@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 from rich.console import Console
 
-from furnace.core.models import DiscType
+from furnace.core.models import AnalyzeStatus, DiscType
 from furnace.ui.plan_console import RichPlanReporter
 
 
@@ -246,121 +246,61 @@ def test_scan_renders_per_file_with_phase_header_once() -> None:
     assert "no video stream" in text
 
 
-def test_analyze_done_renders_summary() -> None:
+def test_analyze_batch_tty_streams_lines_and_counts() -> None:
     reporter, buf = _make_reporter()
     reporter.start()
-    reporter.analyze_file_start("Inception.mkv")
-    reporter.analyze_microop("probing", has_progress=False)
-    reporter.analyze_file_done(
-        "hevc 3840x2076 24fps HDR10, 5 audio (rus,eng), 12 subs"
+    reporter.analyze_batch_start(2)
+    reporter.analyze_batch_progress(1.5)  # fractional fill -> "1.5/2"
+    reporter.analyze_batch_item(
+        "a.mkv",
+        "h264 1920x1080 24fps SDR, 1 audio (eng), 0 subs",
+        status=AnalyzeStatus.DONE,
     )
+    reporter.analyze_batch_item(
+        "b.mkv",
+        "HDR10+ not supported",
+        status=AnalyzeStatus.FAILED,
+    )
+    reporter.analyze_batch_finish()
     reporter.stop()
     text = buf.getvalue()
     assert "Analyze" in text
-    assert "Inception.mkv" in text
-    assert "hevc 3840x2076" in text
-    # Status arrow between file name and summary
-    assert "Inception.mkv -> hevc" in text
+    assert "a.mkv -> h264" in text
+    assert "b.mkv -> FAILED — HDR10+ not supported" in text
+    assert "1.5/2" in text
 
 
-def test_analyze_failed_inline() -> None:
-    reporter, buf = _make_reporter()
-    reporter.start()
-    reporter.analyze_file_start("broken.mkv")
-    reporter.analyze_file_failed("HDR10+ not supported")
-    reporter.stop()
-    text = buf.getvalue()
-    assert "broken.mkv" in text
-    assert "FAILED" in text
-    assert "HDR10+ not supported" in text
-
-
-def test_analyze_progress_with_microop_bar() -> None:
-    reporter, buf = _make_reporter()
-    reporter.start()
-    reporter.analyze_file_start("interlaced.mkv")
-    reporter.analyze_microop("idet", has_progress=True)
-    reporter.analyze_progress(0.4)
-    reporter.analyze_progress(1.0)
-    reporter.analyze_file_done(
-        "h264 720x480 30fps SDR (interlaced), 2 audio (eng), 0 subs"
+def test_analyze_batch_non_tty_prints_lines_without_bar() -> None:
+    buf = StringIO()
+    console = Console(
+        file=buf,
+        force_terminal=False,
+        width=120,
+        color_system=None,
+        legacy_windows=False,
     )
-    reporter.stop()
-    text = buf.getvalue()
-    assert "interlaced.mkv" in text
-    assert "h264 720x480" in text
-
-
-def test_analyze_microop_without_file_start_is_noop() -> None:
-    reporter, buf = _make_reporter()
+    reporter = RichPlanReporter(
+        source=Path("D:/L"),
+        output=Path("Z:/p"),
+        console=console,
+        ascii_only=True,
+    )
     reporter.start()
-    # No analyze_file_start; microop should be a no-op (no progress bar started).
-    reporter.analyze_microop("probing", has_progress=True)
+    reporter.analyze_batch_start(1)
+    reporter.analyze_batch_progress(0.5)  # no-op on a non-TTY console (no bar)
+    reporter.analyze_batch_item("a.mkv", "SKIP reason", status=AnalyzeStatus.SKIPPED)
+    reporter.analyze_batch_finish()
     reporter.stop()
     text = buf.getvalue()
-    assert "Analyze" not in text
-    assert "probing" not in text
-
-
-def test_analyze_progress_without_microop_is_noop() -> None:
-    reporter, buf = _make_reporter()
-    reporter.start()
-    # progress called before any microop / progress bar exists.
-    reporter.analyze_progress(0.25)
-    reporter.stop()
-    # Should not crash. No analyze row should be present.
-    text = buf.getvalue()
-    assert "Analyze" not in text
-
-
-def test_analyze_file_done_without_start_is_noop() -> None:
-    reporter, buf = _make_reporter()
-    reporter.start()
-    reporter.analyze_file_done("some summary")
-    reporter.stop()
-    text = buf.getvalue()
-    assert "Analyze" not in text
-    assert "some summary" not in text
-
-
-def test_analyze_file_failed_without_start_is_noop() -> None:
-    reporter, buf = _make_reporter()
-    reporter.start()
-    reporter.analyze_file_failed("boom")
-    reporter.stop()
-    text = buf.getvalue()
-    assert "Analyze" not in text
-    assert "FAILED" not in text
-
-
-def test_analyze_file_skipped_without_start_is_noop() -> None:
-    reporter, buf = _make_reporter()
-    reporter.start()
-    reporter.analyze_file_skipped("not a video")
-    reporter.stop()
-    text = buf.getvalue()
-    assert "Analyze" not in text
-    assert "SKIPPED" not in text
-
-
-def test_analyze_file_skipped_renders_inline() -> None:
-    reporter, buf = _make_reporter()
-    reporter.start()
-    reporter.analyze_file_start("weird.mkv")
-    reporter.analyze_file_skipped("not a video")
-    reporter.stop()
-    text = buf.getvalue()
-    assert "weird.mkv" in text
-    assert "SKIPPED" in text
-    assert "not a video" in text
+    assert "a.mkv -> SKIPPED — SKIP reason" in text
+    # Non-TTY: no floating count bar is drawn.
+    assert "█" not in text
 
 
 def test_plan_renders_per_file_and_drops_plan_saved() -> None:
     reporter, buf = _make_reporter()
     reporter.start()
     reporter.plan_file_start("Inception.mkv")
-    reporter.plan_microop("cropdetect", has_progress=True)
-    reporter.plan_progress(1.0)
     reporter.plan_file_done("cq 22, 3840x2076 to 3840x1600")
     reporter.plan_saved(Path("Z:/plans/library/furnace-plan.json"), 7)
     reporter.stop()
@@ -377,8 +317,6 @@ def test_interrupted_prints_final_line() -> None:
     reporter, buf = _make_reporter()
     reporter.start()
     reporter.plan_file_start("foo.mkv")
-    reporter.plan_microop("cropdetect", has_progress=True)
-    reporter.plan_progress(0.3)
     reporter.interrupted()
     text = buf.getvalue()
     assert "interrupted" in text
@@ -387,38 +325,15 @@ def test_interrupted_prints_final_line() -> None:
 def test_pause_resume_stop_and_restart_progress() -> None:
     reporter, _buf = _make_reporter()
     reporter.start()
-    reporter.plan_file_start("foo.mkv")
-    reporter.plan_microop("cropdetect", has_progress=True)
-    reporter.plan_progress(0.3)
+    reporter.analyze_batch_start(2)
+    reporter.analyze_batch_item("a.mkv", "ok", status=AnalyzeStatus.DONE)
     reporter.pause()
     # After pause(), no live progress object is held
     assert reporter._progress is None
     reporter.resume()
-    # resume() does not auto-restart Progress — next *_microop call recreates it
-    reporter.plan_progress(0.6)
-    reporter.plan_file_done("cq 22, 1920x1080 to 1920x1080")
+    # resume() does not auto-restart Progress — the next batch start recreates it
+    reporter.analyze_batch_finish()
     reporter.stop()
-
-
-def test_plan_microop_without_file_start_is_noop() -> None:
-    reporter, buf = _make_reporter()
-    reporter.start()
-    # No plan_file_start; microop should be a no-op (no progress bar started).
-    reporter.plan_microop("cropdetect", has_progress=True)
-    reporter.stop()
-    text = buf.getvalue()
-    assert "Plan" not in text
-    assert "cropdetect" not in text
-
-
-def test_plan_progress_without_microop_is_noop() -> None:
-    reporter, buf = _make_reporter()
-    reporter.start()
-    # progress called before any microop / progress bar exists.
-    reporter.plan_progress(0.25)
-    reporter.stop()
-    text = buf.getvalue()
-    assert "Plan" not in text
 
 
 def test_plan_file_done_without_start_is_noop() -> None:
@@ -429,19 +344,6 @@ def test_plan_file_done_without_start_is_noop() -> None:
     text = buf.getvalue()
     assert "Plan" not in text
     assert "some summary" not in text
-
-
-def test_plan_microop_without_progress_bar() -> None:
-    reporter, buf = _make_reporter()
-    reporter.start()
-    reporter.plan_file_start("foo.mkv")
-    # has_progress=False — exercises the indeterminate (total=None) branch.
-    reporter.plan_microop("probing", has_progress=False)
-    reporter.plan_file_done("cq 22, 1920x1080 to 1920x1080")
-    reporter.stop()
-    text = buf.getvalue()
-    assert "Plan" in text
-    assert "foo.mkv" in text
 
 
 def test_plan_phase_header_appears_once_across_multiple_files() -> None:
@@ -561,10 +463,13 @@ def test_non_tty_output_has_no_ansi_escapes() -> None:
     reporter.detect_disc(DiscType.BLURAY, "Matrix_BD")
     reporter.detect_disc_titles_done(1)
     reporter.scan_file("Inception.mkv")
-    reporter.analyze_file_start("Inception.mkv")
-    reporter.analyze_microop("idet", has_progress=True)
-    reporter.analyze_progress(0.5)
-    reporter.analyze_file_done("hevc 3840x2076 24fps HDR10, 5 audio (rus,eng), 12 subs")
+    reporter.analyze_batch_start(1)
+    reporter.analyze_batch_item(
+        "Inception.mkv",
+        "hevc 3840x2076 24fps HDR10, 5 audio (rus,eng), 12 subs",
+        status=AnalyzeStatus.DONE,
+    )
+    reporter.analyze_batch_finish()
     reporter.plan_saved(Path("Z:/p/furnace-plan.json"), 1)
     reporter.stop()
     text = buf.getvalue()
@@ -605,20 +510,21 @@ def test_canonical_plan_golden_snapshot() -> None:
     reporter.demux_title_done()
     reporter.scan_file("Matrix_BD_title_3.mkv")
     reporter.scan_file("DirtyHarry_DVD_title_1.mkv")
-    reporter.analyze_file_start("Matrix_BD_title_3.mkv")
-    reporter.analyze_microop("probing", has_progress=False)
-    reporter.analyze_file_done("hevc 3840x2160 24fps HDR10, 4 audio (eng), 0 subs")
-    reporter.analyze_file_start("DirtyHarry_DVD_title_1.mkv")
-    reporter.analyze_microop("idet", has_progress=True)
-    reporter.analyze_progress(1.0)
-    reporter.analyze_file_done("mpeg2video 720x480 30fps SDR (interlaced), 2 audio (eng), 1 subs")
+    reporter.analyze_batch_start(2)
+    reporter.analyze_batch_item(
+        "Matrix_BD_title_3.mkv",
+        "hevc 3840x2160 24fps HDR10, 4 audio (eng), 0 subs",
+        status=AnalyzeStatus.DONE,
+    )
+    reporter.analyze_batch_item(
+        "DirtyHarry_DVD_title_1.mkv",
+        "mpeg2video 720x480 30fps SDR (interlaced), 2 audio (eng), 1 subs",
+        status=AnalyzeStatus.DONE,
+    )
+    reporter.analyze_batch_finish()
     reporter.plan_file_start("Matrix_BD_title_3.mkv")
-    reporter.plan_microop("cropdetect", has_progress=True)
-    reporter.plan_progress(1.0)
     reporter.plan_file_done("cq 22, 3840x2160 to 3840x2160")
     reporter.plan_file_start("DirtyHarry_DVD_title_1.mkv")
-    reporter.plan_microop("cropdetect", has_progress=True)
-    reporter.plan_progress(1.0)
     reporter.plan_file_done("cq 19, 720x480 to 720x540, deinterlace")
     reporter.plan_saved(Path("Z:/plans/library/furnace-plan.json"), 2)
     reporter.stop()

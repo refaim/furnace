@@ -1,40 +1,88 @@
+"""Planner consumes a precomputed crop map (it no longer runs cropdetect)."""
 from __future__ import annotations
 
 from pathlib import Path
 
-from furnace.core.detect import is_dvd_resolution
-from furnace.core.models import VideoInfo
-from tests.conftest import make_video_info
+from furnace.core.models import (
+    AudioCodecId,
+    CropRect,
+    Movie,
+    TrackType,
+)
+from furnace.services.planner import PlannerService
+from tests.conftest import make_movie, make_track, make_video_info
 
 
-def _make_dvd_video(interlaced: bool = True) -> VideoInfo:
-    return make_video_info(
-        codec_name="mpeg2video", width=720, height=576,
-        fps_num=25, fps_den=1,
-        interlaced=interlaced, color_matrix_raw="bt470bg",
-        color_primaries="bt470bg",
-        source_file=Path("/src/dvd.mkv"),
-        bitrate=6_000_000,
+def _make_movie(tmp_path: Path, *, width: int = 1920, height: int = 1080) -> Movie:
+    main = tmp_path / "movie.mkv"
+    main.write_bytes(b"")
+    return make_movie(
+        main_file=main,
+        video=make_video_info(
+            width=width,
+            height=height,
+            source_file=main,
+            bitrate=20_000_000,
+        ),
+        audio_tracks=[
+            make_track(
+                index=1,
+                track_type=TrackType.AUDIO,
+                codec_name="aac",
+                codec_id=AudioCodecId.AAC_LC,
+                language="eng",
+                is_default=True,
+                source_file=main,
+                channels=2,
+                bitrate=192_000,
+            ),
+        ],
     )
 
 
-def _make_hd_video() -> VideoInfo:
-    return make_video_info(
-        width=1920, height=1080,
-        fps_num=24000, fps_den=1001,
-        duration_s=7200.0,
-        source_file=Path("/src/hd.mkv"),
-        bitrate=20_000_000,
-    )
+class TestPrecomputedCrop:
+    def test_precomputed_crop_applied(self, tmp_path: Path) -> None:
+        """A crop supplied for the movie's main_file lands verbatim in VideoParams."""
+        movie = _make_movie(tmp_path)
+        planner = PlannerService(previewer=None)
 
+        plan = planner.create_plan(
+            [(movie, tmp_path / "out.mkv")],
+            audio_lang_filter=["eng"],
+            sub_lang_filter=["eng"],
+            vmaf_enabled=False,
+            precomputed_crops={movie.main_file: CropRect(w=1920, h=800, x=0, y=140)},
+        )
 
-class TestCropDetectDvdFlags:
-    def test_dvd_interlaced_is_dvd(self) -> None:
-        """DVD interlaced source -> is_dvd_resolution returns True."""
-        video = _make_dvd_video(interlaced=True)
-        assert is_dvd_resolution(video.width, video.height) is True
+        vp = plan.jobs[0].video_params
+        assert vp.crop is not None
+        assert (vp.crop.w, vp.crop.h, vp.crop.x, vp.crop.y) == (1920, 800, 0, 140)
 
-    def test_hd_source_not_dvd(self) -> None:
-        """HD source -> is_dvd_resolution returns False."""
-        video = _make_hd_video()
-        assert is_dvd_resolution(video.width, video.height) is False
+    def test_no_entry_for_file_means_no_crop(self, tmp_path: Path) -> None:
+        """A crop map that has no key for this file -> crop is None."""
+        movie = _make_movie(tmp_path)
+        planner = PlannerService(previewer=None)
+
+        plan = planner.create_plan(
+            [(movie, tmp_path / "out.mkv")],
+            audio_lang_filter=["eng"],
+            sub_lang_filter=["eng"],
+            vmaf_enabled=False,
+            precomputed_crops={Path("/other/film.mkv"): CropRect(w=10, h=10, x=0, y=0)},
+        )
+
+        assert plan.jobs[0].video_params.crop is None
+
+    def test_precomputed_crops_none_means_no_crop(self, tmp_path: Path) -> None:
+        """Omitting precomputed_crops (None default) -> crop is None."""
+        movie = _make_movie(tmp_path)
+        planner = PlannerService(previewer=None)
+
+        plan = planner.create_plan(
+            [(movie, tmp_path / "out.mkv")],
+            audio_lang_filter=["eng"],
+            sub_lang_filter=["eng"],
+            vmaf_enabled=False,
+        )
+
+        assert plan.jobs[0].video_params.crop is None

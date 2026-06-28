@@ -64,9 +64,8 @@ def _audio(
     return track
 
 
-def _make_planner(prober: MagicMock, selector: MagicMock) -> PlannerService:
-    prober.detect_crop.return_value = None
-    return PlannerService(prober=prober, previewer=None, track_selector=selector)
+def _make_planner(selector: MagicMock) -> PlannerService:
+    return PlannerService(previewer=None, track_selector=selector)
 
 
 def _audio_calls(selector: MagicMock) -> list[object]:
@@ -79,14 +78,13 @@ class TestVerdictTrigger:
         track = _audio(1, "eng", 6, verdict=Verdict.FAKE)
         movie = _make_movie_with_audio(tmp_path, [track])
         selector = MagicMock(return_value=[track])
-        planner = _make_planner(MagicMock(), selector)
+        planner = _make_planner(selector)
 
         planner.create_plan(
             [(movie, tmp_path / "out.mkv")],
             audio_lang_filter=["eng"],
             sub_lang_filter=["eng"],
             vmaf_enabled=False,
-            dry_run=False,
         )
 
         assert len(_audio_calls(selector)) == 1
@@ -96,14 +94,13 @@ class TestVerdictTrigger:
         track = _audio(1, "eng", 6, verdict=Verdict.SUSPICIOUS)
         movie = _make_movie_with_audio(tmp_path, [track])
         selector = MagicMock(return_value=[track])
-        planner = _make_planner(MagicMock(), selector)
+        planner = _make_planner(selector)
 
         planner.create_plan(
             [(movie, tmp_path / "out.mkv")],
             audio_lang_filter=["eng"],
             sub_lang_filter=["eng"],
             vmaf_enabled=False,
-            dry_run=False,
         )
 
         assert len(_audio_calls(selector)) == 1
@@ -113,14 +110,13 @@ class TestVerdictTrigger:
         track = _audio(1, "eng", 2, codec="aac", verdict=Verdict.FAKE)
         movie = _make_movie_with_audio(tmp_path, [track])
         selector = MagicMock(return_value=[track])
-        planner = _make_planner(MagicMock(), selector)
+        planner = _make_planner(selector)
 
         planner.create_plan(
             [(movie, tmp_path / "out.mkv")],
             audio_lang_filter=["eng"],
             sub_lang_filter=["eng"],
             vmaf_enabled=False,
-            dry_run=False,
         )
 
         assert len(_audio_calls(selector)) == 1
@@ -130,14 +126,13 @@ class TestVerdictTrigger:
         track = _audio(1, "eng", 8, verdict=Verdict.REAL)
         movie = _make_movie_with_audio(tmp_path, [track])
         selector = MagicMock(return_value=[])
-        planner = _make_planner(MagicMock(), selector)
+        planner = _make_planner(selector)
 
         planner.create_plan(
             [(movie, tmp_path / "out.mkv")],
             audio_lang_filter=["eng"],
             sub_lang_filter=["eng"],
             vmaf_enabled=False,
-            dry_run=False,
         )
 
         assert _audio_calls(selector) == []
@@ -147,14 +142,13 @@ class TestVerdictTrigger:
         track = _audio(1, "eng", 6)  # no verdict -> audio_profile stays None
         movie = _make_movie_with_audio(tmp_path, [track])
         selector = MagicMock(return_value=[])
-        planner = _make_planner(MagicMock(), selector)
+        planner = _make_planner(selector)
 
         planner.create_plan(
             [(movie, tmp_path / "out.mkv")],
             audio_lang_filter=["eng"],
             sub_lang_filter=["eng"],
             vmaf_enabled=False,
-            dry_run=False,
         )
 
         assert _audio_calls(selector) == []
@@ -163,16 +157,13 @@ class TestVerdictTrigger:
         """Without a track_selector callback (headless), a FAKE track must not crash."""
         track = _audio(1, "eng", 6, verdict=Verdict.FAKE)
         movie = _make_movie_with_audio(tmp_path, [track])
-        prober = MagicMock()
-        prober.detect_crop.return_value = None
-        planner = PlannerService(prober=prober, previewer=None)  # no track_selector
+        planner = PlannerService(previewer=None)  # no track_selector
 
         plan = planner.create_plan(
             [(movie, tmp_path / "out.mkv")],
             audio_lang_filter=["eng"],
             sub_lang_filter=["eng"],
             vmaf_enabled=False,
-            dry_run=True,
         )
 
         assert len(plan.jobs) == 1
@@ -190,14 +181,13 @@ class TestVerdictTrigger:
             ],
         )
         selector = MagicMock(return_value=[])
-        planner = _make_planner(MagicMock(), selector)
+        planner = _make_planner(selector)
 
         plan = planner.create_plan(
             [(movie, tmp_path / "out.mkv")],
             audio_lang_filter=["eng", "rus"],
             sub_lang_filter=["eng"],
             vmaf_enabled=False,
-            dry_run=False,
         )
 
         assert _audio_calls(selector) == []

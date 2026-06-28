@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from furnace.core.models import DiscType
+from furnace.core.models import AnalyzeStatus, DiscType
 from furnace.core.ports import PlanReporter
 from tests.fakes.recording_reporter import Event, RecordingPlanReporter
 
@@ -16,7 +16,9 @@ def test_records_method_name_and_args(tmp_path: Path) -> None:
     r.demux_title_progress(0.37)
     r.demux_title_done()
     r.scan_file("Inception.mkv")
-    r.analyze_file_failed("HDR10+ not supported")
+    r.analyze_batch_start(1)
+    r.analyze_batch_item("broken.mkv", "HDR10+ not supported", status=AnalyzeStatus.FAILED)
+    r.analyze_batch_finish()
     r.plan_saved(plan_path, 7)
     r.interrupted()
     r.pause()
@@ -31,7 +33,13 @@ def test_records_method_name_and_args(tmp_path: Path) -> None:
         Event("demux_title_progress", (0.37,)),
         Event("demux_title_done", ()),
         Event("scan_file", ("Inception.mkv",)),
-        Event("analyze_file_failed", ("HDR10+ not supported",)),
+        Event("analyze_batch_start", (1,)),
+        Event(
+            "analyze_batch_item",
+            ("broken.mkv", "HDR10+ not supported"),
+            (("status", AnalyzeStatus.FAILED),),
+        ),
+        Event("analyze_batch_finish", ()),
         Event("plan_saved", (plan_path, 7)),
         Event("interrupted", ()),
         Event("pause", ()),

@@ -10,9 +10,9 @@ from typing import Any
 from furnace import VERSION as FURNACE_VERSION
 from furnace.core.audio_profile import Verdict
 from furnace.core.detect import (
+    DV_PROFILE_FEL,
+    classify_passthrough,
     detect_video_system,
-    hdr_transfer_for_cropdetect,
-    is_dvd_resolution,
     resolve_color_metadata,
 )
 from furnace.core.models import (
@@ -36,8 +36,7 @@ from furnace.core.models import (
     VideoInfo,
     VideoParams,
 )
-from furnace.core.ports import PlanReporter, Previewer, Prober
-from furnace.core.progress import ProgressSample
+from furnace.core.ports import PlanReporter, Previewer
 from furnace.core.quality import calculate_gop, final_output_dimensions, interpolate_cq
 from furnace.core.rules import get_audio_action, get_subtitle_action
 
@@ -75,8 +74,6 @@ def _format_plan_summary(movie: Movie, job: Job, fallback_reason: str | None = N
     return encode_summary
 
 
-_DV_PROFILE_FEL = 7  # Dolby Vision FEL (Full Enhancement Layer) — needs P7 -> P8.1 conversion
-
 # ITU-R BT.601 PAL 4:3 sample aspect ratio. Applied as a SAR override to DVD
 # sources that ffprobe reports as square-pixel 720x480/720x576 — the correct
 # display geometry for a standard NTSC/PAL DVD is 4:3, which requires
@@ -94,22 +91,15 @@ UndLanguageResolverFn = Callable[[Movie, Track, list[str]], str]
 class PlannerService:
     def __init__(
         self,
-        prober: Prober,
         previewer: Previewer | None,  # None in --dry-run
         track_selector: TrackSelectorFn | None = None,  # None = include all (headless)
         und_resolver: UndLanguageResolverFn | None = None,
         reporter: PlanReporter | None = None,
     ) -> None:
-        self._prober = prober
         self._previewer = previewer
         self._track_selector = track_selector
         self._und_resolver = und_resolver
         self._reporter = reporter
-
-    def _on_crop_progress(self, sample: ProgressSample) -> None:
-        """Forward cropdetect progress samples to the reporter, when present."""
-        if self._reporter is not None and sample.fraction is not None:
-            self._reporter.plan_progress(sample.fraction)
 
     def create_plan(
         self,
@@ -118,16 +108,16 @@ class PlannerService:
         sub_lang_filter: list[str],
         *,
         vmaf_enabled: bool,
-        dry_run: bool,
         sar_overrides: set[Path] | None = None,
         downmix_overrides: dict[tuple[Path, int], DownmixMode] | None = None,
+        precomputed_crops: dict[Path, CropRect] | None = None,
         copy_video: bool = False,
     ) -> Plan:
         """For each Movie:
         1. Skip logic
         2. Apply lang filter -> auto-select or TUI
         3. Detect forced subs
-        4. Detect crop -> TUI confirm
+        4. Apply precomputed crop (from ``precomputed_crops``)
         5. Calculate video params (CQ, deinterlace, colorspace, HDR)
         6. Determine audio/subtitle actions
         7. Build Job
@@ -147,6 +137,7 @@ class PlannerService:
             downmix_overrides if downmix_overrides is not None else {}
         )
         effective_sar_overrides: set[Path] = sar_overrides if sar_overrides is not None else set()
+        effective_crops: dict[Path, CropRect] = precomputed_crops if precomputed_crops is not None else {}
 
         for movie, output_path in movies:
             if self._reporter is not None:
@@ -156,9 +147,9 @@ class PlannerService:
                 output_path,
                 audio_lang_filter,
                 sub_lang_filter,
-                dry_run=dry_run,
                 sar_overrides=effective_sar_overrides,
                 downmix_overrides=effective_overrides,
+                precomputed_crops=effective_crops,
                 copy_video=copy_video,
             )
             if self._reporter is not None:
@@ -187,9 +178,9 @@ class PlannerService:
         audio_lang_filter: list[str],
         sub_lang_filter: list[str],
         *,
-        dry_run: bool,
         sar_overrides: set[Path],
         downmix_overrides: dict[tuple[Path, int], DownmixMode],
+        precomputed_crops: dict[Path, CropRect],
         copy_video: bool = False,
     ) -> tuple[Job, str | None]:
         """Build a single Job for a Movie.
@@ -199,52 +190,11 @@ class PlannerService:
         / ``DV P7 FEL``), or ``None`` for passthrough jobs and plain encodes.
         """
         # Decide passthrough eligibility up front: an eligible video stream is
-        # copied verbatim, so cropdetect is pointless and is skipped entirely.
-        passthrough, fallback_reason = self._classify_passthrough(movie.video, copy_video=copy_video)
+        # copied verbatim, so any precomputed crop is ignored downstream.
+        passthrough, fallback_reason = classify_passthrough(movie.video, copy_video=copy_video)
 
-        # Detect crop
-        crop: CropRect | None = None
-        if not dry_run and not passthrough:
-            try:
-                is_dvd = is_dvd_resolution(movie.video.width, movie.video.height)
-                if self._reporter is not None:
-                    self._reporter.plan_microop("cropdetect", has_progress=True)
-                raw_crop = self._prober.detect_crop(
-                    movie.main_file,
-                    movie.video.duration_s,
-                    interlaced=movie.video.interlaced,
-                    is_dvd=is_dvd,
-                    hdr_transfer=hdr_transfer_for_cropdetect(
-                        movie.video.color_transfer,
-                    ),
-                    on_progress=self._on_crop_progress,
-                )
-                if raw_crop is not None:
-                    crop = raw_crop
-                    # Skip crop if it equals full frame (no black bars)
-                    if crop.w == movie.video.width and crop.h == movie.video.height:
-                        logger.info(
-                            "%s: no black bars detected (crop equals full frame %dx%d)",
-                            movie.main_file.name,
-                            movie.video.width,
-                            movie.video.height,
-                        )
-                        crop = None
-                    else:
-                        logger.info(
-                            "%s: crop detected %d:%d:%d:%d (source %dx%d)",
-                            movie.main_file.name,
-                            crop.w,
-                            crop.h,
-                            crop.x,
-                            crop.y,
-                            movie.video.width,
-                            movie.video.height,
-                        )
-                else:
-                    logger.warning("%s: cropdetect unable to determine crop", movie.main_file.name)
-            except (OSError, RuntimeError, ValueError) as exc:
-                logger.warning("Crop detection failed for %s: %s", movie.main_file.name, exc)
+        # Crop comes precomputed (None when no entry for this file).
+        crop = precomputed_crops.get(movie.main_file)
 
         # Build video params
         video_params = self._build_video_params(
@@ -439,33 +389,6 @@ class PlannerService:
 
         return candidates
 
-    def _classify_passthrough(
-        self,
-        video: VideoInfo,
-        *,
-        copy_video: bool,
-    ) -> tuple[bool, str | None]:
-        """Decide whether a source video can be passed through verbatim.
-
-        Returns ``(passthrough, fallback_reason)``:
-
-        - ``copy_video`` not requested -> ``(False, None)`` (normal encode).
-        - interlaced source -> ``(False, "interlaced")`` (must deinterlace).
-        - Dolby Vision Profile 7 FEL -> ``(False, "DV P7 FEL")`` (the
-          P7 -> P8.1 conversion requires a re-encode).
-        - otherwise -> ``(True, None)`` (copy the video stream verbatim).
-
-        HDR10+ is *not* handled here: it is rejected with a ``ValueError`` in
-        :meth:`_build_video_params`, exactly as for a normal encode.
-        """
-        if not copy_video:
-            return False, None
-        if video.interlaced:
-            return False, "interlaced"
-        if video.hdr.is_dolby_vision and video.hdr.dv_profile == _DV_PROFILE_FEL:
-            return False, "DV P7 FEL"
-        return True, None
-
     def _build_video_params(
         self,
         video: VideoInfo,
@@ -510,7 +433,7 @@ class PlannerService:
         # DV mode
         dv_mode: DvMode | None = None
         if video.hdr.is_dolby_vision:
-            dv_mode = DvMode.TO_8_1 if video.hdr.dv_profile == _DV_PROFILE_FEL else DvMode.COPY
+            dv_mode = DvMode.TO_8_1 if video.hdr.dv_profile == DV_PROFILE_FEL else DvMode.COPY
 
         # HDR metadata passthrough
         hdr = video.hdr if has_hdr else None

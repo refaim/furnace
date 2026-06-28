@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import MagicMock
 
 import pytest
 
@@ -39,81 +38,81 @@ def _audio_track(
 class TestBuildAudioInstructionValidation:
     def test_downmix_on_stereo_track_raises(self) -> None:
         track = _audio_track(codec_name="aac", codec_id=AudioCodecId.AAC_LC, channels=2)
-        planner = PlannerService(prober=MagicMock(), previewer=None)
+        planner = PlannerService(previewer=None)
         with pytest.raises(ValueError, match="Downmix not applicable"):
             planner._build_audio_instruction(track, is_default=True, downmix=DownmixMode.STEREO)
 
     def test_downmix_on_mono_track_raises(self) -> None:
         track = _audio_track(codec_name="aac", codec_id=AudioCodecId.AAC_LC, channels=1)
-        planner = PlannerService(prober=MagicMock(), previewer=None)
+        planner = PlannerService(previewer=None)
         with pytest.raises(ValueError, match="Downmix not applicable"):
             planner._build_audio_instruction(track, is_default=True, downmix=DownmixMode.STEREO)
 
     def test_downmix_on_none_channels_raises(self) -> None:
         track = _audio_track(channels=None)
-        planner = PlannerService(prober=MagicMock(), previewer=None)
+        planner = PlannerService(previewer=None)
         with pytest.raises(ValueError, match="Downmix not applicable"):
             planner._build_audio_instruction(track, is_default=True, downmix=DownmixMode.STEREO)
 
     def test_down6_on_6ch_raises(self) -> None:
         track = _audio_track(channels=6)
-        planner = PlannerService(prober=MagicMock(), previewer=None)
+        planner = PlannerService(previewer=None)
         with pytest.raises(ValueError, match="DOWN6 not applicable"):
             planner._build_audio_instruction(track, is_default=True, downmix=DownmixMode.DOWN6)
 
     def test_down6_on_5ch_raises(self) -> None:
         track = _audio_track(channels=5)
-        planner = PlannerService(prober=MagicMock(), previewer=None)
+        planner = PlannerService(previewer=None)
         with pytest.raises(ValueError, match="DOWN6 not applicable"):
             planner._build_audio_instruction(track, is_default=True, downmix=DownmixMode.DOWN6)
 
     def test_down6_on_7ch_ok(self) -> None:
         track = _audio_track(channels=7)
-        planner = PlannerService(prober=MagicMock(), previewer=None)
+        planner = PlannerService(previewer=None)
         instr = planner._build_audio_instruction(track, is_default=True, downmix=DownmixMode.DOWN6)
         assert instr.downmix == DownmixMode.DOWN6
 
     def test_down6_on_8ch_ok(self) -> None:
         track = _audio_track(channels=8)
-        planner = PlannerService(prober=MagicMock(), previewer=None)
+        planner = PlannerService(previewer=None)
         instr = planner._build_audio_instruction(track, is_default=True, downmix=DownmixMode.DOWN6)
         assert instr.downmix == DownmixMode.DOWN6
 
     def test_stereo_on_6ch_ok(self) -> None:
         track = _audio_track(channels=6)
-        planner = PlannerService(prober=MagicMock(), previewer=None)
+        planner = PlannerService(previewer=None)
         instr = planner._build_audio_instruction(track, is_default=True, downmix=DownmixMode.STEREO)
         assert instr.downmix == DownmixMode.STEREO
 
     def test_no_downmix_on_2ch_ok(self) -> None:
         track = _audio_track(codec_name="aac", codec_id=AudioCodecId.AAC_LC, channels=2)
-        planner = PlannerService(prober=MagicMock(), previewer=None)
+        planner = PlannerService(previewer=None)
         instr = planner._build_audio_instruction(track, is_default=True, downmix=None)
         assert instr.downmix is None
 
     def test_mono_on_6ch_ok(self) -> None:
         track = _audio_track(channels=6)
-        planner = PlannerService(prober=MagicMock(), previewer=None)
+        planner = PlannerService(previewer=None)
         instr = planner._build_audio_instruction(track, is_default=True, downmix=DownmixMode.MONO)
         assert instr.downmix == DownmixMode.MONO
         assert instr.action.value == "decode_encode"
 
     def test_mono_on_stereo_track_ok(self) -> None:
         track = _audio_track(codec_name="ac3", codec_id=AudioCodecId.AC3, channels=2)
-        planner = PlannerService(prober=MagicMock(), previewer=None)
+        planner = PlannerService(previewer=None)
         instr = planner._build_audio_instruction(track, is_default=True, downmix=DownmixMode.MONO)
         assert instr.downmix == DownmixMode.MONO
         assert instr.action.value == "decode_encode"
 
     def test_mono_on_1ch_raises(self) -> None:
         track = _audio_track(codec_name="aac", codec_id=AudioCodecId.AAC_LC, channels=1)
-        planner = PlannerService(prober=MagicMock(), previewer=None)
+        planner = PlannerService(previewer=None)
         with pytest.raises(ValueError, match="MONO downmix requires >=2 channels, got 1"):
             planner._build_audio_instruction(track, is_default=True, downmix=DownmixMode.MONO)
 
     def test_mono_on_none_channels_raises(self) -> None:
         track = _audio_track(channels=None)
-        planner = PlannerService(prober=MagicMock(), previewer=None)
+        planner = PlannerService(previewer=None)
         with pytest.raises(ValueError, match="MONO downmix requires >=2 channels, got None"):
             planner._build_audio_instruction(track, is_default=True, downmix=DownmixMode.MONO)
 
@@ -123,27 +122,27 @@ class TestBuildAudioInstructionForcing:
 
     def test_force_on_ac3_track_overrides_denorm(self) -> None:
         track = _audio_track(codec_name="ac3", codec_id=AudioCodecId.AC3, channels=6)
-        planner = PlannerService(prober=MagicMock(), previewer=None)
+        planner = PlannerService(previewer=None)
         instr = planner._build_audio_instruction(track, is_default=True, downmix=DownmixMode.STEREO)
         assert instr.action == AudioAction.DECODE_ENCODE
         assert instr.downmix == DownmixMode.STEREO
 
     def test_force_on_truehd_track_is_decode_encode(self) -> None:
         track = _audio_track(codec_name="truehd", codec_id=AudioCodecId.TRUEHD, channels=8)
-        planner = PlannerService(prober=MagicMock(), previewer=None)
+        planner = PlannerService(previewer=None)
         instr = planner._build_audio_instruction(track, is_default=True, downmix=DownmixMode.DOWN6)
         assert instr.action == AudioAction.DECODE_ENCODE
 
     def test_force_on_opus_track_overrides_ffmpeg_encode(self) -> None:
         track = _audio_track(codec_name="opus", codec_id=AudioCodecId.OPUS, channels=6)
-        planner = PlannerService(prober=MagicMock(), previewer=None)
+        planner = PlannerService(previewer=None)
         instr = planner._build_audio_instruction(track, is_default=True, downmix=DownmixMode.STEREO)
         assert instr.action == AudioAction.DECODE_ENCODE
 
     def test_no_downmix_preserves_default_action(self) -> None:
         """Without downmix, AC3 stays on DENORM (baseline)."""
         track = _audio_track(codec_name="ac3", codec_id=AudioCodecId.AC3, channels=6)
-        planner = PlannerService(prober=MagicMock(), previewer=None)
+        planner = PlannerService(previewer=None)
         instr = planner._build_audio_instruction(track, is_default=True, downmix=None)
         assert instr.action == AudioAction.DENORM
 
@@ -168,9 +167,7 @@ class TestCreatePlanDownmixOverrides:
         )
         output_path = tmp_path / "out.mkv"
 
-        prober = MagicMock()
-        prober.detect_crop.return_value = None
-        planner = PlannerService(prober=prober, previewer=None)
+        planner = PlannerService(previewer=None)
 
         downmix_overrides = {(Path(str(main)), 1): DownmixMode.STEREO}
         plan = planner.create_plan(
@@ -178,7 +175,6 @@ class TestCreatePlanDownmixOverrides:
             audio_lang_filter=["eng"],
             sub_lang_filter=["eng"],
             vmaf_enabled=False,
-            dry_run=True,
             downmix_overrides=downmix_overrides,
         )
 
@@ -229,10 +225,8 @@ class TestCreatePlanDownmixOverrides:
                 return [picked]
             return list(candidates)
 
-        prober = MagicMock()
-        prober.detect_crop.return_value = None
         planner = PlannerService(
-            prober=prober, previewer=None, track_selector=selector,
+            previewer=None, track_selector=selector,
         )
 
         plan = planner.create_plan(
@@ -240,7 +234,6 @@ class TestCreatePlanDownmixOverrides:
             audio_lang_filter=["eng"],
             sub_lang_filter=["eng"],
             vmaf_enabled=False,
-            dry_run=True,
             downmix_overrides=downmix_overrides,
         )
 
@@ -264,16 +257,13 @@ class TestCreatePlanDownmixOverrides:
             audio_tracks=[track],
         )
 
-        prober = MagicMock()
-        prober.detect_crop.return_value = None
-        planner = PlannerService(prober=prober, previewer=None)
+        planner = PlannerService(previewer=None)
 
         plan = planner.create_plan(
             [(movie, tmp_path / "out.mkv")],
             audio_lang_filter=["eng"],
             sub_lang_filter=["eng"],
             vmaf_enabled=False,
-            dry_run=True,
         )
 
         assert plan.jobs[0].audio[0].downmix is None

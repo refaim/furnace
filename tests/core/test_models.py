@@ -64,3 +64,31 @@ class TestDownmixMode:
     def test_invalid_string_raises(self) -> None:
         with pytest.raises(ValueError, match="foo"):
             DownmixMode("foo")
+
+
+def test_analyze_status_values() -> None:
+    from furnace.core.models import AnalyzeStatus
+    assert AnalyzeStatus.DONE.value == "done"
+    assert AnalyzeStatus.SKIPPED.value == "skipped"
+    assert AnalyzeStatus.FAILED.value == "failed"
+
+
+def test_analysis_outcome_done_carries_movie() -> None:
+    from furnace.core.models import AnalysisOutcome, AnalyzeStatus
+    movie = object()  # placeholder; real Movie not needed for the dataclass test
+    outcome = AnalysisOutcome(movie=movie, status=AnalyzeStatus.DONE, detail="summary")  # type: ignore[arg-type]
+    assert outcome.movie is movie
+    assert outcome.status is AnalyzeStatus.DONE
+    assert outcome.detail == "summary"
+
+
+def test_analysis_outcome_is_frozen() -> None:
+    import dataclasses
+
+    import pytest
+
+    from furnace.core.models import AnalysisOutcome, AnalyzeStatus
+
+    outcome = AnalysisOutcome(movie=None, status=AnalyzeStatus.FAILED, detail="boom")
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        outcome.detail = "x"  # type: ignore[misc]
