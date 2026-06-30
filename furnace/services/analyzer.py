@@ -284,8 +284,15 @@ class Analyzer:
         height = int(stream.get("height", 0))
         pixel_area = width * height
 
-        # FPS: try avg_frame_rate, then r_frame_rate
-        fps_str = stream.get("avg_frame_rate") or stream.get("r_frame_rate", "25/1")
+        # FPS: prefer avg_frame_rate, fall back to r_frame_rate. ffprobe
+        # reports an unknown rate as "0/0"; treat that as absent so a re-encode
+        # never carries fps_num=0 (which would make mkvmerge default the muxed
+        # track to 25 fps and drift the audio out of sync).
+        fps_str = stream.get("avg_frame_rate")
+        if not fps_str or fps_str == "0/0":
+            fps_str = stream.get("r_frame_rate", "25/1")
+        if not fps_str or fps_str == "0/0":
+            fps_str = "25/1"
         if "/" in fps_str:
             parts = fps_str.split("/")
             fps_num = int(parts[0])

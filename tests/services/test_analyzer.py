@@ -749,6 +749,39 @@ class TestParseVideoInfoFallbacks:
         assert vi.fps_num == 23
         assert vi.fps_den == 1
 
+    def test_fps_avg_zero_over_zero_falls_back_to_r_frame_rate(
+        self, tmp_path: Path,
+    ) -> None:
+        """ffprobe reports an unknown avg_frame_rate as '0/0'; it must be
+        ignored in favour of r_frame_rate so a re-encode never carries
+        fps_num=0 (which would make mkvmerge default the muxed track to 25
+        fps and drift out of sync)."""
+        stream = self._make_base_stream()
+        stream["avg_frame_rate"] = "0/0"
+        stream["r_frame_rate"] = "24/1"
+        prober = MagicMock()
+        prober.probe_hdr_side_data.return_value = []
+
+        analyzer = Analyzer(prober=prober)
+        vi = analyzer._parse_video_info(stream, {}, tmp_path / "movie.mkv")
+
+        assert vi.fps_num == 24
+        assert vi.fps_den == 1
+
+    def test_fps_both_zero_over_zero_defaults_to_25(self, tmp_path: Path) -> None:
+        """Both avg and r frame rates '0/0' → safe 25/1 default (never 0)."""
+        stream = self._make_base_stream()
+        stream["avg_frame_rate"] = "0/0"
+        stream["r_frame_rate"] = "0/0"
+        prober = MagicMock()
+        prober.probe_hdr_side_data.return_value = []
+
+        analyzer = Analyzer(prober=prober)
+        vi = analyzer._parse_video_info(stream, {}, tmp_path / "movie.mkv")
+
+        assert vi.fps_num == 25
+        assert vi.fps_den == 1
+
     def test_duration_zero_in_stream_fallback_to_format(self, tmp_path: Path) -> None:
         """duration=0 in stream -> fallback to format duration."""
         stream = self._make_base_stream()

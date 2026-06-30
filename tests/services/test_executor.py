@@ -1372,6 +1372,122 @@ class TestRunPipelineVideoMeta:
         assert video_meta["hdr_max_cll"] == "1000"
         assert video_meta["hdr_max_fall"] == "400"
 
+    def test_fps_in_video_meta_for_reencode(self, tmp_path: Path) -> None:
+        """A re-encode writes a raw AV1 OBU (no container frame rate), so the
+        source fps must reach the muxer or mkvmerge defaults the track to 25
+        fps and drifts out of sync with the audio."""
+        mocks = SimpleNamespace(
+            encoder=MagicMock(),
+            audio_extractor=MagicMock(),
+            audio_decoder=MagicMock(),
+            aac_encoder=MagicMock(),
+            muxer=MagicMock(),
+            tagger=MagicMock(),
+            cleaner=MagicMock(),
+            prober=MagicMock(),
+        )
+        mocks.encoder.encode.return_value = EncodeResult(return_code=0, encoder_settings="test")
+        mocks.muxer.mux.return_value = 0
+        mocks.tagger.set_encoder_tag.return_value = 0
+
+        def fake_clean(input_path: Any, output_path: Any, on_progress: Any = None) -> int:
+            Path(output_path).write_bytes(b"CLEAN")
+            return 0
+
+        mocks.cleaner.clean.side_effect = fake_clean
+
+        executor = Executor(
+            encoder=mocks.encoder,
+            audio_extractor=mocks.audio_extractor,
+            audio_decoder=mocks.audio_decoder,
+            aac_encoder=mocks.aac_encoder,
+            muxer=mocks.muxer,
+            tagger=mocks.tagger,
+            cleaner=mocks.cleaner,
+            prober=mocks.prober,
+        )
+        executor._vmaf_enabled = False
+
+        vp = make_video_params(fps_num=24000, fps_den=1001)
+        job = make_job(
+            job_id="fps-job",
+            output_file=str(tmp_path / "output" / "movie.mkv"),
+            video_params=vp,
+            audio=[],
+            subtitles=[],
+            attachments=[],
+            copy_chapters=False,
+            source_size=0,
+            duration_s=100.0,
+        )
+        output_path = Path(job.output_file)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        executor._run_pipeline(job, output_path, tmp_path)
+
+        video_meta = mocks.muxer.mux.call_args.kwargs["video_meta"]
+        assert video_meta["fps_num"] == 24000
+        assert video_meta["fps_den"] == 1001
+
+    def test_no_fps_in_video_meta_for_passthrough(self, tmp_path: Path) -> None:
+        """Passthrough writes an MKV that already carries timing, so no fps
+        override is emitted (forcing one could re-time the verbatim copy)."""
+        mocks = SimpleNamespace(
+            encoder=MagicMock(),
+            audio_extractor=MagicMock(),
+            audio_decoder=MagicMock(),
+            aac_encoder=MagicMock(),
+            muxer=MagicMock(),
+            tagger=MagicMock(),
+            cleaner=MagicMock(),
+            prober=MagicMock(),
+            video_copier=MagicMock(),
+        )
+        mocks.video_copier.copy_video.return_value = 0
+        mocks.muxer.mux.return_value = 0
+        mocks.tagger.set_encoder_tag.return_value = 0
+
+        def fake_clean(input_path: Any, output_path: Any, on_progress: Any = None) -> int:
+            Path(output_path).write_bytes(b"CLEAN")
+            return 0
+
+        mocks.cleaner.clean.side_effect = fake_clean
+
+        executor = Executor(
+            encoder=mocks.encoder,
+            audio_extractor=mocks.audio_extractor,
+            audio_decoder=mocks.audio_decoder,
+            aac_encoder=mocks.aac_encoder,
+            muxer=mocks.muxer,
+            tagger=mocks.tagger,
+            cleaner=mocks.cleaner,
+            prober=mocks.prober,
+            video_copier=mocks.video_copier,
+        )
+        executor._vmaf_enabled = False
+
+        vp = make_video_params(passthrough=True)
+        job = make_job(
+            job_id="pt-job",
+            output_file=str(tmp_path / "output" / "movie.mkv"),
+            video_params=vp,
+            audio=[],
+            subtitles=[],
+            attachments=[],
+            copy_chapters=False,
+            source_size=0,
+            duration_s=100.0,
+        )
+        output_path = Path(job.output_file)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        executor._run_pipeline(job, output_path, tmp_path)
+
+        video_meta = mocks.muxer.mux.call_args.kwargs["video_meta"]
+        # Default color metadata is present, so video_meta is a non-None dict;
+        # the key point is that passthrough adds no fps override.
+        assert video_meta is not None
+        assert "fps_num" not in video_meta
+        assert "fps_den" not in video_meta
+
 
 class TestRunPipelineProgressWiring:
     """Pipeline with progress mock: verify status/size updates."""
@@ -2532,7 +2648,11 @@ class TestVideoMetaEmptyFields:
             return 0
 
         mocks.cleaner.clean.side_effect = fake_clean
+        # Passthrough (no fps override) + all color fields empty → nothing to
+        # put in video_meta, so it collapses to None. (A re-encode would still
+        # carry fps, so the None case is only reachable via passthrough now.)
         vp = make_video_params(
+            passthrough=True,
             color_range="",
             color_primaries="",
             color_transfer="",
@@ -2553,7 +2673,7 @@ class TestVideoMetaEmptyFields:
         output_path.parent.mkdir(parents=True, exist_ok=True)
         executor._run_pipeline(job, output_path, tmp_path)
         mux_call = mocks.muxer.mux.call_args
-        # When all color fields are empty, video_meta should be None
+        # When all color fields are empty and no fps is added, video_meta is None
         assert mux_call.kwargs["video_meta"] is None
 
 

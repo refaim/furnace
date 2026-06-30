@@ -507,3 +507,52 @@ class TestMkvmergeMuxExecution:
                 output_path=Path("output.mkv"),
             )
         assert captured_kwargs["log_path"] is None
+
+
+class TestMkvmergeDefaultDuration:
+    """Raw AV1 OBU elementary streams carry no frame rate, so mkvmerge would
+    default a timeless video track to 25 fps. When video_meta supplies the
+    source frame rate, a ``--default-duration 0:<num>/<den>p`` flag must be
+    emitted for the video track (track 0) so playback runs at the right speed.
+    """
+
+    def _video_idx(self, cmd: list[str]) -> int:
+        return cmd.index("video.obu")
+
+    def test_default_duration_emitted_for_integer_fps(self) -> None:
+        cmd = _build_cmd({"fps_num": 24, "fps_den": 1})
+        idx = cmd.index("--default-duration")
+        assert cmd[idx + 1] == "0:24/1p"
+        # Must precede the video input file it applies to.
+        assert idx < self._video_idx(cmd)
+
+    def test_default_duration_emitted_for_fractional_fps(self) -> None:
+        cmd = _build_cmd({"fps_num": 24000, "fps_den": 1001})
+        idx = cmd.index("--default-duration")
+        assert cmd[idx + 1] == "0:24000/1001p"
+        assert idx < self._video_idx(cmd)
+
+    def test_default_duration_with_color_meta(self) -> None:
+        """fps and color metadata coexist on the same video track."""
+        cmd = _build_cmd({"fps_num": 24, "fps_den": 1, "color_range": "tv"})
+        dd = cmd.index("--default-duration")
+        cr = cmd.index("--color-range")
+        assert cmd[dd + 1] == "0:24/1p"
+        assert cmd[cr + 1] == "0:1"
+        assert dd < self._video_idx(cmd)
+        assert cr < self._video_idx(cmd)
+
+    def test_no_default_duration_without_fps(self) -> None:
+        assert "--default-duration" not in _build_cmd({"color_range": "tv"})
+
+    def test_no_default_duration_when_video_meta_none(self) -> None:
+        assert "--default-duration" not in _build_cmd(None)
+
+    def test_no_default_duration_when_fps_den_missing(self) -> None:
+        """Partial fps info (num without den) is ignored rather than emitting
+        a malformed flag."""
+        assert "--default-duration" not in _build_cmd({"fps_num": 24})
+
+    def test_no_default_duration_when_fps_den_zero(self) -> None:
+        """fps_den of 0 would be a divide-by-zero / nonsense rate — skip it."""
+        assert "--default-duration" not in _build_cmd({"fps_num": 24, "fps_den": 0})

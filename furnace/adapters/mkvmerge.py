@@ -79,7 +79,9 @@ class MkvmergeAdapter:
         audio_files: list of (path, {language, default, delay_ms})
         subtitle_files: list of (path, {language, default, forced, encoding})
         attachments: list of (path, filename, mime_type)
-        video_meta: optional dict with color/HDR metadata for container-level flags
+        video_meta: optional dict with color/HDR metadata for container-level
+            flags, plus optional ``fps_num``/``fps_den`` to pin the video
+            track's frame rate (needed for raw AV1 OBU input)
 
         Note: ENCODER tag is NOT set here. It is set separately via
         MkvpropeditAdapter after muxing.
@@ -173,6 +175,15 @@ class MkvmergeAdapter:
                 video_flags += ["--max-content-light", f"0:{max_cll}"]
             if max_fall is not None:
                 video_flags += ["--max-frame-light", f"0:{max_fall}"]
+
+            # --default-duration: a raw AV1 OBU elementary stream carries no
+            # frame rate, so mkvmerge would default the track to 25 fps. Pin
+            # the real source rate (num/den fps, 'p' = progressive) so playback
+            # speed matches the audio instead of drifting.
+            fps_num = video_meta.get("fps_num")
+            fps_den = video_meta.get("fps_den")
+            if fps_num and fps_den:
+                video_flags += ["--default-duration", f"0:{fps_num}/{fps_den}p"]
 
         video_flags += ["--no-chapters"]  # chapters come only from chapters_source
         video_flags.append(str(video_path))

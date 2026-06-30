@@ -449,6 +449,14 @@ class Executor:
                 elif part.startswith("MaxFALL="):
                     video_meta["hdr_max_fall"] = part.split("=", 1)[1]
 
+        # A re-encode writes a raw AV1 OBU (no container frame rate), so pin the
+        # source rate for mkvmerge or the track defaults to 25 fps and drifts
+        # out of sync with the audio. Passthrough writes an MKV that already
+        # carries timing, so it needs no override.
+        if not passthrough:
+            video_meta["fps_num"] = vp.fps_num
+            video_meta["fps_den"] = vp.fps_den
+
         _, mux_on_progress = self._make_progress_callback(total_s=None)
         rc = self._muxer.mux(
             video_path=video_output,
