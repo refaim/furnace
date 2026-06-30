@@ -5,17 +5,26 @@ import math
 
 from .models import CropRect, VideoParams
 
-# QVBR anchors for NVENC AV1 (hardware), preset P4 + UHQ tune. Calibrated to
-# ~VMAF 94 on clean content (RTX 5060 Ti, NVEncC 9.19); adopted from the
-# crucible AV1 pipeline. NVENC QVBR is a constant-quality control (no CRF on
-# NVENC); the value is passed verbatim as --qvbr. Preset and anchors are
-# coupled -- re-tuning one means re-tuning the other.
+# QVBR anchors for NVENC AV1 (hardware), preset P4 + UHQ tune. NVENC QVBR is a
+# constant-quality control (no CRF on NVENC); the value is passed verbatim as
+# --qvbr. Preset and anchors are coupled -- re-tuning one means re-tuning the
+# other.
+#
+# The 1440p/4K anchors were eased in 2.2.0 (1440p 38->35, 4K 41->34). The old
+# curve grew *more* aggressive with resolution (1080p 36 -> 4K 41); on hard
+# content (dark, grainy) that was below transparent. Measured VMAF-vs-qvbr on a
+# dark 3840x1920 clip (RTX 5060 Ti, NVEncC 9.22, vmaf_v0.6.1): qvbr 40 -> 93.5,
+# 36 -> 94.7, 33 -> 95.3, 31 -> 95.6, 30 -> 95.8 (so the old 4K anchor 41 sat
+# under ~93.5). The knee is ~qvbr 34 (interpolated between the measured 36 and
+# 33 points), so 4K-class content now targets ~VMAF 95 on its worst scenes
+# (near-transparent) at ~2x the old bitrate. Result: 4K is no longer harsher
+# than 1080p (the curve is a hump, not monotone). 1080p and below are unchanged.
 CQ_ANCHORS: list[tuple[int, int]] = [
     (409_920, 35),  # SD    854x480
     (921_600, 35),  # 720p  1280x720
     (2_073_600, 36),  # 1080p 1920x1080
-    (3_686_400, 38),  # 1440p 2560x1440
-    (8_294_400, 41),  # 4K    3840x2160
+    (3_686_400, 35),  # 1440p 2560x1440
+    (8_294_400, 34),  # 4K    3840x2160
 ]
 
 

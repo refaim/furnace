@@ -28,12 +28,12 @@ class TestInterpolateCq:
         assert interpolate_cq(2_073_600) == 36
 
     def test_1440p_anchor(self) -> None:
-        """Exact 1440p anchor -> QVBR 38."""
-        assert interpolate_cq(3_686_400) == 38
+        """Exact 1440p anchor -> QVBR 35."""
+        assert interpolate_cq(3_686_400) == 35
 
     def test_4k_anchor(self) -> None:
-        """Exact 4K anchor -> QVBR 41."""
-        assert interpolate_cq(8_294_400) == 41
+        """Exact 4K anchor -> QVBR 34."""
+        assert interpolate_cq(8_294_400) == 34
 
     def test_below_sd_clamps_to_sd(self) -> None:
         """Pixel area below SD -> returns SD CQ (clamped at bottom)."""
@@ -59,7 +59,7 @@ class TestInterpolateCq:
         x1, y1 = CQ_ANCHORS[2]
         mid = (x0 + x1) // 2
         result = interpolate_cq(mid)
-        assert y0 <= result <= y1
+        assert min(y0, y1) <= result <= max(y0, y1)
 
     def test_intermediate_1080p_to_1440p(self) -> None:
         """Midpoint between 1080p and 1440p is interpolated."""
@@ -67,7 +67,7 @@ class TestInterpolateCq:
         x1, y1 = CQ_ANCHORS[3]
         mid = (x0 + x1) // 2
         result = interpolate_cq(mid)
-        assert y0 <= result <= y1
+        assert min(y0, y1) <= result <= max(y0, y1)
 
     def test_intermediate_1440p_to_4k(self) -> None:
         """Midpoint between 1440p and 4K is interpolated."""
@@ -75,21 +75,29 @@ class TestInterpolateCq:
         x1, y1 = CQ_ANCHORS[4]
         mid = (x0 + x1) // 2
         result = interpolate_cq(mid)
-        assert y0 <= result <= y1
+        assert min(y0, y1) <= result <= max(y0, y1)
 
-    def test_monotone_increasing(self) -> None:
-        """CQ is non-decreasing as pixel_area increases."""
+    def test_anchor_curve_shape(self) -> None:
+        """The anchor curve rises to a peak at 1080p then eases off for 4K:
+        SD/720p 35, 1080p 36, 1440p 35, 4K 34. 4K is intentionally *less*
+        aggressive than 1080p (more bits/pixel) — the curve is no longer
+        monotone in resolution."""
         areas = [409_920, 921_600, 2_073_600, 3_686_400, 8_294_400]
         cqs = [interpolate_cq(a) for a in areas]
-        assert cqs == sorted(cqs)
+        assert cqs == [35, 35, 36, 35, 34]
+
+    def test_4k_not_more_aggressive_than_1080p(self) -> None:
+        """Regression guard for the 2.2.0 retune: 4K must never carry a higher
+        QVBR (harsher) than 1080p again."""
+        assert interpolate_cq(8_294_400) <= interpolate_cq(2_073_600)
 
     def test_just_above_sd_anchor(self) -> None:
         """One above SD anchor -> still 35 (SD==720p anchor, flat region)."""
         assert interpolate_cq(409_921) == 35
 
     def test_just_below_4k_anchor(self) -> None:
-        """One below 4K anchor -> 41 (t~1, round(38 + ~1*3) = 41)."""
-        assert interpolate_cq(8_294_399) == 41
+        """One below 4K anchor -> 34 (t~1, round(35 + ~1*-1) = 34)."""
+        assert interpolate_cq(8_294_399) == 34
 
     def test_midpoint_sd_720p_exact(self) -> None:
         """SD(35) and 720p(35) are equal -> midpoint is 35."""
@@ -99,11 +107,12 @@ class TestInterpolateCq:
         assert interpolate_cq(mid) == 35
 
     def test_midpoint_1440p_4k_exact(self) -> None:
-        """Midpoint 1440p(38)->4K(41): t=0.5 -> round(38 + 0.5*3) = round(39.5) = 40."""
+        """Midpoint 1440p(35)->4K(34): t=0.5 -> round(35 - 0.5) = round(34.5) = 34
+        (Python banker's rounding rounds .5 to even)."""
         x0, _ = CQ_ANCHORS[3]
         x1, _ = CQ_ANCHORS[4]
         mid = (x0 + x1) // 2
-        assert interpolate_cq(mid) == 40
+        assert interpolate_cq(mid) == 34
 
     def test_quarter_720p_to_1080p(self) -> None:
         """Quarter point 720p(35)->1080p(36): t=0.25 -> round(35.25) = 35."""
