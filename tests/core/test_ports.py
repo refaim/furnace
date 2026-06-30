@@ -15,7 +15,7 @@ from typing import Any
 
 from furnace.core.audio_profile import AudioMetrics
 from furnace.core.models import CropRect
-from furnace.core.ports import AudioAnalyzer, AudioExtractor, Prober
+from furnace.core.ports import AudioExtractor, Prober
 from furnace.core.progress import ProgressSample
 
 
@@ -223,40 +223,3 @@ def test_minimal_audio_extractor_method_surface(tmp_path: Path) -> None:
     assert stub.extract_track(Path("/dev/null"), 0, tmp_path / "o.thd") == 0
     assert stub.ffmpeg_to_wav(Path("/dev/null"), 0, tmp_path / "o.wav") == 0
     assert stub.stereo_to_mono_wav(Path("/dev/null"), 0, tmp_path / "o.wav", -50) == 0
-
-
-class _MinimalAudioAnalyzer:
-    """Concrete no-op implementation of every AudioAnalyzer method.
-
-    Mirrors the other minimal stubs — proves runtime_checkable Protocol
-    conformance and locks the signature in place.
-    """
-
-    def first_second_rms_db(self, audio_file: Path) -> float | None:  # noqa: ARG002
-        return -100.0
-
-
-def test_audio_analyzer_has_first_second_rms_db() -> None:
-    assert hasattr(AudioAnalyzer, "first_second_rms_db")
-    assert callable(AudioAnalyzer.first_second_rms_db)
-
-
-def test_audio_analyzer_first_second_rms_db_signature() -> None:
-    sig = inspect.signature(AudioAnalyzer.first_second_rms_db)
-    params = sig.parameters
-    assert list(params) == ["self", "audio_file"]
-
-    hints = typing.get_type_hints(AudioAnalyzer.first_second_rms_db)
-    assert hints["audio_file"] is Path
-    assert hints["return"] == float | None
-
-
-def test_minimal_audio_analyzer_satisfies_runtime_checkable_protocol() -> None:
-    stub = _MinimalAudioAnalyzer()
-    assert isinstance(stub, AudioAnalyzer)
-    assert stub.first_second_rms_db(Path("/dev/null")) == -100.0
-
-
-def test_minimal_audio_analyzer_method_surface() -> None:
-    stub = _MinimalAudioAnalyzer()
-    assert stub.first_second_rms_db(Path("audio.dts")) == -100.0

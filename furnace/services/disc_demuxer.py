@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import re
 import shutil
 from collections.abc import Callable
@@ -11,7 +12,6 @@ from furnace.adapters.mkvmerge import _parse_mkvmerge_progress_line
 from furnace.core.chapters import fix_chapters_file
 from furnace.core.models import DiscSource, DiscTitle, DiscType
 from furnace.core.ports import (
-    AudioAnalyzer,
     DiscDemuxerPort,
     PcmTranscoder,
     PlanReporter,
@@ -28,8 +28,8 @@ _DISC_DIR_NAMES: dict[str, DiscType] = {
 
 # Extensions that mkvmerge can mux, grouped by track type. Update both the
 # group below AND nothing else — _MKV_TRACK_EXTS is derived so a new codec
-# can never silently disable the audio-desync check (the count-mismatch
-# guard in _compute_audio_sync_offsets relies on these being in sync).
+# can never silently disable the audio-sync check (the audio stream/file
+# count guard in _compute_audio_sync_offsets relies on these being in sync).
 _VIDEO_EXTS = {".mkv", ".m2v", ".h264", ".h265"}
 _AUDIO_EXTS = {
     ".flac",
@@ -46,36 +46,28 @@ _SUBTITLE_EXTS = {".sup"}
 _MKV_TRACK_EXTS = _VIDEO_EXTS | _AUDIO_EXTS | _SUBTITLE_EXTS
 
 _CHAPTERS_EXT = ".txt"
-# Minimum audio-vs-video duration gap (ms) that triggers --sync correction.
-# Below this, the gap falls within natural BD audio end-trim and is ignored.
+# Minimum real source audio-vs-video start offset (ms) that triggers --sync
+# correction. Below this, the offset is within ordinary BD frame-alignment
+# jitter and the audio is treated as starting together with the video.
 _AUDIO_DESYNC_THRESHOLD_MS = 500
-# RMS threshold for treating the first second of an extracted audio file as
-# silence. Below → the gap is at the start (intro segment without dub) and
-# ``--sync`` correction is appropriate. At or above → the audio carries real
-# content from sample 0, so the gap must be at the end (outro/credits without
-# dub); applying ``--sync`` would shift the whole timeline late by the gap
-# duration. -50 dB sits well below any plausible dub onset and well above
-# the noise floor of every codec we extract.
-_INTRO_SILENCE_THRESHOLD_DB = -50.0
-
-_DURATION_TAG_RE = re.compile(r"^(\d+):(\d{2}):(\d{2})(?:\.(\d{1,9}))?$")
+# eac3to title labels embed the source m2ts segment name(s), e.g.
+# "1) 00001.mpls, 00001.m2ts, 1:36:32" or multi-segment "00800.m2ts+00801.m2ts".
+_M2TS_RE = re.compile(r"\d+\.m2ts", re.IGNORECASE)
 
 
-def _parse_mkv_duration_tag(value: str | None) -> int | None:
-    """Parse a mkvmerge DURATION tag (``HH:MM:SS.nnnnnnnnn``) to milliseconds.
-
-    Returns None on missing, empty, or unparseable input.
+def _parse_start_time(value: object) -> float | None:
+    """Parse an ffprobe ``start_time`` field (a string like ``"5.866667"``,
+    or ``"N/A"``/missing) to a finite float. ``None`` when absent, non-numeric,
+    or non-finite (``inf``/``nan`` — which ``float()`` accepts but which would
+    blow up the later offset arithmetic).
     """
-    if not value:
+    if value is None:
         return None
-    m = _DURATION_TAG_RE.match(value)
-    if m is None:
+    try:
+        parsed = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
         return None
-    h, minutes, seconds, frac = m.groups()
-    total_ms = (int(h) * 3600 + int(minutes) * 60 + int(seconds)) * 1000
-    if frac:
-        total_ms += int(frac.ljust(9, "0")) // 1_000_000
-    return total_ms
+    return parsed if math.isfinite(parsed) else None
 
 
 class DiscDemuxer:
@@ -88,7 +80,6 @@ class DiscDemuxer:
         mkvmerge_path: Path | None = None,
         pcm_transcoder: PcmTranscoder | None = None,
         prober: Prober | None = None,
-        audio_analyzer: AudioAnalyzer | None = None,
     ) -> None:
         self._ports: dict[DiscType, DiscDemuxerPort] = {
             DiscType.BLURAY: bd_port,
@@ -97,7 +88,6 @@ class DiscDemuxer:
         self._mkvmerge = mkvmerge_path
         self._pcm_transcoder = pcm_transcoder
         self._prober = prober
-        self._audio_analyzer = audio_analyzer
 
     def _port_for(self, disc: DiscSource) -> DiscDemuxerPort:
         return self._ports[disc.disc_type]
@@ -241,6 +231,7 @@ class DiscDemuxer:
                             final_mkv,
                             on_output,
                             on_progress=_rip_progress,
+                            source_segments=self._bd_source_segments(disc, title),
                         )
                     else:
                         # Single MKV (DVD/MakeMKV) — just move it
@@ -340,18 +331,19 @@ class DiscDemuxer:
         output_mkv: Path,
         on_output: Callable[[str], None] | None = None,
         on_progress: Callable[[ProgressSample], None] | None = None,
+        source_segments: list[Path] | None = None,
     ) -> None:
         """Mux separate track files into a single MKV via mkvmerge.
 
-        After the initial mux, when a prober is configured we probe the
-        output for per-track DURATION tags. If any audio track is shorter
-        than the video track by more than ``_AUDIO_DESYNC_THRESHOLD_MS``
-        — typical of multi-segment BD titles whose intro segment carries
-        no PCM audio — the audio is at PTS 0 instead of the intended
-        offset, so we re-mux with ``--sync`` to push each short audio
-        track later by the missing-prefix duration. The fix assumes the
-        gap is at the START (the common BD authoring pattern); an OUTRO-
-        only gap would be wrongly shifted by this heuristic.
+        After the initial mux, when a prober is configured and
+        ``source_segments`` is a single BD ``.m2ts``, we probe that source
+        and apply ``--sync`` only by the REAL audio-vs-video start offset
+        found there. An aligned source (the common case) yields offset 0 →
+        no ``--sync``, regardless of any output duration mismatch caused by
+        trailing/outro silence. When the source cannot be probed
+        authoritatively (multi-segment title, missing/failed probe, or an
+        ambiguous stream layout) no ``--sync`` is applied — the audio stays
+        at PTS 0, which is where eac3to already aligned it.
         """
         if self._mkvmerge is None:
             msg = "mkvmerge path not configured, cannot mux BD demux output"
@@ -361,13 +353,13 @@ class DiscDemuxer:
 
         if self._prober is None:
             return
-        offsets = self._compute_audio_sync_offsets(output_mkv, files)
+        offsets = self._compute_audio_sync_offsets(files, source_segments)
         if not offsets:
             return
 
         summary = ", ".join(f"{p.name}: +{d}ms" for p, d in offsets.items())
         logger.warning(
-            "Audio/video desync detected in %s (%s); re-muxing with --sync",
+            "Source audio delay in %s (%s); re-muxing with --sync",
             output_mkv.name, summary,
         )
         output_mkv.unlink(missing_ok=True)
@@ -432,114 +424,104 @@ class DiscDemuxer:
 
     def _compute_audio_sync_offsets(
         self,
-        mkv_path: Path,
         files: list[Path],
+        source_segments: list[Path] | None = None,
     ) -> dict[Path, int]:
-        """Probe ``mkv_path`` and return audio-file → positive delay (ms)
-        for any audio track shorter than the video track by more than
-        ``_AUDIO_DESYNC_THRESHOLD_MS`` **and** confirmed by audio-content
-        analysis to have the gap at the START (intro segment without dub).
+        """Return audio-file → positive ``--sync`` delay (ms) derived from
+        the REAL source audio-vs-video start offset.
 
-        Returns an empty dict when no fix is needed, when detection is not
-        possible (no DURATION tags, probe error, audio/source-file count
-        mismatch), or when there is no ``audio_analyzer`` to classify gap
-        direction (safe default: do nothing rather than risk shifting an
-        outro-gap track late by the missing-prefix duration).
+        ``source_segments`` must be a single BD ``.m2ts`` for source-truth to
+        apply; we probe it and, for each demuxed audio track, compute
+        ``audio.start_time - video.start_time`` and apply ``--sync`` only when
+        that offset is at least ``_AUDIO_DESYNC_THRESHOLD_MS``. An aligned
+        source (the common case) yields offset 0 → no ``--sync``, regardless
+        of any output duration mismatch caused by trailing/outro silence.
+
+        Returns an empty dict (no ``--sync``) whenever the offset cannot be
+        determined authoritatively: no single source segment (multi-segment
+        title), probe error, no video stream / no video start_time, an audio
+        stream missing its start_time, or an audio stream/file count
+        mismatch. In every such case the audio is left at PTS 0, where eac3to
+        already aligned it.
         """
         assert self._prober is not None  # noqa: S101 — narrowed by caller
+        if source_segments is None or len(source_segments) != 1:
+            return {}
+        m2ts = source_segments[0]
         try:
-            data = self._prober.probe(mkv_path)
+            data = self._prober.probe(m2ts)
         except Exception as exc:  # noqa: BLE001 — graceful degradation
-            logger.warning("desync probe failed for %s: %s", mkv_path.name, exc)
+            logger.warning("source A/V offset probe failed for %s: %s", m2ts.name, exc)
             return {}
 
-        video_ms: int | None = None
-        audio_durations: list[int | None] = []
+        video_start: float | None = None
+        audio_starts: list[float | None] = []
         for s in data.get("streams", []):
             ctype = s.get("codec_type")
-            dur = _parse_mkv_duration_tag(s.get("tags", {}).get("DURATION"))
-            if ctype == "video" and video_ms is None:
-                video_ms = dur
+            start = _parse_start_time(s.get("start_time"))
+            if ctype == "video" and video_start is None:
+                video_start = start
             elif ctype == "audio":
-                audio_durations.append(dur)
+                audio_starts.append(start)
 
-        if video_ms is None or not audio_durations:
+        if video_start is None:
+            logger.info(
+                "source %s has no usable video start_time; no --sync applied",
+                m2ts.name,
+            )
             return {}
 
-        audio_source_files = [
-            f for f in files if f.suffix.lower() in _AUDIO_EXTS
-        ]
-        if len(audio_source_files) != len(audio_durations):
+        # Pair each demuxed audio file with its source stream positionally.
+        # Both lists are in eac3to track order: ``files`` is eac3to's demux
+        # output (named "N) ...") and ``audio_starts`` is ffprobe's container
+        # order of the same m2ts — the two agree numerically. ``files`` is
+        # sorted lexicographically, which only diverges from numeric order once
+        # a track is numbered >=10 (a title with 10+ demuxed tracks), which no
+        # real BD title reaches; and even then every audio stream in a single
+        # m2ts shares the same start PTS, so a mispairing would assign identical
+        # offsets — harmless.
+        audio_source_files = [f for f in files if f.suffix.lower() in _AUDIO_EXTS]
+        if len(audio_source_files) != len(audio_starts):
             logger.debug(
-                "audio file/stream count mismatch (%d vs %d); skip desync fix",
-                len(audio_source_files), len(audio_durations),
+                "source audio stream/file count mismatch (%d vs %d); "
+                "no --sync applied",
+                len(audio_starts), len(audio_source_files),
             )
             return {}
 
         offsets: dict[Path, int] = {}
-        for f, a_ms in zip(audio_source_files, audio_durations, strict=True):
-            if a_ms is None:
-                continue
-            delta = video_ms - a_ms
-            if delta < _AUDIO_DESYNC_THRESHOLD_MS:
-                continue
-            if not self._is_intro_gap(f, delta):
-                continue
-            offsets[f] = delta
+        for f, a_start in zip(audio_source_files, audio_starts, strict=True):
+            if a_start is None:
+                logger.info(
+                    "source %s audio track has no start_time; no --sync applied",
+                    m2ts.name,
+                )
+                return {}
+            offset_ms = round((a_start - video_start) * 1000)
+            if offset_ms >= _AUDIO_DESYNC_THRESHOLD_MS:
+                logger.info(
+                    "source %s: %s starts %dms after video; applying --sync",
+                    m2ts.name, f.name, offset_ms,
+                )
+                offsets[f] = offset_ms
         return offsets
 
-    def _is_intro_gap(self, audio_file: Path, delta_ms: int) -> bool:
-        """Decide whether a duration-mismatched audio file's missing data
-        is at the START (intro segment, ``--sync`` appropriate) versus the
-        END (outro/credits, ``--sync`` would mis-shift the whole timeline).
+    @staticmethod
+    def _bd_source_segments(disc: DiscSource, title: DiscTitle) -> list[Path] | None:
+        """Map a BD title's ``raw_label`` to its source ``.m2ts`` segment
+        paths under ``<BDMV>/STREAM``.
 
-        Method: probe the first second of the extracted audio. Silence
-        (RMS below ``_INTRO_SILENCE_THRESHOLD_DB``) means the dub stream
-        itself opens with the intro pad, so the gap that confused mkvmerge
-        was indeed at the start. A loud first second means the dub starts
-        immediately and the gap must be at the end.
-
-        Returns ``False`` (skip ``--sync``) on any uncertainty: no
-        analyzer wired up, analyzer raises, analyzer returns ``None``,
-        or RMS sits at/above the threshold. The cost of a wrong
-        ``--sync`` (whole-film desync) is far higher than the cost of
-        leaving a true intro gap unfixed (audio just starts at PTS 0
-        instead of after the intro — typically inaudible).
+        Returns ``None`` for non-BD discs or when the label carries no m2ts
+        name; in that case source-truth offset detection is disabled and no
+        ``--sync`` is applied (the audio stays at PTS 0).
         """
-        if self._audio_analyzer is None:
-            logger.info(
-                "audio %s shorter than video by %dms; no analyzer available, "
-                "skipping --sync (safe default)",
-                audio_file.name, delta_ms,
-            )
-            return False
-        try:
-            rms_db = self._audio_analyzer.first_second_rms_db(audio_file)
-        except Exception as exc:  # noqa: BLE001 — graceful degradation
-            logger.warning(
-                "audio analyzer raised for %s: %s; skipping --sync",
-                audio_file.name, exc,
-            )
-            return False
-        if rms_db is None:
-            logger.info(
-                "audio analyzer could not classify %s; skipping --sync",
-                audio_file.name,
-            )
-            return False
-        if rms_db >= _INTRO_SILENCE_THRESHOLD_DB:
-            logger.info(
-                "audio %s first-second RMS %.1f dB indicates outro gap; "
-                "skipping --sync to avoid whole-timeline desync",
-                audio_file.name, rms_db,
-            )
-            return False
-        logger.info(
-            "audio %s first-second RMS %.1f dB indicates intro gap; "
-            "applying --sync 0:%d",
-            audio_file.name, rms_db, delta_ms,
-        )
-        return True
+        if disc.disc_type != DiscType.BLURAY:
+            return None
+        names = _M2TS_RE.findall(title.raw_label)
+        if not names:
+            return None
+        stream_dir = disc.path / "STREAM"
+        return [stream_dir / name for name in names]
 
     @staticmethod
     def _find_done_files(demux_dir: Path, disc_label: str, title_num: int) -> list[Path]:

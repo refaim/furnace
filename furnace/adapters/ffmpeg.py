@@ -33,12 +33,6 @@ _CHANNELS_STEREO = 2
 _CHANNELS_5_1 = 6
 _CHANNELS_7_1 = 8
 
-# Matches ffmpeg's astats RMS line. Accepts ``-inf`` (full digital silence)
-# and signed decimal floats. Used by ``first_second_rms_db``.
-_RMS_LEVEL_LINE_RE = re.compile(
-    r"RMS level dB:\s*(-?inf|[-+]?\d+(?:\.\d+)?)",
-)
-
 
 def _rms_db(x: np.ndarray) -> float:
     """RMS in dB. Empty input or near-zero signal → -120 dB floor."""
@@ -748,48 +742,3 @@ class FFmpegAdapter:
             log_path=log_path,
         )
         return rc
-
-    def first_second_rms_db(self, audio_file: Path) -> float | None:
-        """Decode the first second of ``audio_file`` and return its RMS
-        level in dB. ``None`` on any failure to determine the value
-        (process error, missing binary, output without an RMS line, or an
-        RMS value that cannot be parsed).
-
-        Used by ``DiscDemuxer`` to classify whether a missing-audio gap is
-        at the START (silence in the first second → intro gap → ``--sync``
-        correction is appropriate) or at the END (loud first second →
-        outro gap → ``--sync`` would mis-shift the whole timeline).
-        """
-        cmd = [
-            str(self._ffmpeg),
-            "-hide_banner", "-nostats",
-            "-t", "1",
-            "-i", str(audio_file),
-            "-af", "astats=metadata=1",
-            "-f", "null",
-            "-",
-        ]
-        try:
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                check=False,
-            )
-        except OSError:
-            logger.warning(
-                "first_second_rms_db: ffmpeg invocation failed for %s", audio_file,
-            )
-            return None
-
-        if result.returncode != 0:
-            return None
-
-        match = _RMS_LEVEL_LINE_RE.search(result.stderr)
-        if match is None:
-            return None
-        # Regex guarantees ``match.group(1)`` is one of ``inf``, ``-inf``, or a
-        # signed decimal literal — all accepted by ``float()``.
-        return float(match.group(1))
