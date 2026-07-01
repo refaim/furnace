@@ -252,61 +252,108 @@ class TestTrackSelectorDownmixLogic:
         assert screen._downmix[0] is None
 
 
-class TestFmtAudioTrackDetectorTag:
-    """Detector-tag rendering in `_fmt_audio_track` (FAKE/SUSPICIOUS/REAL)."""
+class TestTrackSelectorClearDownmix:
+    """action_clear_downmix wipes any active downmix regardless of current mode."""
 
-    def test_fmt_audio_track_shows_fake_tag_when_no_manual_downmix(self) -> None:
+    def make_screen(self, tracks: list[Track]) -> TrackSelectorScreen:
+        movie = make_movie(
+            video=make_video_info(
+                codec_name="hevc", pix_fmt="yuv420p10le",
+                duration_s=120.0, bitrate=10_000_000,
+            ),
+            audio_tracks=tracks,
+        )
+        screen = TrackSelectorScreen(movie, tracks, TrackType.AUDIO)
+        screen._refresh_item = lambda index: None  # type: ignore[method-assign]
+        return screen
+
+    def test_clear_resets_stereo(self) -> None:
+        screen = self.make_screen([_t(channels=8)])
+        screen._cursor = 0
+        screen.action_set_downmix("stereo")
+        screen.action_clear_downmix()
+        assert screen._downmix[0] is None
+
+    def test_clear_resets_mono(self) -> None:
+        screen = self.make_screen([_t(channels=6)])
+        screen._cursor = 0
+        screen.action_set_downmix("mono")
+        screen.action_clear_downmix()
+        assert screen._downmix[0] is None
+
+    def test_clear_resets_down6(self) -> None:
+        screen = self.make_screen([_t(channels=8)])
+        screen._cursor = 0
+        screen.action_set_downmix("down6")
+        screen.action_clear_downmix()
+        assert screen._downmix[0] is None
+
+    def test_clear_noop_when_already_none(self) -> None:
+        screen = self.make_screen([_t(channels=6)])
+        screen._cursor = 0
+        screen.action_clear_downmix()
+        assert screen._downmix[0] is None
+
+
+class TestFmtAudioTrackDetectorTag:
+    """Detector plaque rendering: [FAKE]/[SUSP], independent of the downmix tag."""
+
+    def test_fake_verdict_shows_plain_fake_plaque(self) -> None:
         track = _t()
         track.audio_profile = _fake_profile(DownmixMode.STEREO)
         line = _fmt_audio_track(track, selected=True, downmix=None)
-        assert "[FAKE -> 2.0]" in line
+        assert "[FAKE]" in line
+        # Informational plaque only — no action arrow when no downmix is set.
+        assert "->" not in line
 
-    def test_fmt_audio_track_shows_fake_mono_tag_for_mono_suggestion(self) -> None:
+    def test_fake_plaque_ignores_suggested_mode(self) -> None:
         track = _t()
         track.audio_profile = _fake_profile(DownmixMode.MONO)
         line = _fmt_audio_track(track, selected=True, downmix=None)
-        assert "[FAKE -> 1.0]" in line
+        assert "[FAKE]" in line
+        # Suggested mode is not encoded into the row plaque.
+        assert "->" not in line
 
-    def test_fmt_audio_track_shows_fake_down6_tag(self) -> None:
-        track = _t(channels=8, layout="7.1")
-        track.audio_profile = _fake_profile(DownmixMode.DOWN6)
-        line = _fmt_audio_track(track, selected=True, downmix=None)
-        assert "[FAKE -> 5.1]" in line
-
-    def test_fmt_audio_track_shows_suspicious_tag(self) -> None:
+    def test_suspicious_verdict_shows_susp_plaque(self) -> None:
         track = _t()
         track.audio_profile = _suspicious_profile()
         line = _fmt_audio_track(track, selected=True, downmix=None)
-        assert "[SUSPICIOUS]" in line
+        assert "[SUSP]" in line
+        assert "[SUSPICIOUS]" not in line
 
-    def test_fmt_audio_track_manual_downmix_hides_detector_tag(self) -> None:
+    def test_detector_plaque_and_downmix_tag_coexist(self) -> None:
         track = _t()
         track.audio_profile = _fake_profile(DownmixMode.STEREO)
         line = _fmt_audio_track(track, selected=True, downmix=DownmixMode.STEREO)
-        assert "[FAKE" not in line
+        assert "[FAKE]" in line
         assert "[-> 2.0]" in line
 
-    def test_fmt_audio_track_real_profile_shows_no_tag(self) -> None:
+    def test_detector_plaque_precedes_downmix_tag(self) -> None:
+        track = _t()
+        track.audio_profile = _fake_profile(DownmixMode.STEREO)
+        line = _fmt_audio_track(track, selected=True, downmix=DownmixMode.STEREO)
+        assert line.index("[FAKE]") < line.index("[-> 2.0]")
+
+    def test_real_profile_shows_no_plaque(self) -> None:
         track = _t()
         track.audio_profile = _real_profile()
         line = _fmt_audio_track(track, selected=True, downmix=None)
         assert "FAKE" not in line
-        assert "SUSPICIOUS" not in line
+        assert "SUSP" not in line
 
     def test_fmt_audio_track_no_profile_shows_no_tag(self) -> None:
         track = _t()
         # audio_profile defaults to None
         line = _fmt_audio_track(track, selected=True, downmix=None)
         assert "FAKE" not in line
-        assert "SUSPICIOUS" not in line
+        assert "SUSP" not in line
 
-    def test_fmt_audio_track_fake_without_suggested_shows_no_tag(self) -> None:
-        """FAKE verdict but suggested=None (defensive) must not render a FAKE tag."""
+    def test_fmt_audio_track_fake_without_suggested_still_shows_plaque(self) -> None:
+        """The FAKE plaque reflects the verdict and does not depend on `suggested`."""
         track = _t()
         track.audio_profile = _fake_profile(None)
         line = _fmt_audio_track(track, selected=True, downmix=None)
-        assert "FAKE" not in line
-        assert "SUSPICIOUS" not in line
+        assert "[FAKE]" in line
 
 
 class TestTrackSelectorAutoPreselect:
@@ -597,6 +644,31 @@ class TestRenderDetectorPanel:
         )
         panel = _render_detector_panel(track)
         assert "<- identical" in panel
+
+    def test_fake_with_downmix_shows_applied(self) -> None:
+        from furnace.ui.tui import _render_detector_panel
+        track = _t()
+        track.audio_profile = _fake_profile(DownmixMode.STEREO)
+        panel = _render_detector_panel(track, DownmixMode.STEREO)
+        assert "downmix applied" in panel
+        assert "no downmix" not in panel
+
+    def test_fake_without_downmix_shows_not_applied(self) -> None:
+        from furnace.ui.tui import _render_detector_panel
+        track = _t()
+        track.audio_profile = _fake_profile(DownmixMode.STEREO)
+        panel = _render_detector_panel(track, None)
+        assert "no downmix applied" in panel
+        # Old wording must be gone — the panel no longer claims auto-application.
+        assert "auto-applied" not in panel
+
+    def test_suspicious_with_downmix_shows_applied(self) -> None:
+        from furnace.ui.tui import _render_detector_panel
+        track = _t()
+        track.audio_profile = _suspicious_profile()
+        panel = _render_detector_panel(track, DownmixMode.STEREO)
+        assert "downmix applied" in panel
+        assert "decide manually" not in panel
 
 
 class TestModeLabel:

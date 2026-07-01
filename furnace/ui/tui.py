@@ -24,12 +24,6 @@ from furnace.core.models import (
 )
 from furnace.ui.fmt import fmt_size
 
-_DOWNMIX_TAG_LABEL = {
-    DownmixMode.STEREO: "2.0",
-    DownmixMode.MONO: "1.0",
-    DownmixMode.DOWN6: "5.1",
-}
-
 _BAR_WIDTH = 20
 _BAR_MIN_DB = -60.0
 _BAR_MAX_DB = 0.0
@@ -68,7 +62,7 @@ def _mode_label(mode: DownmixMode | None) -> str:
     return "(none)"
 
 
-def _render_detector_panel(track: Track | None) -> str:
+def _render_detector_panel(track: Track | None, downmix: DownmixMode | None = None) -> str:
     """Multi-line panel for the track under the cursor.
 
     Shows verdict + reasons + ASCII level bars. `None` or non-audio tracks
@@ -87,14 +81,18 @@ def _render_detector_panel(track: Track | None) -> str:
     if p.verdict == Verdict.REAL:
         kind = "real stereo" if m.channels == STEREO_CHANNELS else "real surround"
         lines.append(f" Detector: {kind}")
-    elif p.verdict == Verdict.FAKE:
+    else:
+        # The trailing status reflects the CURRENT downmix, not a fixed
+        # assumption: once the user clears an (auto-applied) downmix the panel
+        # must agree with the row instead of still claiming "auto-applied".
         mode_label = _mode_label(p.suggested)
-        kind = "FAKE stereo" if m.channels == STEREO_CHANNELS else "FAKE surround"
-        lines.append(f" Detector: {kind} -> suggested {mode_label} (auto-applied)")
-    else:  # SUSPICIOUS
-        mode_label = _mode_label(p.suggested) if p.suggested else "(none)"
-        kind = "SUSPICIOUS stereo" if m.channels == STEREO_CHANNELS else "SUSPICIOUS surround"
-        lines.append(f" Detector: {kind} -> suggested {mode_label} (decide manually)")
+        if p.verdict == Verdict.FAKE:
+            kind = "FAKE stereo" if m.channels == STEREO_CHANNELS else "FAKE surround"
+            status = "downmix applied" if downmix is not None else "no downmix applied"
+        else:  # SUSPICIOUS
+            kind = "SUSPICIOUS stereo" if m.channels == STEREO_CHANNELS else "SUSPICIOUS surround"
+            status = "downmix applied" if downmix is not None else "decide manually"
+        lines.append(f" Detector: {kind} -> suggested {mode_label} ({status})")
 
     if p.reasons:
         lines.append(f"   reason: {'; '.join(p.reasons)}")
@@ -204,15 +202,18 @@ def _fmt_audio_track(
     elif downmix == DownmixMode.DOWN6:
         downmix_tag = "\\[-> 5.1]"
 
+    # Detector plaque is informational and independent of the downmix action:
+    # it stays visible whether or not a downmix is applied, so cancelling a
+    # downmix (dropping downmix_tag) never looks like it failed.
     detector_tag = ""
-    if not downmix_tag and track.audio_profile is not None:
+    if track.audio_profile is not None:
         p = track.audio_profile
-        if p.verdict == Verdict.FAKE and p.suggested is not None:
-            detector_tag = f"\\[FAKE -> {_DOWNMIX_TAG_LABEL[p.suggested]}]"
+        if p.verdict == Verdict.FAKE:
+            detector_tag = "\\[FAKE]"
         elif p.verdict == Verdict.SUSPICIOUS:
-            detector_tag = "\\[SUSPICIOUS]"
+            detector_tag = "\\[SUSP]"
 
-    parts = [p for p in [lang, codec_layout, bitrate, title, downmix_tag, detector_tag] if p]
+    parts = [p for p in [lang, codec_layout, bitrate, title, detector_tag, downmix_tag] if p]
     # Escape brackets so Rich doesn't interpret them as markup tags
     return f"\\[{mark}]  {'  '.join(parts)}"
 
@@ -265,6 +266,7 @@ class TrackSelectorScreen(Screen[TrackSelection]):
         Binding("s", "set_downmix('stereo')", "Stereo", show=False),
         Binding("m", "set_downmix('mono')", "Mono", show=False),
         Binding("6", "set_downmix('down6')", "5.1", show=False),
+        Binding("c", "clear_downmix", "Clear downmix"),
         Binding("d", "done", "Done"),
     ]
 
@@ -323,7 +325,7 @@ class TrackSelectorScreen(Screen[TrackSelection]):
         yield Static(f"Select {kind} tracks  (Space=toggle  P=preview  D=done)", id="track-hint")
         if self._track_type == TrackType.AUDIO:
             yield Static(
-                "Downmix: S=2.0  M=1.0  6=5.1",
+                "Downmix: S=2.0  M=1.0  6=5.1  C=clear",
                 id="track-downmix-hint",
             )
 
@@ -336,7 +338,11 @@ class TrackSelectorScreen(Screen[TrackSelection]):
 
         if self._track_type == TrackType.AUDIO:
             initial_track = self._tracks[0] if self._tracks else None
-            yield Static(_render_detector_panel(initial_track), id="detector-panel")
+            initial_downmix = self._downmix[0] if self._tracks else None
+            yield Static(
+                _render_detector_panel(initial_track, initial_downmix),
+                id="detector-panel",
+            )
 
         yield Footer()
 
@@ -360,12 +366,10 @@ class TrackSelectorScreen(Screen[TrackSelection]):
             return
         with contextlib.suppress(Exception):
             panel = self.query_one("#detector-panel", Static)
-            track = (
-                self._tracks[self._cursor]
-                if 0 <= self._cursor < len(self._tracks)
-                else None
-            )
-            panel.update(_render_detector_panel(track))
+            in_bounds = 0 <= self._cursor < len(self._tracks)
+            track = self._tracks[self._cursor] if in_bounds else None
+            downmix = self._downmix[self._cursor] if in_bounds else None
+            panel.update(_render_detector_panel(track, downmix))
 
     # ------------------------------------------------------------------
     # Actions
@@ -415,6 +419,20 @@ class TrackSelectorScreen(Screen[TrackSelection]):
         else:
             self._downmix[self._cursor] = new_mode
         self._refresh_item(self._cursor)
+        self._refresh_detector_panel()
+
+    def action_clear_downmix(self) -> None:
+        """Drop any downmix on the track under the cursor, keeping the original.
+
+        Unlike ``set_downmix``, this is unconditional (no channel guards): it is
+        the one unambiguous way to undo an auto-applied or manual downmix,
+        including the mode auto-selected for a FAKE-surround track.
+        """
+        if not self._tracks or self._track_type != TrackType.AUDIO:
+            return
+        self._downmix[self._cursor] = None
+        self._refresh_item(self._cursor)
+        self._refresh_detector_panel()
 
     def action_done(self) -> None:
         selected_tracks = [t for t, sel in zip(self._tracks, self._selected, strict=True) if sel]

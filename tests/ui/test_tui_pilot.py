@@ -86,6 +86,21 @@ def _movie_with_audio_and_subs() -> Movie:
     )
 
 
+def _fake_stereo_profile() -> AudioProfile:
+    """A 5.1 FAKE verdict suggesting a stereo downmix (auto-applied on open)."""
+    metrics = AudioMetrics(
+        channels=6,
+        rms_l=-50.0, rms_r=-47.0, rms_c=-28.0, rms_lfe=-75.0,
+        rms_ls=-47.0, rms_rs=-49.0, rms_lb=None, rms_rb=None,
+        corr_lr=0.4, corr_ls_l=0.1, corr_rs_r=0.1, corr_ls_rs=0.2,
+        corr_lb_ls=None, corr_rb_rs=None,
+    )
+    return AudioProfile(
+        verdict=Verdict.FAKE, score=2, suggested=DownmixMode.STEREO,
+        reasons=("LFE is dead",), metrics=metrics,
+    )
+
+
 class _HostApp(App[None]):
     """Sentinel host that pushes a given screen on mount."""
 
@@ -209,6 +224,7 @@ async def test_track_selector_empty_tracks_guards() -> None:
         await pilot.press("p")  # preview guarded
         await pilot.press("s")  # set_downmix guarded
         await pilot.press("6")
+        await pilot.press("c")  # clear_downmix guarded (empty tracks)
         await pilot.press("d")
         await pilot.pause()
     assert app.result == TrackSelection(tracks=[], downmix={})
@@ -269,9 +285,61 @@ async def test_track_selector_set_downmix_ignored_for_subtitle() -> None:
         await pilot.pause()
         await pilot.press("s")  # ignored: not AUDIO
         await pilot.press("6")
+        await pilot.press("c")  # clear_downmix ignored: not AUDIO
         await pilot.press("d")
         await pilot.pause()
     assert isinstance(app.result, TrackSelection)
+
+
+async def test_track_selector_clear_downmix_removes_auto_applied() -> None:
+    """`c` wipes the auto-applied downmix on a FAKE track; no override survives."""
+    mv = _movie_with_audio_and_subs()
+    t = _audio_track(index=1, channels=6, channel_layout="5.1(side)", is_default=True)
+    t.audio_profile = _fake_stereo_profile()
+    app = _HostApp(
+        lambda: TrackSelectorScreen(
+            movie=mv, tracks=[t], track_type=TrackType.AUDIO, preview_cb=None
+        )
+    )
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, TrackSelectorScreen)
+        panel = screen.query_one("#detector-panel", Static)
+        assert screen._downmix[0] == DownmixMode.STEREO  # auto-applied on open
+        before = str(panel.render())
+        assert "downmix applied" in before
+        assert "no downmix" not in before
+        await pilot.press("c")
+        assert screen._downmix[0] is None
+        # Panel must stop claiming the downmix is applied the instant we clear.
+        assert "no downmix applied" in str(panel.render())
+        await pilot.press("d")
+        await pilot.pause()
+    assert isinstance(app.result, TrackSelection)
+    assert app.result.downmix == {}
+    assert len(app.result.tracks) == 1  # clear touches only downmix, not selection
+
+
+async def test_track_selector_downmix_hint_mentions_clear() -> None:
+    """The downmix hint advertises the C=clear key alongside S/M/6."""
+    mv = _movie_with_audio_and_subs()
+    app = _HostApp(
+        lambda: TrackSelectorScreen(
+            movie=mv,
+            tracks=[_audio_track(index=1, is_default=True)],
+            track_type=TrackType.AUDIO,
+            preview_cb=None,
+        )
+    )
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, TrackSelectorScreen)
+        hint = screen.query_one("#track-downmix-hint", Static)
+        assert "C=clear" in str(hint.render())
+        await pilot.press("d")
+        await pilot.pause()
 
 
 async def test_track_selector_set_downmix_channels_none() -> None:
