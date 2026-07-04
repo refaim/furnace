@@ -121,6 +121,8 @@ def _select_tracks_tui(
     track_type: TrackType,
     mpv_adapter: MpvAdapter,
     *,
+    allow_relabel: bool = False,
+    lang_list: list[str] | None = None,
     app_runner: Callable[[Callable[[], Screen[TrackSelection]]], TrackSelection | None] = _run_screen_app,
 ) -> TrackSelection:
     """Run Textual TrackSelectorScreen synchronously for user to pick tracks."""
@@ -131,6 +133,8 @@ def _select_tracks_tui(
             tracks=candidates,
             track_type=track_type,
             preview_cb=_make_preview_track_cb(movie, mpv_adapter),
+            allow_relabel=allow_relabel,
+            lang_list=lang_list,
         )
 
     result = app_runner(_factory)
@@ -145,11 +149,27 @@ def _select_tracks_tui_for_planner(
     track_type: TrackType,
     mpv_adapter: MpvAdapter,
     downmix_overrides: dict[tuple[Path, int], DownmixMode],
+    lang_overrides: dict[tuple[Path, int], str],
     *,
+    allow_relabel: bool = False,
+    lang_list: list[str] | None = None,
     app_runner: Callable[[Callable[[], Screen[TrackSelection]]], TrackSelection | None] = _run_screen_app,
 ) -> list[Track]:
-    """Planner-facing wrapper: returns list[Track] and mutates downmix_overrides for audio."""
-    result = _select_tracks_tui(movie, candidates, track_type, mpv_adapter, app_runner=app_runner)
+    """Planner-facing wrapper: returns list[Track] and mutates the shared override dicts.
+
+    Relabel languages picked in the TUI merge into ``lang_overrides`` (all track
+    types); audio downmix choices merge into ``downmix_overrides``.
+    """
+    result = _select_tracks_tui(
+        movie,
+        candidates,
+        track_type,
+        mpv_adapter,
+        allow_relabel=allow_relabel,
+        lang_list=lang_list,
+        app_runner=app_runner,
+    )
+    lang_overrides.update(result.languages)
     if track_type == TrackType.AUDIO:
         downmix_overrides.update(result.downmix)
     return result.tracks
@@ -394,6 +414,13 @@ def plan(
     jobs: int | None = typer.Option(
         None, "--jobs", "-j", help="Parallel analysis workers (default: CPU cores - 2)"
     ),
+    ignore_langs: bool = typer.Option(
+        False,
+        "--ignore-langs",
+        "-il",
+        help="Treat all track languages as unspecified (for files with wrong language tags); "
+        "reassign per-track in the TUI with 'l'",
+    ),
     config: Path | None = typer.Option(None, "--config", help="Path to config file"),
 ) -> None:
     """Scan source, show TUI for track selection, save JSON plan."""
@@ -407,7 +434,7 @@ def plan(
 
     logger.debug(
         "plan command started: source=%s output=%s audio_lang=%s sub_lang=%s names=%s "
-        "dry_run=%s vmaf=%s copy_video=%s force=%s",
+        "dry_run=%s vmaf=%s copy_video=%s force=%s ignore_langs=%s",
         source,
         output,
         audio_lang,
@@ -417,6 +444,7 @@ def plan(
         vmaf,
         copy_video,
         force,
+        ignore_langs,
     )
 
     reporter = RichPlanReporter(source=source, output=output)
@@ -491,9 +519,20 @@ def plan(
         precomputed_crops = batch.crops
 
         downmix_overrides: dict[tuple[Path, int], DownmixMode] = {}
+        lang_overrides: dict[tuple[Path, int], str] = {}
 
         def _track_selector(movie: Movie, candidates: list[Track], track_type: TrackType) -> list[Track]:
-            return _select_tracks_tui_for_planner(movie, candidates, track_type, mpv_adapter, downmix_overrides)
+            lang_list = audio_lang_list if track_type == TrackType.AUDIO else sub_lang_list
+            return _select_tracks_tui_for_planner(
+                movie,
+                candidates,
+                track_type,
+                mpv_adapter,
+                downmix_overrides,
+                lang_overrides,
+                allow_relabel=ignore_langs,
+                lang_list=lang_list,
+            )
 
         def _und_resolver(movie: Movie, track: Track, lang_list: list[str]) -> str:
             return _resolve_und_language_tui(movie, track, lang_list, mpv_adapter)
@@ -505,6 +544,7 @@ def plan(
             track_selector=_track_selector if not dry_run else None,
             und_resolver=_und_resolver if not dry_run else None,
             reporter=reporter,
+            ignore_langs=ignore_langs,
         )
         if not dry_run:
             reporter.resume()
@@ -516,6 +556,7 @@ def plan(
             vmaf_enabled=vmaf,
             sar_overrides=sar_override_paths,
             downmix_overrides=downmix_overrides,
+            lang_overrides=lang_overrides,
             precomputed_crops=precomputed_crops,
             copy_video=copy_video,
         )

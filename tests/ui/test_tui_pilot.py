@@ -32,7 +32,10 @@ from furnace.ui.tui import (
     PlaylistSelectorScreen,
     TrackSelection,
     TrackSelectorScreen,
+    _fmt_audio_track,
+    _fmt_subtitle_track,
     _PlanResult,
+    build_language_map,
 )
 from tests.conftest import make_movie, make_track, make_video_info
 
@@ -979,6 +982,224 @@ def test_furnace_plan_app_empty_movies() -> None:
 
     asyncio.run(_run())
     assert app.results == []
+
+
+# ---------------------------------------------------------------------------
+# Relabel / --ignore-langs support (Part B)
+# ---------------------------------------------------------------------------
+
+
+def test_fmt_audio_track_relabel_arrow_when_differs() -> None:
+    t = _audio_track(index=1)  # language "eng"
+    out = _fmt_audio_track(t, selected=True, downmix=None, relabel_to="jpn")
+    assert "eng->jpn" in out
+
+
+def test_fmt_audio_track_relabel_plain_when_none() -> None:
+    t = _audio_track(index=1)
+    out = _fmt_audio_track(t, selected=True, downmix=None, relabel_to=None)
+    assert "eng->" not in out
+    assert "eng" in out
+
+
+def test_fmt_audio_track_relabel_plain_when_equal() -> None:
+    t = _audio_track(index=1)
+    out = _fmt_audio_track(t, selected=True, downmix=None, relabel_to="eng")
+    assert "eng->" not in out
+    assert "eng" in out
+
+
+def test_fmt_subtitle_track_relabel_arrow_and_plain() -> None:
+    t = _sub_track(index=2)  # language "eng"
+    assert "eng->rus" in _fmt_subtitle_track(t, selected=True, relabel_to="rus")
+    assert "eng->" not in _fmt_subtitle_track(t, selected=True, relabel_to=None)
+    assert "eng->" not in _fmt_subtitle_track(t, selected=True, relabel_to="eng")
+
+
+def test_build_language_map_includes_only_selected_non_none() -> None:
+    t0 = _audio_track(index=1)
+    t1 = _audio_track(index=2)
+    t2 = _audio_track(index=3)
+    tracks = [t0, t1, t2]
+    selected = [True, True, False]
+    overrides: list[str | None] = ["jpn", None, "rus"]
+    result = build_language_map(tracks, selected, overrides)
+    # t0: selected + override -> included
+    # t1: selected but override None -> excluded
+    # t2: override set but NOT selected -> excluded
+    assert result == {(t0.source_file, t0.index): "jpn"}
+
+
+def test_relabel_target_variants() -> None:
+    mv = _movie_with_audio_and_subs()
+    tracks = [_audio_track(index=1), _audio_track(index=2)]
+
+    off = TrackSelectorScreen(
+        movie=mv, tracks=tracks, track_type=TrackType.AUDIO,
+        allow_relabel=False, lang_list=["jpn", "rus"],
+    )
+    assert off._relabel_target(0) is None
+
+    empty = TrackSelectorScreen(
+        movie=mv, tracks=tracks, track_type=TrackType.AUDIO,
+        allow_relabel=True, lang_list=[],
+    )
+    assert empty._relabel_target(0) is None
+
+    default_list = TrackSelectorScreen(
+        movie=mv, tracks=tracks, track_type=TrackType.AUDIO,
+        allow_relabel=True, lang_list=None,
+    )
+    assert default_list._relabel_target(0) is None
+
+    on = TrackSelectorScreen(
+        movie=mv, tracks=tracks, track_type=TrackType.AUDIO,
+        allow_relabel=True, lang_list=["jpn", "rus"],
+    )
+    assert on._relabel_target(0) == "jpn"  # no override -> first target lang
+    on._lang_override[0] = "rus"
+    assert on._relabel_target(0) == "rus"  # explicit override wins
+
+
+def test_check_action_hides_language_when_relabel_off() -> None:
+    mv = _movie_with_audio_and_subs()
+    tracks = [_audio_track(index=1)]
+
+    off = TrackSelectorScreen(
+        movie=mv, tracks=tracks, track_type=TrackType.AUDIO, allow_relabel=False,
+    )
+    assert off.check_action("set_language", ()) is False  # disabled + hidden
+    assert off.check_action("toggle_track", ()) is True  # other actions unaffected
+
+    on = TrackSelectorScreen(
+        movie=mv, tracks=tracks, track_type=TrackType.AUDIO,
+        allow_relabel=True, lang_list=["jpn"],
+    )
+    assert on.check_action("set_language", ()) is True
+
+
+def test_action_set_language_guard_noop_when_relabel_off() -> None:
+    mv = _movie_with_audio_and_subs()
+    tracks = [_audio_track(index=1)]
+    off = TrackSelectorScreen(
+        movie=mv, tracks=tracks, track_type=TrackType.AUDIO, allow_relabel=False,
+    )
+    # Guard returns before touching self.app; safe to call without a running app.
+    off.action_set_language()
+    assert off._lang_override == [None]
+
+
+async def test_track_selector_relabel_flow_sets_language() -> None:
+    mv = _movie_with_audio_and_subs()
+    track = _audio_track(index=1, is_default=True)
+    app = _HostApp(
+        lambda: TrackSelectorScreen(
+            movie=mv, tracks=[track], track_type=TrackType.AUDIO,
+            preview_cb=None, allow_relabel=True, lang_list=["jpn", "rus"],
+        )
+    )
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, TrackSelectorScreen)
+        await pilot.press("l")  # push LanguageSelectorScreen
+        await pilot.pause()
+        lang_screen = app.screen
+        assert isinstance(lang_screen, LanguageSelectorScreen)
+        await pilot.press("d")  # select cursor 0 -> "jpn"
+        await pilot.pause()
+        # Back on the track selector: row now shows the relabel arrow.
+        label = screen.query_one("#track-label-0", Static)
+        assert "eng->jpn" in str(label.render())
+        await pilot.press("d")  # done
+        await pilot.pause()
+    assert isinstance(app.result, TrackSelection)
+    assert app.result.languages == {(track.source_file, track.index): "jpn"}
+
+
+async def test_track_selector_relabel_cancel_keeps_language_unset() -> None:
+    mv = _movie_with_audio_and_subs()
+    track = _audio_track(index=1, is_default=True)
+    app = _HostApp(
+        lambda: TrackSelectorScreen(
+            movie=mv, tracks=[track], track_type=TrackType.AUDIO,
+            preview_cb=None, allow_relabel=True, lang_list=["jpn", "rus"],
+        )
+    )
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, TrackSelectorScreen)
+        await pilot.press("l")
+        await pilot.pause()
+        lang_screen = app.screen
+        assert isinstance(lang_screen, LanguageSelectorScreen)
+        lang_screen.dismiss(None)  # cancel -> callback receives None (no-op)
+        await pilot.pause()
+        await pilot.press("d")
+        await pilot.pause()
+    assert isinstance(app.result, TrackSelection)
+    assert app.result.languages == {}
+    assert screen._lang_override == [None]
+
+
+async def test_track_selector_relabel_off_l_key_is_noop() -> None:
+    mv = _movie_with_audio_and_subs()
+    track = _audio_track(index=1, is_default=True)
+    app = _HostApp(
+        lambda: TrackSelectorScreen(
+            movie=mv, tracks=[track], track_type=TrackType.AUDIO,
+            preview_cb=None, allow_relabel=False,
+        )
+    )
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, TrackSelectorScreen)
+        await pilot.press("l")  # binding disabled via check_action -> nothing pushed
+        await pilot.pause()
+        assert isinstance(app.screen, TrackSelectorScreen)
+        await pilot.press("d")
+        await pilot.pause()
+    assert isinstance(app.result, TrackSelection)
+    assert app.result.languages == {}
+
+
+async def test_language_selector_shows_tagged_original() -> None:
+    t = _audio_track(index=1)  # language "eng"
+    app = _HostApp(
+        lambda: LanguageSelectorScreen(
+            track=t, lang_list=["jpn", "rus"], preview_cb=None, movie=None
+        )
+    )
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, LanguageSelectorScreen)
+        hint = screen.query_one("#lang-hint", Static)
+        assert "(tagged: eng)" in str(hint.render())
+        await pilot.press("d")
+        await pilot.pause()
+    assert app.result == "jpn"
+
+
+async def test_language_selector_omits_tagged_for_und() -> None:
+    t = _sub_track(index=2)
+    t.language = "und"  # genuine und track (non -il flow)
+    app = _HostApp(
+        lambda: LanguageSelectorScreen(
+            track=t, lang_list=["jpn", "rus"], preview_cb=None, movie=None
+        )
+    )
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, LanguageSelectorScreen)
+        hint = screen.query_one("#lang-hint", Static)
+        assert "(tagged:" not in str(hint.render())
+        await pilot.press("d")
+        await pilot.pause()
+    assert app.result == "jpn"
 
 
 # ensure pytest imports pytest (avoid ruff F401)

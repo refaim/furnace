@@ -38,19 +38,19 @@ class TestSortAndSetDefault:
     def test_sorts_by_lang_filter_order(self) -> None:
         tracks = [_audio_track("eng", index=0), _audio_track("rus", index=1), _audio_track("jpn", index=2)]
         planner = PlannerService(previewer=None)
-        result = planner._sort_and_set_default(tracks, ["jpn", "rus", "eng"])
+        result = planner._sort_and_set_default(tracks, ["jpn", "rus", "eng"], ignore_langs=False)
         assert [t.language for t in result] == ["jpn", "rus", "eng"]
 
     def test_first_track_is_default(self) -> None:
         tracks = [_audio_track("eng", index=0), _audio_track("rus", index=1)]
         planner = PlannerService(previewer=None)
-        result = planner._sort_and_set_default(tracks, ["rus", "eng"])
+        result = planner._sort_and_set_default(tracks, ["rus", "eng"], ignore_langs=False)
         assert result[0].is_default is True
         assert result[1].is_default is False
 
     def test_empty_list(self) -> None:
         planner = PlannerService(previewer=None)
-        result = planner._sort_and_set_default([], ["rus"])
+        result = planner._sort_and_set_default([], ["rus"], ignore_langs=False)
         assert result == []
 
 

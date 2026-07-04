@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import contextlib
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from textual.app import App, ComposeResult
@@ -166,6 +166,24 @@ def build_downmix_map(
     return result
 
 
+def build_language_map(
+    tracks: list[Track],
+    selected: list[bool],
+    lang_override_list: list[str | None],
+) -> dict[tuple[Path, int], str]:
+    """Build per-track language relabel map from selector state.
+
+    Only EXPLICIT 'l'-overrides of SELECTED tracks are reported; the planner
+    fills the default target language for the rest.
+    """
+    result: dict[tuple[Path, int], str] = {}
+    for i, track in enumerate(tracks):
+        lang = lang_override_list[i]
+        if selected[i] and lang is not None:
+            result[(track.source_file, track.index)] = lang
+    return result
+
+
 def _fmt_duration(s: float) -> str:
     h = int(s) // 3600
     m = (int(s) % 3600) // 60
@@ -180,9 +198,14 @@ def _fmt_audio_track(
     *,
     selected: bool,
     downmix: DownmixMode | None = None,
+    relabel_to: str | None = None,
 ) -> str:
     mark = "x" if selected else " "
-    lang = (track.language or "und").ljust(4)
+    base_lang = track.language or "und"
+    if relabel_to is not None and relabel_to != base_lang:
+        lang = f"{base_lang}->{relabel_to}".ljust(4)  # e.g. "eng->jpn"
+    else:
+        lang = base_lang.ljust(4)
     codec = track.codec_name.upper()
     layout = ""
     if track.channel_layout:
@@ -218,9 +241,18 @@ def _fmt_audio_track(
     return f"\\[{mark}]  {'  '.join(parts)}"
 
 
-def _fmt_subtitle_track(track: Track, *, selected: bool) -> str:
+def _fmt_subtitle_track(
+    track: Track,
+    *,
+    selected: bool,
+    relabel_to: str | None = None,
+) -> str:
     mark = "x" if selected else " "
-    lang = (track.language or "und").ljust(4)
+    base_lang = track.language or "und"
+    if relabel_to is not None and relabel_to != base_lang:
+        lang = f"{base_lang}->{relabel_to}".ljust(4)  # e.g. "eng->jpn"
+    else:
+        lang = base_lang.ljust(4)
     codec = track.codec_name.upper()
     forced = "\\[FORCED]" if track.is_forced else ""
     title = f"'{track.title}'" if track.title else ""
@@ -241,10 +273,13 @@ class TrackSelection:
     `tracks` — tracks the user selected (same as the old list[Track] return).
     `downmix` — per-track downmix override keyed by (source_file, stream_index).
                 Always empty for subtitle screens.
+    `languages` — per-track relabel override keyed by (source_file, stream_index).
+                Only populated under --ignore-langs; empty otherwise.
     """
 
     tracks: list[Track]
     downmix: dict[tuple[Path, int], DownmixMode]
+    languages: dict[tuple[Path, int], str] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -267,6 +302,7 @@ class TrackSelectorScreen(Screen[TrackSelection]):
         Binding("m", "set_downmix('mono')", "Mono", show=False),
         Binding("6", "set_downmix('down6')", "5.1", show=False),
         Binding("c", "clear_downmix", "Clear downmix"),
+        Binding("l", "set_language", "Language"),
         Binding("d", "done", "Done"),
     ]
 
@@ -276,15 +312,22 @@ class TrackSelectorScreen(Screen[TrackSelection]):
         tracks: list[Track],
         track_type: TrackType,
         preview_cb: Callable[[Track], None] | None = None,
+        *,
+        allow_relabel: bool = False,
+        lang_list: list[str] | None = None,
     ) -> None:
         super().__init__()
         self._movie = movie
         self._tracks = tracks
         self._track_type = track_type
         self._preview_cb = preview_cb
+        self._allow_relabel = allow_relabel
+        self._lang_list = lang_list or []
         # Pre-select tracks that are marked as default
         self._selected: list[bool] = [t.is_default for t in tracks]
         self._downmix: list[DownmixMode | None] = [None] * len(tracks)
+        # Parallel per-track relabel overrides (only used under --ignore-langs)
+        self._lang_override: list[str | None] = [None] * len(tracks)
 
         # Auto-preselect detector-suggested mode for FAKE tracks.
         if track_type == TrackType.AUDIO:
@@ -350,12 +393,28 @@ class TrackSelectorScreen(Screen[TrackSelection]):
     # Internal helpers
     # ------------------------------------------------------------------
 
+    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        del parameters  # part of Textual's check_action contract; unused here
+        # Disable + hide the 'l' hotkey from the footer unless relabelling is on.
+        return action != "set_language" or self._allow_relabel
+
+    def _relabel_target(self, index: int) -> str | None:
+        if not self._allow_relabel or not self._lang_list:
+            return None
+        override = self._lang_override[index]
+        return override if override is not None else self._lang_list[0]
+
     def _render_line(self, index: int) -> str:
         track = self._tracks[index]
         selected = self._selected[index]
         if self._track_type == TrackType.AUDIO:
-            return _fmt_audio_track(track, selected=selected, downmix=self._downmix[index])
-        return _fmt_subtitle_track(track, selected=selected)
+            return _fmt_audio_track(
+                track,
+                selected=selected,
+                downmix=self._downmix[index],
+                relabel_to=self._relabel_target(index),
+            )
+        return _fmt_subtitle_track(track, selected=selected, relabel_to=self._relabel_target(index))
 
     def _refresh_item(self, index: int) -> None:
         label_widget = self.query_one(f"#track-label-{index}", Static)
@@ -434,10 +493,32 @@ class TrackSelectorScreen(Screen[TrackSelection]):
         self._refresh_item(self._cursor)
         self._refresh_detector_panel()
 
+    def action_set_language(self) -> None:
+        if not self._allow_relabel or not self._lang_list or not self._tracks:
+            return
+        idx = self._cursor
+        track = self._tracks[idx]
+
+        def _cb(chosen: str | None) -> None:
+            if chosen is not None:
+                self._lang_override[idx] = chosen
+                self._refresh_item(idx)
+
+        self.app.push_screen(
+            LanguageSelectorScreen(
+                track=track,
+                lang_list=self._lang_list,
+                preview_cb=self._preview_cb,
+                movie=self._movie,
+            ),
+            _cb,
+        )
+
     def action_done(self) -> None:
         selected_tracks = [t for t, sel in zip(self._tracks, self._selected, strict=True) if sel]
         downmix_map = build_downmix_map(self._tracks, self._selected, self._downmix)
-        self.dismiss(TrackSelection(tracks=selected_tracks, downmix=downmix_map))
+        lang_map = build_language_map(self._tracks, self._selected, self._lang_override)
+        self.dismiss(TrackSelection(tracks=selected_tracks, downmix=downmix_map, languages=lang_map))
 
     # ------------------------------------------------------------------
     # Event handlers
@@ -835,6 +916,11 @@ class LanguageSelectorScreen(Screen[str]):
         else:
             codec = t.codec_name.upper()
             desc = f"Subtitle: {codec}"
+
+        # Under --ignore-langs the track keeps its ORIGINAL (possibly wrong) tag;
+        # surface it for orientation. Genuine 'und' tracks show nothing extra.
+        if t.language and t.language != "und":
+            desc = f"{desc}  (tagged: {t.language})"
 
         yield Static(f"{desc}  |  Choose language  (P=preview  D=select)", id="lang-hint")
 

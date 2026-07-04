@@ -1398,6 +1398,35 @@ class TestSelectTracksTui:
         assert len(captured) == 1
         assert isinstance(captured[0], TrackSelectorScreen)
 
+    def test_factory_forwards_relabel_options(self, tmp_path: Path) -> None:
+        """allow_relabel and lang_list are forwarded into the TrackSelectorScreen."""
+        from furnace.cli import _select_tracks_tui
+        from furnace.ui.tui import TrackSelection, TrackSelectorScreen
+
+        movie = make_movie(main_file=tmp_path / "m.mkv")
+        track = make_track(index=1, track_type=TrackType.AUDIO)
+
+        captured: list[Any] = []
+
+        def runner(factory: Callable[[], Any]) -> TrackSelection:
+            captured.append(factory())
+            return TrackSelection(tracks=[], downmix={})
+
+        _select_tracks_tui(
+            movie,
+            [track],
+            TrackType.AUDIO,
+            MagicMock(),
+            allow_relabel=True,
+            lang_list=["jpn", "rus"],
+            app_runner=runner,
+        )
+
+        screen = captured[0]
+        assert isinstance(screen, TrackSelectorScreen)
+        assert screen._allow_relabel is True
+        assert screen._lang_list == ["jpn", "rus"]
+
 
 # ---------------------------------------------------------------------------
 # _select_tracks_tui_for_planner
@@ -1415,6 +1444,7 @@ class TestSelectTracksTuiForPlanner:
         track = make_track(index=1, track_type=TrackType.AUDIO, source_file=tmp_path / "a.mka")
         downmix_key = (track.source_file, track.index)
         downmix_overrides: dict[Any, Any] = {}
+        lang_overrides: dict[Any, Any] = {}
 
         def fake_runner(_app: Any) -> TrackSelection:
             return TrackSelection(tracks=[track], downmix={downmix_key: DownmixMode.STEREO})
@@ -1425,11 +1455,13 @@ class TestSelectTracksTuiForPlanner:
             TrackType.AUDIO,
             MagicMock(),
             downmix_overrides,
+            lang_overrides,
             app_runner=fake_runner,
         )
 
         assert selected == [track]
         assert downmix_overrides == {downmix_key: DownmixMode.STEREO}
+        assert lang_overrides == {}
 
     def test_subtitle_does_not_update_downmix_overrides(self, tmp_path: Path) -> None:
         """For subtitles, downmix overrides are left alone."""
@@ -1439,6 +1471,7 @@ class TestSelectTracksTuiForPlanner:
         movie = make_movie(main_file=tmp_path / "m.mkv")
         track = make_track(index=2, track_type=TrackType.SUBTITLE, codec_name="subrip")
         downmix_overrides: dict[Any, Any] = {}
+        lang_overrides: dict[Any, Any] = {}
 
         def fake_runner(_app: Any) -> TrackSelection:
             return TrackSelection(tracks=[track], downmix={})
@@ -1449,11 +1482,99 @@ class TestSelectTracksTuiForPlanner:
             TrackType.SUBTITLE,
             MagicMock(),
             downmix_overrides,
+            lang_overrides,
             app_runner=fake_runner,
         )
 
         assert selected == [track]
         assert downmix_overrides == {}
+        assert lang_overrides == {}
+
+    def test_audio_merges_languages_and_downmix(self, tmp_path: Path) -> None:
+        """For audio, both the relabel languages and downmix are merged into the shared dicts."""
+        from furnace.cli import _select_tracks_tui_for_planner
+        from furnace.core.models import DownmixMode
+        from furnace.ui.tui import TrackSelection
+
+        movie = make_movie(main_file=tmp_path / "m.mkv")
+        track = make_track(index=1, track_type=TrackType.AUDIO, source_file=tmp_path / "a.mka")
+        key = (track.source_file, track.index)
+        downmix_overrides: dict[Any, Any] = {}
+        lang_overrides: dict[Any, Any] = {}
+
+        def fake_runner(_app: Any) -> TrackSelection:
+            return TrackSelection(
+                tracks=[track],
+                downmix={key: DownmixMode.STEREO},
+                languages={key: "rus"},
+            )
+
+        selected = _select_tracks_tui_for_planner(
+            movie,
+            [track],
+            TrackType.AUDIO,
+            MagicMock(),
+            downmix_overrides,
+            lang_overrides,
+            app_runner=fake_runner,
+        )
+
+        assert selected == [track]
+        assert downmix_overrides == {key: DownmixMode.STEREO}
+        assert lang_overrides == {key: "rus"}
+
+    def test_subtitle_merges_languages_only(self, tmp_path: Path) -> None:
+        """For subtitles, languages merge into the shared dict but downmix is untouched."""
+        from furnace.cli import _select_tracks_tui_for_planner
+        from furnace.ui.tui import TrackSelection
+
+        movie = make_movie(main_file=tmp_path / "m.mkv")
+        track = make_track(index=2, track_type=TrackType.SUBTITLE, codec_name="subrip", source_file=tmp_path / "s.srt")
+        key = (track.source_file, track.index)
+        downmix_overrides: dict[Any, Any] = {}
+        lang_overrides: dict[Any, Any] = {}
+
+        def fake_runner(_app: Any) -> TrackSelection:
+            return TrackSelection(tracks=[track], downmix={}, languages={key: "eng"})
+
+        selected = _select_tracks_tui_for_planner(
+            movie,
+            [track],
+            TrackType.SUBTITLE,
+            MagicMock(),
+            downmix_overrides,
+            lang_overrides,
+            app_runner=fake_runner,
+        )
+
+        assert selected == [track]
+        assert lang_overrides == {key: "eng"}
+        assert downmix_overrides == {}
+
+    def test_forwards_allow_relabel_and_lang_list(self, tmp_path: Path) -> None:
+        """allow_relabel and lang_list are forwarded down into _select_tracks_tui."""
+        from furnace.cli import _select_tracks_tui_for_planner
+        from furnace.ui.tui import TrackSelection
+
+        movie = make_movie(main_file=tmp_path / "m.mkv")
+        track = make_track(index=1, track_type=TrackType.AUDIO, source_file=tmp_path / "a.mka")
+
+        with patch("furnace.cli._select_tracks_tui") as mock_sel:
+            mock_sel.return_value = TrackSelection(tracks=[track], downmix={}, languages={})
+            _select_tracks_tui_for_planner(
+                movie,
+                [track],
+                TrackType.AUDIO,
+                MagicMock(),
+                {},
+                {},
+                allow_relabel=True,
+                lang_list=["jpn", "rus"],
+            )
+
+        kwargs = mock_sel.call_args.kwargs
+        assert kwargs["allow_relabel"] is True
+        assert kwargs["lang_list"] == ["jpn", "rus"]
 
 
 # ---------------------------------------------------------------------------
@@ -1980,6 +2101,148 @@ class TestPlanSelectorClosures:
 
             mock_sel.assert_called_once()
             mock_res.assert_called_once()
+
+    def test_track_selector_forwards_lang_list_and_relabel_under_ignore_langs(self, tmp_path: Path) -> None:
+        """Under -il, the track_selector closure picks audio/sub lang_list by type and forwards allow_relabel=True."""
+        source = tmp_path / "src"
+        source.mkdir()
+        output = tmp_path / "out"
+
+        cfg = _make_tool_paths(tmp_path)
+        plan_obj = make_plan(jobs=[])
+
+        with (
+            patch("furnace.cli.load_config", return_value=cfg),
+            patch("furnace.cli._setup_logging"),
+            patch("furnace.cli.FFmpegAdapter"),
+            patch("furnace.cli.MpvAdapter"),
+            patch("furnace.cli.Eac3toAdapter"),
+            patch("furnace.cli.MakemkvAdapter"),
+            patch("furnace.cli.DiscDemuxer") as mock_demuxer_cls,
+            patch("furnace.cli.Scanner") as mock_scanner_cls,
+            patch("furnace.cli.PlannerService") as mock_planner_cls,
+            patch("furnace.cli.save_plan"),
+            patch("furnace.cli._select_tracks_tui_for_planner") as mock_sel,
+            patch("furnace.cli._resolve_und_language_tui"),
+        ):
+            mock_demuxer_cls.return_value.detect.return_value = []
+            mock_scanner_cls.return_value.scan.return_value = []
+            mock_planner_cls.return_value.create_plan.return_value = plan_obj
+            mock_sel.return_value = []
+
+            result = runner.invoke(
+                app,
+                ["plan", str(source), "-o", str(output), "-al", "rus,eng", "-sl", "jpn", "-il"],
+            )
+            assert result.exit_code == 0, result.output
+
+            selector = mock_planner_cls.call_args.kwargs["track_selector"]
+            movie = make_movie(main_file=source / "m.mkv")
+            audio = make_track(index=1, track_type=TrackType.AUDIO)
+            sub = make_track(index=2, track_type=TrackType.SUBTITLE, codec_name="subrip")
+
+            selector(movie, [audio], TrackType.AUDIO)
+            audio_call = mock_sel.call_args
+            assert audio_call.kwargs["allow_relabel"] is True
+            assert audio_call.kwargs["lang_list"] == ["rus", "eng"]
+
+            selector(movie, [sub], TrackType.SUBTITLE)
+            sub_call = mock_sel.call_args
+            assert sub_call.kwargs["allow_relabel"] is True
+            assert sub_call.kwargs["lang_list"] == ["jpn"]
+
+    def test_track_selector_relabel_false_without_flag(self, tmp_path: Path) -> None:
+        """Without -il, the track_selector closure forwards allow_relabel=False."""
+        source = tmp_path / "src"
+        source.mkdir()
+        output = tmp_path / "out"
+
+        cfg = _make_tool_paths(tmp_path)
+        plan_obj = make_plan(jobs=[])
+
+        with (
+            patch("furnace.cli.load_config", return_value=cfg),
+            patch("furnace.cli._setup_logging"),
+            patch("furnace.cli.FFmpegAdapter"),
+            patch("furnace.cli.MpvAdapter"),
+            patch("furnace.cli.Eac3toAdapter"),
+            patch("furnace.cli.MakemkvAdapter"),
+            patch("furnace.cli.DiscDemuxer") as mock_demuxer_cls,
+            patch("furnace.cli.Scanner") as mock_scanner_cls,
+            patch("furnace.cli.PlannerService") as mock_planner_cls,
+            patch("furnace.cli.save_plan"),
+            patch("furnace.cli._select_tracks_tui_for_planner") as mock_sel,
+            patch("furnace.cli._resolve_und_language_tui"),
+        ):
+            mock_demuxer_cls.return_value.detect.return_value = []
+            mock_scanner_cls.return_value.scan.return_value = []
+            mock_planner_cls.return_value.create_plan.return_value = plan_obj
+            mock_sel.return_value = []
+
+            result = runner.invoke(
+                app,
+                ["plan", str(source), "-o", str(output), "-al", "rus", "-sl", "eng"],
+            )
+            assert result.exit_code == 0, result.output
+
+            selector = mock_planner_cls.call_args.kwargs["track_selector"]
+            movie = make_movie(main_file=source / "m.mkv")
+            audio = make_track(index=1, track_type=TrackType.AUDIO)
+            selector(movie, [audio], TrackType.AUDIO)
+
+            assert mock_sel.call_args.kwargs["allow_relabel"] is False
+            assert mock_sel.call_args.kwargs["lang_list"] == ["rus"]
+
+
+class TestPlanIgnoreLangs:
+    def _run_plan(self, tmp_path: Path, extra_args: list[str]) -> MagicMock:
+        source = tmp_path / "src"
+        source.mkdir()
+        output = tmp_path / "out"
+
+        cfg = _make_tool_paths(tmp_path)
+        plan_obj = make_plan(jobs=[])
+
+        with (
+            patch("furnace.cli.load_config", return_value=cfg),
+            patch("furnace.cli._setup_logging"),
+            patch("furnace.cli.FFmpegAdapter"),
+            patch("furnace.cli.MpvAdapter"),
+            patch("furnace.cli.Eac3toAdapter"),
+            patch("furnace.cli.MakemkvAdapter"),
+            patch("furnace.cli.DiscDemuxer") as mock_demuxer_cls,
+            patch("furnace.cli.Scanner") as mock_scanner_cls,
+            patch("furnace.cli.PlannerService") as mock_planner_cls,
+        ):
+            mock_demuxer_cls.return_value.detect.return_value = []
+            mock_scanner_cls.return_value.scan.return_value = []
+            mock_planner_cls.return_value.create_plan.return_value = plan_obj
+
+            result = runner.invoke(
+                app,
+                ["plan", str(source), "-o", str(output), "-al", "eng", "-sl", "eng", "--dry-run", *extra_args],
+            )
+            assert result.exit_code == 0, result.output
+        return mock_planner_cls
+
+    def test_ignore_langs_long_flag_sets_planner_and_lang_overrides(self, tmp_path: Path) -> None:
+        """--ignore-langs sets PlannerService(ignore_langs=True) and passes lang_overrides to create_plan."""
+        mock_planner_cls = self._run_plan(tmp_path, ["--ignore-langs"])
+        assert mock_planner_cls.call_args.kwargs["ignore_langs"] is True
+        call_kwargs = mock_planner_cls.return_value.create_plan.call_args.kwargs
+        assert call_kwargs["lang_overrides"] == {}
+
+    def test_ignore_langs_short_flag(self, tmp_path: Path) -> None:
+        """The -il short flag also enables ignore_langs."""
+        mock_planner_cls = self._run_plan(tmp_path, ["-il"])
+        assert mock_planner_cls.call_args.kwargs["ignore_langs"] is True
+
+    def test_ignore_langs_defaults_false(self, tmp_path: Path) -> None:
+        """Without the flag, ignore_langs is False and lang_overrides is an empty dict."""
+        mock_planner_cls = self._run_plan(tmp_path, [])
+        assert mock_planner_cls.call_args.kwargs["ignore_langs"] is False
+        call_kwargs = mock_planner_cls.return_value.create_plan.call_args.kwargs
+        assert call_kwargs["lang_overrides"] == {}
 
 
 class TestPlanDiscInteractive:

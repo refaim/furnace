@@ -95,11 +95,14 @@ class PlannerService:
         track_selector: TrackSelectorFn | None = None,  # None = include all (headless)
         und_resolver: UndLanguageResolverFn | None = None,
         reporter: PlanReporter | None = None,
+        *,
+        ignore_langs: bool = False,
     ) -> None:
         self._previewer = previewer
         self._track_selector = track_selector
         self._und_resolver = und_resolver
         self._reporter = reporter
+        self._ignore_langs = ignore_langs
 
     def create_plan(
         self,
@@ -110,6 +113,7 @@ class PlannerService:
         vmaf_enabled: bool,
         sar_overrides: set[Path] | None = None,
         downmix_overrides: dict[tuple[Path, int], DownmixMode] | None = None,
+        lang_overrides: dict[tuple[Path, int], str] | None = None,
         precomputed_crops: dict[Path, CropRect] | None = None,
         copy_video: bool = False,
     ) -> Plan:
@@ -136,6 +140,9 @@ class PlannerService:
         effective_overrides: dict[tuple[Path, int], DownmixMode] = (
             downmix_overrides if downmix_overrides is not None else {}
         )
+        effective_lang_overrides: dict[tuple[Path, int], str] = (
+            lang_overrides if lang_overrides is not None else {}
+        )
         effective_sar_overrides: set[Path] = sar_overrides if sar_overrides is not None else set()
         effective_crops: dict[Path, CropRect] = precomputed_crops if precomputed_crops is not None else {}
 
@@ -149,6 +156,7 @@ class PlannerService:
                 sub_lang_filter,
                 sar_overrides=effective_sar_overrides,
                 downmix_overrides=effective_overrides,
+                lang_overrides=effective_lang_overrides,
                 precomputed_crops=effective_crops,
                 copy_video=copy_video,
             )
@@ -180,6 +188,7 @@ class PlannerService:
         *,
         sar_overrides: set[Path],
         downmix_overrides: dict[tuple[Path, int], DownmixMode],
+        lang_overrides: dict[tuple[Path, int], str],
         precomputed_crops: dict[Path, CropRect],
         copy_video: bool = False,
     ) -> tuple[Job, str | None]:
@@ -239,10 +248,14 @@ class PlannerService:
                 )
                 selected_subs = sub_candidates
 
-        # Resolve und languages for selected audio
-        if self._und_resolver is not None:
+        # Assign languages for selected audio: relabel under --ignore-langs,
+        # otherwise resolve any 'und' tracks via the resolver.
+        if self._ignore_langs:
+            selected_audio = self._assign_languages_relabel(selected_audio, audio_lang_filter, lang_overrides)
+            selected_audio = self._sort_and_set_default(selected_audio, audio_lang_filter, ignore_langs=False)
+        elif self._und_resolver is not None:
             selected_audio = self._resolve_und_languages(movie, selected_audio, audio_lang_filter, self._und_resolver)
-            selected_audio = self._sort_and_set_default(selected_audio, audio_lang_filter)
+            selected_audio = self._sort_and_set_default(selected_audio, audio_lang_filter, ignore_langs=False)
 
         # Build audio instructions
         audio_instructions: list[AudioInstruction] = []
@@ -253,10 +266,14 @@ class PlannerService:
             audio_instr = self._build_audio_instruction(track, is_default=is_default, downmix=track_downmix)
             audio_instructions.append(audio_instr)
 
-        # Resolve und languages for selected subs
-        if self._und_resolver is not None:
+        # Assign languages for selected subs: relabel under --ignore-langs,
+        # otherwise resolve any 'und' tracks via the resolver.
+        if self._ignore_langs:
+            selected_subs = self._assign_languages_relabel(selected_subs, sub_lang_filter, lang_overrides)
+            selected_subs = self._sort_and_set_default(selected_subs, sub_lang_filter, ignore_langs=False)
+        elif self._und_resolver is not None:
             selected_subs = self._resolve_und_languages(movie, selected_subs, sub_lang_filter, self._und_resolver)
-            selected_subs = self._sort_and_set_default(selected_subs, sub_lang_filter)
+            selected_subs = self._sort_and_set_default(selected_subs, sub_lang_filter, ignore_langs=False)
 
         # Build subtitle instructions
         sub_instructions: list[SubtitleInstruction] = []
@@ -301,14 +318,19 @@ class PlannerService:
         )
         return job, fallback_reason
 
+    def _eff_lang(self, track: Track) -> str:
+        """Effective language for filtering/grouping. Under --ignore-langs every
+        track is treated as 'und' so nothing is dropped and all tracks group together."""
+        return "und" if self._ignore_langs else track.language
+
     def _filter_audio_tracks_by_lang(
         self,
         tracks: list[Track],
         lang_filter: list[str],
     ) -> list[Track]:
         """Filter audio tracks: keep matching languages + 'und', sort by lang_filter order."""
-        filtered = [t for t in tracks if t.language in lang_filter or t.language == "und"]
-        return self._sort_and_set_default(filtered, lang_filter)
+        filtered = [t for t in tracks if self._eff_lang(t) in lang_filter or self._eff_lang(t) == "und"]
+        return self._sort_and_set_default(filtered, lang_filter, ignore_langs=self._ignore_langs)
 
     def _filter_sub_tracks_by_lang(
         self,
@@ -316,21 +338,45 @@ class PlannerService:
         lang_filter: list[str],
     ) -> list[Track]:
         """Filter subtitle tracks: keep matching languages + 'und', discard forced, sort by lang_filter order."""
-        filtered = [t for t in tracks if not t.is_forced and (t.language in lang_filter or t.language == "und")]
-        return self._sort_and_set_default(filtered, lang_filter)
+        filtered = [
+            t for t in tracks if not t.is_forced and (self._eff_lang(t) in lang_filter or self._eff_lang(t) == "und")
+        ]
+        return self._sort_and_set_default(filtered, lang_filter, ignore_langs=self._ignore_langs)
 
     def _sort_and_set_default(
         self,
         tracks: list[Track],
         lang_filter: list[str],
+        *,
+        ignore_langs: bool,
     ) -> list[Track]:
-        """Sort tracks by lang_filter order and set is_default on the first."""
+        """Sort tracks by lang_filter order and set is_default on the first.
+
+        Under ``ignore_langs`` the sort is skipped so source order is preserved
+        (the TUI selector then shows tracks in their original order).
+        """
         if not tracks:
             return tracks
-        lang_order = {lang: i for i, lang in enumerate(lang_filter)}
-        tracks.sort(key=lambda t: lang_order.get(t.language, len(lang_filter)))
+        if not ignore_langs:
+            lang_order = {lang: i for i, lang in enumerate(lang_filter)}
+            tracks.sort(key=lambda t: lang_order.get(t.language, len(lang_filter)))
         for i, t in enumerate(tracks):
             t.is_default = i == 0
+        return tracks
+
+    def _assign_languages_relabel(
+        self,
+        tracks: list[Track],
+        lang_filter: list[str],
+        lang_overrides: dict[tuple[Path, int], str],
+    ) -> list[Track]:
+        """Under --ignore-langs, set each selected track's language to its explicit
+        'l'-override, else the first target language (``lang_filter[0]``, or 'und'
+        if the filter is empty)."""
+        default = lang_filter[0] if lang_filter else "und"
+        for t in tracks:
+            key = (Path(t.source_file), t.index)
+            t.language = lang_overrides.get(key, default)
         return tracks
 
     def _resolve_und_languages(
@@ -374,7 +420,7 @@ class PlannerService:
 
         lang_groups: dict[str, list[Track]] = {}
         for track in candidates:
-            lang_groups.setdefault(track.language, []).append(track)
+            lang_groups.setdefault(self._eff_lang(track), []).append(track)
 
         for group in lang_groups.values():
             if len(group) > 1:
