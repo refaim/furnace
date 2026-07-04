@@ -2910,7 +2910,7 @@ class TestScanCommand:
 
     def test_unreadable_rows_become_warnings(self, tmp_path: Path) -> None:
         """Each unreadable row is surfaced as a stderr warning; readable rows are not."""
-        from furnace.core.scan import ScanRow
+        from furnace.core.scan import ScanRow, VideoSummary
 
         src = tmp_path / "movies"
         src.mkdir()
@@ -2918,14 +2918,14 @@ class TestScanCommand:
         good = ScanRow(
             path=src / "good.mkv",
             furnace_version=(1, 0, 0),
-            video_codec="hevc",
+            video=VideoSummary(codec="hevc", bit_depth=10, hdr="SDR"),
             audio=(),
             subtitles=(),
         )
         bad = ScanRow(
             path=src / "bad.mkv",
             furnace_version=None,
-            video_codec=None,
+            video=VideoSummary(None, None, None),
             audio=(),
             subtitles=(),
             unreadable=True,
@@ -2947,7 +2947,7 @@ class TestScanCommand:
         assert all("good.mkv" not in w for w in warnings)
 
     def test_rows_forwarded_to_renderer(self, tmp_path: Path) -> None:
-        from furnace.core.scan import ScanRow
+        from furnace.core.scan import ScanRow, VideoSummary
 
         src = tmp_path / "movies"
         src.mkdir()
@@ -2955,7 +2955,7 @@ class TestScanCommand:
         row = ScanRow(
             path=src / "a.mkv",
             furnace_version=(1, 0, 0),
-            video_codec="hevc",
+            video=VideoSummary(codec="hevc", bit_depth=10, hdr="SDR"),
             audio=(),
             subtitles=(),
         )

@@ -23,7 +23,7 @@ from rich.box import ASCII
 from rich.console import Console
 from rich.table import Table
 
-from furnace.core.scan import AudioTrackSummary, ScanRow, SubtitleTrackSummary
+from furnace.core.scan import AudioTrackSummary, ScanRow, SubtitleTrackSummary, VideoSummary
 
 # Placeholder for an absent value — no video stream, or any stream column on an
 # unreadable row. The em-dash is content (not box-drawing), so it is allowed.
@@ -62,6 +62,16 @@ def _subtitle_line(track: SubtitleTrackSummary) -> str:
     return f"{lang} {track.codec}"
 
 
+def _video_cell(video: VideoSummary) -> str:
+    """The Video column text: ``—`` with no stream, ``codec`` when the bit depth
+    is unknown, else ``codec Nbit`` (e.g. ``hevc 10bit``)."""
+    if video.codec is None:
+        return _NONE
+    if video.bit_depth is None:
+        return video.codec
+    return f"{video.codec} {video.bit_depth}bit"
+
+
 def _status(row: ScanRow) -> str:
     if row.unreadable:
         return "unreadable"
@@ -71,8 +81,8 @@ def _status(row: ScanRow) -> str:
     return "not encoded"
 
 
-def _cells(row: ScanRow, root: Path) -> tuple[str, str, str, str, str]:
-    """The five table cells (File, Status, Video, Audio, Subs) for one row.
+def _cells(row: ScanRow, root: Path) -> tuple[str, str, str, str, str, str]:
+    """The six table cells (File, Status, Video, HDR, Audio, Subs) for one row.
 
     An unreadable row shows its path and ``unreadable`` status, with ``—`` in
     every stream column regardless of any stale stream fields.
@@ -80,11 +90,12 @@ def _cells(row: ScanRow, root: Path) -> tuple[str, str, str, str, str]:
     file_cell = _rel_path(row.path, root)
     status = _status(row)
     if row.unreadable:
-        return file_cell, status, _NONE, _NONE, _NONE
-    video = row.video_codec or _NONE
+        return file_cell, status, _NONE, _NONE, _NONE, _NONE
+    video = _video_cell(row.video)
+    hdr = row.video.hdr or _NONE
     audio = "\n".join(_audio_line(t) for t in row.audio) or _NONE
     subs = "\n".join(_subtitle_line(t) for t in row.subtitles) or _NONE
-    return file_cell, status, video, audio, subs
+    return file_cell, status, video, hdr, audio, subs
 
 
 def render_scan_table(
@@ -111,6 +122,7 @@ def render_scan_table(
     table.add_column("File", no_wrap=True)
     table.add_column("Status", no_wrap=True)
     table.add_column("Video", no_wrap=True)
+    table.add_column("HDR", no_wrap=True)
     table.add_column("Audio", no_wrap=True)
     table.add_column("Subs", no_wrap=True)
     for row in rows:

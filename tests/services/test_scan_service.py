@@ -6,7 +6,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from furnace.core.scan import AudioTrackSummary, ScanRow, SubtitleTrackSummary
+from furnace.core.scan import AudioTrackSummary, ScanRow, SubtitleTrackSummary, VideoSummary
 from furnace.services.scan_service import ScanService
 
 # ---------------------------------------------------------------------------
@@ -18,13 +18,20 @@ def make_probe(
     *,
     encoder: str | None = None,
     video: str | None = "hevc",
+    pix_fmt: str | None = None,
+    color_transfer: str | None = None,
     audios: tuple[tuple[str | None, str, int | None], ...] = (),
     subs: tuple[tuple[str | None, str], ...] = (),
 ) -> dict[str, Any]:
     """Build a minimal ffprobe-style JSON payload."""
     streams: list[dict[str, Any]] = []
     if video is not None:
-        streams.append({"codec_type": "video", "codec_name": video})
+        vs: dict[str, Any] = {"codec_type": "video", "codec_name": video}
+        if pix_fmt is not None:
+            vs["pix_fmt"] = pix_fmt
+        if color_transfer is not None:
+            vs["color_transfer"] = color_transfer
+        streams.append(vs)
     for lang, codec, channels in audios:
         s: dict[str, Any] = {"codec_type": "audio", "codec_name": codec, "channels": channels}
         if lang is not None:
@@ -60,6 +67,8 @@ class TestRowBuilding:
         probe = make_probe(
             encoder="Furnace v1.19.3",
             video="hevc",
+            pix_fmt="yuv420p10le",
+            color_transfer="smpte2084",
             audios=(("rus", "eac3", 6), (None, "aac", 2)),
             subs=(("eng", "subrip"),),
         )
@@ -71,7 +80,7 @@ class TestRowBuilding:
             ScanRow(
                 path=movie,
                 furnace_version=(1, 19, 3),
-                video_codec="hevc",
+                video=VideoSummary(codec="hevc", bit_depth=10, hdr="HDR10"),
                 audio=(
                     AudioTrackSummary(language="rus", codec="eac3", channels=6),
                     AudioTrackSummary(language=None, codec="aac", channels=2),
@@ -89,7 +98,7 @@ class TestRowBuilding:
         rows, _ = service.scan(movie)
 
         assert rows[0].furnace_version is None
-        assert rows[0].video_codec == "h264"
+        assert rows[0].video.codec == "h264"
 
     def test_lowercase_encoder_tag_is_parsed(self, tmp_path: Path) -> None:
         """A Furnace tag under the lowercase ``encoder`` key is still detected."""
@@ -127,7 +136,7 @@ class TestRowBuilding:
 
         rows, _ = service.scan(movie)
 
-        assert rows[0].video_codec is None
+        assert rows[0].video == VideoSummary(None, None, None)
 
 
 # ---------------------------------------------------------------------------
@@ -299,7 +308,7 @@ class TestUnreadable:
             ScanRow(
                 path=movie,
                 furnace_version=None,
-                video_codec=None,
+                video=VideoSummary(None, None, None),
                 audio=(),
                 subtitles=(),
                 unreadable=True,

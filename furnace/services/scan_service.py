@@ -4,7 +4,13 @@ import logging
 from pathlib import Path
 
 from furnace.core.ports import Prober
-from furnace.core.scan import ScanRow, parse_furnace_version, row_matches, summarize_streams
+from furnace.core.scan import (
+    ScanRow,
+    VideoSummary,
+    parse_furnace_version,
+    row_matches,
+    summarize_streams,
+)
 from furnace.services.scanner import VIDEO_EXTENSIONS
 
 logger = logging.getLogger(__name__)
@@ -77,7 +83,7 @@ class ScanService:
                     ScanRow(
                         path=path,
                         furnace_version=None,
-                        video_codec=None,
+                        video=VideoSummary(None, None, None),
                         audio=(),
                         subtitles=(),
                         unreadable=True,
@@ -98,12 +104,12 @@ class ScanService:
             ):
                 continue
 
-            video_codec, audio, subtitles = summarize_streams(probe_json)
+            video, audio, subtitles = summarize_streams(probe_json)
             rows.append(
                 ScanRow(
                     path=path,
                     furnace_version=version,
-                    video_codec=video_codec,
+                    video=video,
                     audio=audio,
                     subtitles=subtitles,
                 )

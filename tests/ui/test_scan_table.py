@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from furnace.core.scan import AudioTrackSummary, ScanRow, SubtitleTrackSummary
+from furnace.core.scan import AudioTrackSummary, ScanRow, SubtitleTrackSummary, VideoSummary
 from furnace.ui.scan_table import render_scan_table
 
 # Unicode box-drawing characters that must never appear in redirect-safe output.
@@ -25,6 +25,8 @@ def _row(
     *,
     version: tuple[int, int, int] | None = None,
     video: str | None = "hevc",
+    bit_depth: int | None = None,
+    hdr: str | None = "SDR",
     audio: tuple[AudioTrackSummary, ...] = (),
     subtitles: tuple[SubtitleTrackSummary, ...] = (),
     unreadable: bool = False,
@@ -32,7 +34,7 @@ def _row(
     return ScanRow(
         path=Path(path),
         furnace_version=version,
-        video_codec=video,
+        video=VideoSummary(codec=video, bit_depth=bit_depth, hdr=hdr),
         audio=audio,
         subtitles=subtitles,
         unreadable=unreadable,
@@ -116,24 +118,46 @@ class TestColumns:
         out, _ = _render(rows, root=root)
         assert "not encoded" in out
 
-    def test_video_codec_shown(self) -> None:
+    def test_video_bare_codec_shown(self) -> None:
         root = Path("/movies")
-        rows = [_row("/movies/a.mkv", version=None, video="h264")]
+        # bit_depth None → the Video cell is just the bare codec, no "Nbit" suffix.
+        rows = [_row("/movies/a.mkv", version=None, video="h264", bit_depth=None)]
         out, _ = _render(rows, root=root)
         assert "h264" in out
+        assert "bit" not in out
 
-    def test_no_video_stream_shows_dash(self) -> None:
+    def test_video_codec_with_bit_depth_shown(self) -> None:
         root = Path("/movies")
-        # Only the video column is empty, so the lone dash must come from it.
+        rows = [_row("/movies/a.mkv", version=None, video="hevc", bit_depth=10)]
+        out, _ = _render(rows, root=root)
+        assert "hevc 10bit" in out
+
+    def test_hdr_column_label_shown(self) -> None:
+        root = Path("/movies")
+        rows = [_row("/movies/a.mkv", version=None, video="hevc", bit_depth=10, hdr="HDR10")]
+        out, _ = _render(rows, root=root)
+        assert "HDR10" in out
+
+    def test_hdr_column_header_present(self) -> None:
+        root = Path("/movies")
+        rows = [_row("/movies/a.mkv", version=None)]
+        out, _ = _render(rows, root=root)
+        assert "HDR" in out
+
+    def test_no_video_stream_shows_dash_in_video_and_hdr(self) -> None:
+        root = Path("/movies")
+        # No video stream → both the Video and HDR columns are dashes.
         rows = [_row(
             "/movies/a.mka",
             version=None,
             video=None,
+            bit_depth=None,
+            hdr=None,
             audio=(AudioTrackSummary(language="eng", codec="aac", channels=2),),
             subtitles=(SubtitleTrackSummary(language="eng", codec="subrip"),),
         )]
         out, _ = _render(rows, root=root)
-        assert out.count("—") == 1  # exactly the video column
+        assert out.count("—") == 2  # exactly the Video and HDR columns
 
     def test_audio_line_with_channels(self) -> None:
         root = Path("/movies")
