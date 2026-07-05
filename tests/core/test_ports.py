@@ -49,6 +49,9 @@ class _MinimalProber:
     def probe_hdr_side_data(self, path: Path) -> list[dict[str, Any]]:  # noqa: ARG002
         return []
 
+    def sample_repeat_pict(self, path: Path, duration_s: float) -> list[int]:  # noqa: ARG002
+        return []
+
     def profile_audio_track(
         self,
         path: Path,  # noqa: ARG002
@@ -98,6 +101,21 @@ def test_prober_profile_audio_track_signature() -> None:
     assert hints["return"] is AudioMetrics
 
 
+def test_prober_has_sample_repeat_pict() -> None:
+    assert hasattr(Prober, "sample_repeat_pict")
+    assert callable(Prober.sample_repeat_pict)
+
+
+def test_prober_sample_repeat_pict_signature() -> None:
+    sig = inspect.signature(Prober.sample_repeat_pict)
+    assert list(sig.parameters) == ["self", "path", "duration_s"]
+
+    hints = typing.get_type_hints(Prober.sample_repeat_pict)
+    assert hints["path"] is Path
+    assert hints["duration_s"] is float
+    assert hints["return"] == list[int]
+
+
 def test_prober_detect_crop_signature_includes_hdr_transfer() -> None:
     sig = inspect.signature(Prober.detect_crop)
     params = sig.parameters
@@ -141,6 +159,7 @@ def test_minimal_prober_method_surface() -> None:
     assert stub.get_encoder_tag(Path("/dev/null")) is None
     assert stub.run_idet(Path("/dev/null"), 60.0) == 0.0
     assert stub.probe_hdr_side_data(Path("/dev/null")) == []
+    assert stub.sample_repeat_pict(Path("/dev/null"), 60.0) == []
 
 
 class _MinimalAudioExtractor:

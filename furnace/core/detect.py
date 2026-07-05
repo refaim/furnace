@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import contextlib
 import enum
+import math
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -393,6 +395,62 @@ def should_deinterlace(field_order: str | None, fps: float, idet_ratio: float, h
     if fps >= _TV_FPS_THRESHOLD or _is_hd(height):
         return True
     return idet_ratio > _IDET_INTERLACE_THRESHOLD
+
+
+# NTSC display rate is 30000/1001 (or a whole 30/1 on sloppy authorings);
+# anything inside this window is a candidate for 2:3 soft pulldown.
+_NTSC_FPS_MIN = 29.9
+_NTSC_FPS_MAX = 30.1
+# 2:3 pulldown maps 4 film frames onto 5 display frames, so the coded/display
+# ratio is exactly 4/5. Real discs jitter at scene cuts; ±0.02 tolerates that
+# while still rejecting hybrid film/video content (which must keep the
+# display rate — no single CFR pin is correct for it).
+_PULLDOWN_TARGET_RATIO = 4 / 5
+_PULLDOWN_RATIO_TOLERANCE = 0.02
+_MIN_PULLDOWN_SAMPLE = 100  # fewer sampled frames than this is too noisy
+
+
+def needs_pulldown_probe(codec_name: str, fps_num: int, fps_den: int, height: int) -> bool:
+    """Determine if a source may hide soft telecine behind its display rate.
+
+    True only for SD MPEG-2 at an NTSC rate — the NTSC-DVD shape. Such a
+    stream can be soft-telecined film: progressive 24000/1001 frames plus
+    repeat_first_field flags, with ffprobe reporting the 30000/1001 display
+    rate. The encoder (avsw decode) ignores the flags and emits the coded
+    film frames, so the plan must carry the coded rate — otherwise the muxed
+    track plays 25% fast and drifts out of sync with the audio. PAL has no
+    pulldown and HD MPEG-2 (ATSC broadcast) is outside the DVD domain.
+    """
+    if codec_name != "mpeg2video":
+        return False
+    if _is_hd(height):
+        return False
+    fps = fps_num / fps_den
+    return _NTSC_FPS_MIN <= fps <= _NTSC_FPS_MAX
+
+
+def detect_soft_telecine(fps_num: int, fps_den: int, repeat_picts: Sequence[int]) -> tuple[int, int] | None:
+    """Derive the coded film rate from sampled repeat_pict flags.
+
+    ``repeat_picts`` holds the decoder's repeat_pict value per sampled frame
+    (0 = plain frame, 1 = one repeated field). Each frame displays
+    ``2 + repeat_pict`` fields, so the coded/display frame-rate ratio is
+    ``2*n / sum(2 + r)``. When that ratio matches the 2:3-pulldown 4/5 within
+    tolerance, the source is soft-telecined film and the coded rate is
+    exactly ``fps * 4/5`` (30000/1001 → 24000/1001), returned as a reduced
+    fraction. Returns None — keep the display rate — for anything else:
+    no RFF flags (true interlace or hard telecine), a non-2:3 cadence
+    (hybrid discs), or a sample too small to trust.
+    """
+    if len(repeat_picts) < _MIN_PULLDOWN_SAMPLE:
+        return None
+    fields = sum(2 + r for r in repeat_picts)
+    ratio = 2 * len(repeat_picts) / fields
+    if abs(ratio - _PULLDOWN_TARGET_RATIO) > _PULLDOWN_RATIO_TOLERANCE:
+        return None
+    num, den = fps_num * 4, fps_den * 5
+    common = math.gcd(num, den)
+    return num // common, den // common
 
 
 def _fraction_numerator(val: str) -> str:

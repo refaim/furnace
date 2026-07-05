@@ -450,6 +450,55 @@ class FFmpegAdapter:
         side_data: list[dict[str, Any]] = frames[0].get("side_data_list", [])
         return side_data
 
+    def sample_repeat_pict(self, path: Path, duration_s: float) -> list[int]:
+        """Sample repeat_pict flags: 500 frames at 10/30/50/70/90% of duration.
+
+        Uses: ffprobe -v quiet -print_format json -select_streams v:0
+              -show_frames -show_entries frame=repeat_pict
+              -read_intervals "SEEK%+#500" path
+
+        Fail-soft per window (ffprobe error or unparseable JSON skips that
+        window): a partial sample still lets the caller detect pulldown, and
+        an empty one degrades to "no telecine detected".
+        """
+        points = (0.10, 0.30, 0.50, 0.70, 0.90)
+        flags: list[int] = []
+
+        for pct in points:
+            seek = duration_s * pct
+            cmd = [
+                str(self._ffprobe),
+                "-v",
+                "quiet",
+                "-print_format",
+                "json",
+                "-select_streams",
+                "v:0",
+                "-show_frames",
+                "-show_entries",
+                "frame=repeat_pict",
+                "-read_intervals",
+                f"{seek:.2f}%+#500",
+                str(path),
+            ]
+            logger.debug("sample_repeat_pict cmd: %s", cmd)
+            result = subprocess.run(
+                cmd, capture_output=True, text=True,
+                encoding="utf-8", errors="replace", check=False,
+            )
+            if result.returncode != 0:
+                logger.warning("sample_repeat_pict window at %.2fs failed (rc=%d)", seek, result.returncode)
+                continue
+            try:
+                data: dict[str, Any] = json.loads(result.stdout)
+                window_flags = [int(frame.get("repeat_pict", 0)) for frame in data.get("frames", [])]
+            except ValueError:
+                logger.warning("sample_repeat_pict window at %.2fs returned unparseable data", seek)
+                continue
+            flags.extend(window_flags)
+
+        return flags
+
     # ------------------------------------------------------------------
     # VideoCopier
     # ------------------------------------------------------------------

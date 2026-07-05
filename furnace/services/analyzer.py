@@ -13,7 +13,9 @@ from furnace.core.detect import (
     check_unsupported_codecs,
     detect_forced_subtitles,
     detect_hdr,
+    detect_soft_telecine,
     needs_idet,
+    needs_pulldown_probe,
     should_deinterlace,
     should_skip_file,
 )
@@ -110,10 +112,11 @@ class Analyzer:
           is HDR10+.
 
         ``on_progress`` (when supplied) receives the analyze-phase fraction in
-        ``[0, 1]``: it advances by one step per completed heavy stage (idet, then
-        one per profileable audio track) and is called once more with ``1.0``
-        when analysis finishes. Files with no heavy stages report only the final
-        ``1.0``. Used by the parallel pipeline to drive a smooth batch bar.
+        ``[0, 1]``: it advances by one step per completed heavy stage (idet, the
+        pulldown probe, then one per profileable audio track) and is called once
+        more with ``1.0`` when analysis finishes. Files with no heavy stages
+        report only the final ``1.0``. Used by the parallel pipeline to drive a
+        smooth batch bar.
         """
         main_file = scan_result.main_file
         output_path = scan_result.output_path
@@ -200,11 +203,15 @@ class Analyzer:
         fps = r_num / r_den if r_den else 0.0
 
         # Plan the heavy analysis stages so the batch progress bar advances across
-        # them: idet (when needed) plus one per profileable audio track. ``_emit``
-        # reports the running fraction after each stage completes.
+        # them: idet (when needed), the pulldown probe (when needed) plus one per
+        # profileable audio track. ``_emit`` reports the running fraction after
+        # each stage completes.
         idet_will_run = needs_idet(field_order_raw, fps, video_info.height)
+        pulldown_will_run = needs_pulldown_probe(
+            video_info.codec_name, video_info.fps_num, video_info.fps_den, video_info.height,
+        )
         n_profileable = sum(1 for t in audio_tracks if t.channels in _PROFILEABLE_CHANNEL_COUNTS)
-        total_stages = (1 if idet_will_run else 0) + n_profileable
+        total_stages = (1 if idet_will_run else 0) + (1 if pulldown_will_run else 0) + n_profileable
         stages_done = 0
 
         def _emit() -> None:
@@ -225,6 +232,28 @@ class Analyzer:
             logger.info("%s: interlaced content detected", name)
         else:
             logger.debug("%s: progressive content", name)
+
+        # Soft telecine: an NTSC DVD can hide 24000/1001 film behind pulldown
+        # flags. NVEncC's decode ignores the flags and encodes the coded film
+        # frames, so the plan must carry the coded rate — with the display rate
+        # the muxed track plays 25% fast and drifts out of sync with the audio.
+        # Runs even when deinterlacing: nnedi is single-rate, so the encoder
+        # still emits one frame per coded frame. Fail-soft like idet.
+        if pulldown_will_run:
+            film_rate = None
+            try:
+                repeat_picts = self._prober.sample_repeat_pict(main_file, video_info.duration_s)
+                film_rate = detect_soft_telecine(video_info.fps_num, video_info.fps_den, repeat_picts)
+            except (OSError, RuntimeError, ValueError) as exc:
+                logger.warning("pulldown probe failed for %s: %s", name, exc)
+            if film_rate is not None:
+                video_info.fps_num, video_info.fps_den = film_rate
+                logger.info(
+                    "%s: soft telecine detected, using coded film rate %d/%d",
+                    name, video_info.fps_num, video_info.fps_den,
+                )
+            stages_done += 1
+            _emit()
 
         # Detect forced subtitles (in-place mutation)
         detect_forced_subtitles(subtitle_tracks)

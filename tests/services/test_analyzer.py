@@ -32,6 +32,7 @@ def make_prober(
     prober.probe.return_value = probe_data or {}
     prober.run_idet.return_value = 0.0
     prober.probe_hdr_side_data.return_value = hdr_side_data or []
+    prober.sample_repeat_pict.return_value = []
     return prober
 
 
@@ -1003,6 +1004,144 @@ class TestIdetPath:
         assert movie is not None
         assert movie.video.interlaced is True
         prober.run_idet.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Soft telecine (NTSC DVD pulldown) path
+# ---------------------------------------------------------------------------
+
+
+def _ntsc_dvd_probe_data(field_order: str = "tt") -> dict[str, Any]:
+    """NTSC DVD shape: SD MPEG-2 reporting the 30000/1001 display rate."""
+    return {
+        "streams": [
+            {
+                "index": 0,
+                "codec_type": "video",
+                "codec_name": "mpeg2video",
+                "width": 720,
+                "height": 480,
+                "avg_frame_rate": "30000/1001",
+                "r_frame_rate": "30000/1001",
+                "duration": "4889.0",
+                "field_order": field_order,
+                "pix_fmt": "yuv420p",
+            },
+        ],
+        "format": {"duration": "4889.0"},
+        "chapters": [],
+    }
+
+
+class TestSoftTelecinePath:
+    """NTSC SD MPEG-2 sources are probed for soft telecine; on a 2:3 cadence
+    the plan carries the coded film rate instead of the display rate, so the
+    raw AV1 OBU gets muxed at the rate NVEncC actually encoded."""
+
+    def test_soft_telecine_overrides_fps_to_film_rate(self, tmp_path: Path) -> None:
+        scan_result = make_scan_result(tmp_path)
+        prober = make_prober(probe_data=_ntsc_dvd_probe_data())
+        prober.sample_repeat_pict.return_value = [0, 1] * 250
+
+        with patch("furnace.services.analyzer.should_skip_file", return_value=(False, "")):
+            outcome = Analyzer(prober=prober).analyze(scan_result)
+
+        assert outcome.status is AnalyzeStatus.DONE
+        movie = outcome.movie
+        assert movie is not None
+        assert (movie.video.fps_num, movie.video.fps_den) == (24000, 1001)
+        prober.sample_repeat_pict.assert_called_once_with(
+            scan_result.main_file, 4889.0,
+        )
+        # Summary reflects the corrected film rate (23fps by integer display).
+        assert outcome.detail == "mpeg2video 720x480 23fps SDR, 0 audio, 0 subs"
+
+    def test_no_rff_flags_keeps_display_rate(self, tmp_path: Path) -> None:
+        """Hard telecine / true interlace (no RFF) → display rate untouched."""
+        scan_result = make_scan_result(tmp_path)
+        prober = make_prober(probe_data=_ntsc_dvd_probe_data())
+        prober.sample_repeat_pict.return_value = [0] * 500
+
+        with patch("furnace.services.analyzer.should_skip_file", return_value=(False, "")):
+            outcome = Analyzer(prober=prober).analyze(scan_result)
+
+        assert outcome.status is AnalyzeStatus.DONE
+        movie = outcome.movie
+        assert movie is not None
+        assert (movie.video.fps_num, movie.video.fps_den) == (30000, 1001)
+
+    def test_non_mpeg2_never_probed(self, tmp_path: Path) -> None:
+        """h264 at NTSC rate is outside the DVD domain → no pulldown probe."""
+        scan_result = make_scan_result(tmp_path)
+        probe_data = _ntsc_dvd_probe_data()
+        probe_data["streams"][0]["codec_name"] = "h264"
+        prober = make_prober(probe_data=probe_data)
+
+        with patch("furnace.services.analyzer.should_skip_file", return_value=(False, "")):
+            outcome = Analyzer(prober=prober).analyze(scan_result)
+
+        assert outcome.status is AnalyzeStatus.DONE
+        prober.sample_repeat_pict.assert_not_called()
+
+    def test_pal_dvd_never_probed(self, tmp_path: Path) -> None:
+        """PAL DVD (25 fps) has no pulldown → no probe."""
+        scan_result = make_scan_result(tmp_path)
+        probe_data = _ntsc_dvd_probe_data()
+        probe_data["streams"][0]["height"] = 576
+        probe_data["streams"][0]["avg_frame_rate"] = "25/1"
+        probe_data["streams"][0]["r_frame_rate"] = "25/1"
+        prober = make_prober(probe_data=probe_data)
+
+        with patch("furnace.services.analyzer.should_skip_file", return_value=(False, "")):
+            outcome = Analyzer(prober=prober).analyze(scan_result)
+
+        assert outcome.status is AnalyzeStatus.DONE
+        prober.sample_repeat_pict.assert_not_called()
+
+    def test_probe_failure_keeps_display_rate(self, tmp_path: Path) -> None:
+        """sample_repeat_pict raising → warning, display rate kept, DONE."""
+        scan_result = make_scan_result(tmp_path)
+        prober = make_prober(probe_data=_ntsc_dvd_probe_data())
+        prober.sample_repeat_pict.side_effect = RuntimeError("ffprobe crash")
+
+        with patch("furnace.services.analyzer.should_skip_file", return_value=(False, "")):
+            outcome = Analyzer(prober=prober).analyze(scan_result)
+
+        assert outcome.status is AnalyzeStatus.DONE
+        movie = outcome.movie
+        assert movie is not None
+        assert (movie.video.fps_num, movie.video.fps_den) == (30000, 1001)
+
+    def test_pulldown_probe_counts_as_progress_stage(self, tmp_path: Path) -> None:
+        """tt NTSC DVD: idet + pulldown = two stages → fractions 0.5, 1.0, 1.0."""
+        scan_result = make_scan_result(tmp_path)
+        prober = make_prober(probe_data=_ntsc_dvd_probe_data())
+        prober.sample_repeat_pict.return_value = [0, 1] * 250
+        fractions: list[float] = []
+
+        with patch("furnace.services.analyzer.should_skip_file", return_value=(False, "")):
+            outcome = Analyzer(prober=prober).analyze(scan_result, on_progress=fractions.append)
+
+        assert outcome.status is AnalyzeStatus.DONE
+        assert fractions == [0.5, 1.0, 1.0]
+
+    def test_deinterlace_and_soft_telecine_can_coexist(self, tmp_path: Path) -> None:
+        """idet saying interlaced does not suppress the pulldown probe: the
+        encoder still emits one frame per coded frame (nnedi is single-rate),
+        so the coded film rate stays the right mux pin."""
+        scan_result = make_scan_result(tmp_path)
+        prober = make_prober(probe_data=_ntsc_dvd_probe_data())
+        prober.run_idet.return_value = 0.9
+        prober.sample_repeat_pict.return_value = [0, 1] * 250
+
+        with patch("furnace.services.analyzer.should_skip_file", return_value=(False, "")):
+            outcome = Analyzer(prober=prober).analyze(scan_result)
+
+        assert outcome.status is AnalyzeStatus.DONE
+        movie = outcome.movie
+        assert movie is not None
+        assert movie.video.interlaced is True
+        assert (movie.video.fps_num, movie.video.fps_den) == (24000, 1001)
 
 
 # ---------------------------------------------------------------------------

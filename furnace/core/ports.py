@@ -60,6 +60,16 @@ class Prober(Protocol):
         """Read side_data_list from the first video frame."""
         ...
 
+    def sample_repeat_pict(self, path: Path, duration_s: float) -> list[int]:
+        """Sample per-frame repeat_pict flags at multiple timeline points.
+
+        Returns the decoder's repeat_pict value for each sampled frame
+        (0 = plain frame, 1 = one repeated field — soft-telecine pulldown).
+        Windows that fail to decode are skipped, so the list may be shorter
+        than the nominal sample size (empty when every window failed).
+        """
+        ...
+
     def profile_audio_track(
         self,
         path: Path,
