@@ -1,22 +1,26 @@
 # Furnace
 
-Batch video transcoder for home archival. Scans your movie collection, lets you pick tracks in a TUI, saves a JSON plan, then encodes everything with NVEncC (NVIDIA hardware encoder).
+Batch video transcoder for home archival. Scans your movie collection, lets you pick tracks in a TUI, saves a JSON plan, then encodes everything to 10-bit AV1 — NVENC (NVIDIA hardware) for speed, with grainy SD film routed to SVT-AV1 so its grain survives.
 
 ## Why Furnace
 
 - **Plan, review, then run** — choose tracks and preview in a TUI, save a JSON plan you can inspect or edit before hours of encoding
 - **Resumable** — failed jobs retry on next run, plan updated atomically after each job
-- **Live progress on every long step** — ffmpeg extraction, eac3to, qaac, mkvmerge, NVEncC all stream into one unified progress bar; no more silent multi-gigabyte waits
-- **Auto quality** — CQ value interpolated by pixel area, no manual tuning across SD/720p/1080p/4K
+- **Live progress on every long step** — up-front analysis runs the batch in parallel; ffmpeg extraction, eac3to, qaac, mkvmerge and the encoder all stream into one unified progress bar; no more silent multi-gigabyte waits
+- **10-bit AV1 output** — always main10; QVBR quality target interpolated by pixel area, no manual tuning across SD/720p/1080p/4K
+- **Film-grain preservation** — grainy SD film is auto-detected and encoded with SVT-AV1, which keeps the grain in the bitstream (still hardware-decodable), instead of NVENC, which smooths it into waxy faces; confirm or override per file with `G` in the selector
+- **Soft-telecine aware** — detects 2:3 pulldown on NTSC DVDs, encodes the coded film frames and pins the true film rate so playback isn't sped up or desynced
 - **Disc demux** — Blu-ray (BDMV) and DVD (VIDEO_TS) fed straight into the pipeline with playlist/title selection
 - **Anamorphic SAR fix** — detects and corrects wrong sample aspect ratio on DVD sources
-- **Dolby Vision** — Profile 7 FEL (converted to P8.1) and Profile 8 MEL with RPU passthrough via dovi_tool
+- **Dolby Vision** — Profile 7 FEL (converted to P8.1) and Profile 8 MEL, re-tagged as AV1 Profile 10.1, RPU handled via dovi_tool
 - **HDR10 passthrough** — mastering display, content light level, BT.2020/PQ preserved through encode
-- **Auto deinterlace** — detects interlaced content from the video stream and applies nnedi (neural network) automatically
+- **Auto deinterlace** — nnedi (neural network); HD interlaced content is always deinterlaced, SD is confirmed with idet before committing
 - **Smart crop** — black bars detected automatically across the timeline
+- **Quality scoring** — optional VMAF + SSIM per encode (`--vmaf`)
 - **mpv preview** — audition audio tracks, check subtitles, or preview video right from the TUI before committing
 - **Per-track downmix** — fold 7.1 or 5.1 into stereo or 5.1 from the track selector, useful when the multichannel mix is a fake upmix or the movie is dialogue-heavy
 - **Satellite files** — external audio and subtitle files next to the video are picked up as extra tracks automatically
+- **Library inventory** — `furnace scan` lists each file's encode status, codec, bit depth, HDR class and tracks, and filters by Furnace version to surface re-encode candidates
 
 ## Workflow
 
@@ -76,6 +80,11 @@ Copy eligible video streams verbatim instead of re-encoding (audio still process
 furnace plan D:\Movies -o E:\Encoded --audio-lang eng --sub-lang eng --copy-video
 ```
 Eligible streams are copied as-is (crop/deinterlace skipped); interlaced and Dolby Vision P7 FEL sources fall back to a normal encode, and the plan report shows `passthrough (copy video)` or `encode (<reason>)` per file.
+
+Relabel mistagged track languages (treats every track as unspecified so you reassign each one in the TUI with `l`):
+```bash
+furnace plan D:\Movies -o E:\Encoded --audio-lang rus,eng --sub-lang rus,eng --ignore-langs
+```
 
 Inventory a folder and check Furnace-encode status (read-only — never modifies files):
 ```bash
