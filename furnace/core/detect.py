@@ -453,6 +453,49 @@ def detect_soft_telecine(fps_num: int, fps_den: int, repeat_picts: Sequence[int]
     return num // common, den // common
 
 
+_GRAIN_FLICKER_THRESHOLD = 0.5
+"""Static-block flicker (per-window) at or above which a source reads GRAINY.
+
+Calibrated against the user's DVD library: grainy titles measured ~0.75-1.66
+of static-block flicker, denoised controls ~0.22, so 0.5 splits the two
+populations with wide margin on both sides."""
+
+
+def needs_grain_probe(height: int) -> bool:
+    """Gate the (expensive) grain probe to SD sources only.
+
+    True iff the frame is SD (``height < 720``, reusing ``_is_hd``). HD and UHD
+    already passed the user's blind test on the QVBR profile — grain there
+    survives without a dedicated tune — so probing them would only burn time
+    to confirm a decision that never changes.
+    """
+    return not _is_hd(height)
+
+
+def classify_grain(flicker_samples: Sequence[float]) -> bool:
+    """Turn per-window static-block flicker into a boolean GRAINY verdict.
+
+    Each element of ``flicker_samples`` is one sampling window's static-block
+    flicker; the verdict is their median compared against
+    ``_GRAIN_FLICKER_THRESHOLD``. The median (not the mean) is deliberate: a
+    handful of all-motion windows spike far above the threshold, and a mean
+    would let those outliers flip an otherwise-clean source, whereas the median
+    ignores any minority of flooded windows.
+
+    An empty sequence means the probe failed to produce any measurement, and
+    that fails soft to GRAINY (``True``). The error costs are asymmetric: a
+    wrong GRAINY merely spends a few extra bytes preserving grain that was not
+    there, while a wrong CLEAN lets the denoiser smear real film grain and
+    faces into wax — an irreversible quality loss. When blind, keep the grain.
+    """
+    if not flicker_samples:
+        return True
+    ordered = sorted(flicker_samples)
+    mid = len(ordered) // 2
+    median = ordered[mid] if len(ordered) % 2 else (ordered[mid - 1] + ordered[mid]) / 2
+    return median >= _GRAIN_FLICKER_THRESHOLD
+
+
 def _fraction_numerator(val: str) -> str:
     """Extract numerator from fraction string. '8500/50000' -> '8500'. No-op for non-fractions."""
     s = str(val)

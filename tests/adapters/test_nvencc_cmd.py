@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import dataclasses
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -25,6 +25,7 @@ def _make_vp(
     dv_mode: DvMode | None = None,
     sar_num: int = 1,
     sar_den: int = 1,
+    grain: bool = False,
 ) -> VideoParams:
     return VideoParams(
         cq=cq, crop=crop, deinterlace=deinterlace,
@@ -33,8 +34,14 @@ def _make_vp(
         hdr=hdr, gop=120, fps_num=24000, fps_den=1001,
         source_width=3840, source_height=2160, source_codec=source_codec,
         source_bitrate=80_000_000, dv_mode=dv_mode,
-        sar_num=sar_num, sar_den=sar_den,
+        sar_num=sar_num, sar_den=sar_den, grain=grain,
     )
+
+
+def _contains_subseq(cmd: list[str], sub: list[str]) -> bool:
+    """True if `sub` appears as a contiguous slice of `cmd` (order-preserving)."""
+    n = len(sub)
+    return any(cmd[i:i + n] == sub for i in range(len(cmd) - n + 1))
 
 
 def _adapter() -> NVEncCAdapter:
@@ -145,6 +152,50 @@ class TestNVEncCBasicCommand:
         assert cmd[idx_i + 1] == "input.mkv"
         idx_o = cmd.index("-o")
         assert cmd[idx_o + 1] == "output.obu"
+
+
+class TestNVEncCGrainMode:
+    """vp.grain no longer changes the NVEncC command: the encoder always emits
+    its QVBR profile (grain now routes to SVT-AV1 at the executor level)."""
+
+    _QVBR_RC: ClassVar[list[str]] = [
+        "--preset", "P4", "--tune", "uhq", "--qvbr", "31",
+        "--aq", "--aq-temporal", "--lookahead", "32",
+        "--multipass", "2pass-quarter",
+    ]
+
+    def test_grain_emits_qvbr_block(self) -> None:
+        """grain=True now yields the standard QVBR block, byte-for-byte."""
+        cmd = _cmd(_make_vp(grain=True))
+        assert _contains_subseq(cmd, self._QVBR_RC)
+
+    def test_grain_omits_cqp_flags(self) -> None:
+        """grain=True must not carry any CQP-profile flags."""
+        cmd = _cmd(_make_vp(grain=True))
+        assert "--cqp" not in cmd
+        assert "--aq-strength" not in cmd
+        assert not _contains_subseq(cmd, ["--preset", "P7"])
+
+    def test_grain_command_identical_to_non_grain(self) -> None:
+        """grain no longer affects the command at all: both are byte-identical."""
+        assert _cmd(_make_vp(grain=True)) == _cmd(_make_vp(grain=False))
+
+    def test_non_grain_regression_pin(self) -> None:
+        """grain=False keeps the exact QVBR block byte-for-byte."""
+        cmd = _cmd(_make_vp(grain=False))
+        assert _contains_subseq(cmd, self._QVBR_RC)
+        assert "--cqp" not in cmd
+        assert "--aq-strength" not in cmd
+
+    def test_downstream_flags_present_in_grain_mode(self) -> None:
+        """GOP / crop / colors are unaffected by the grain flag."""
+        crop = CropRect(w=3560, h=2160, x=140, y=0)
+        cmd = _cmd(_make_vp(grain=True, crop=crop))
+        assert cmd[cmd.index("--gop-len") + 1] == "120"
+        assert "--strict-gop" in cmd
+        assert cmd[cmd.index("--crop") + 1] == "140,0,140,0"
+        assert cmd[cmd.index("--colormatrix") + 1] == "bt2020nc"
+        assert cmd[cmd.index("--colorprim") + 1] == "bt2020"
 
 
 class TestNVEncCCrop:
@@ -476,6 +527,35 @@ class TestNVEncCEncoderSettings:
         parts = settings.split(" / ")
         assert len(parts) >= 8
         assert parts[0] == "av1_nvenc"
+
+    def test_settings_grain_mode_reflects_qvbr(self) -> None:
+        """grain=True: settings tag now advertises the QVBR profile, not CQP."""
+        adapter = _adapter()
+        vp = _make_vp(grain=True)
+        settings = adapter._build_encoder_settings(vp)
+        assert settings.startswith("av1_nvenc")
+        assert "qvbr=31" in settings
+        assert "preset=P4" in settings
+        assert "tune=uhq" in settings
+        assert "aq-temporal" in settings
+        assert "lookahead=32" in settings
+        assert "multipass=2pass-quarter" in settings
+        # CQP-profile fields must be gone.
+        assert "cqp=" not in settings
+        assert "aq-strength" not in settings
+        assert "preset=P7" not in settings
+
+    def test_settings_non_grain_keeps_qvbr(self) -> None:
+        """grain=False: settings tag still advertises the QVBR profile."""
+        adapter = _adapter()
+        vp = _make_vp(grain=False)
+        settings = adapter._build_encoder_settings(vp)
+        assert "qvbr=31" in settings
+        assert "preset=P4" in settings
+        assert "tune=uhq" in settings
+        assert "multipass=2pass-quarter" in settings
+        assert "cqp=" not in settings
+        assert "aq-strength" not in settings
 
 
 class TestNVEncCOutputFormat:

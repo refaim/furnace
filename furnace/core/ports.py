@@ -70,6 +70,18 @@ class Prober(Protocol):
         """
         ...
 
+    def sample_grain(self, path: Path, duration_s: float) -> list[float]:
+        """Measure film-grain amplitude across the timeline.
+
+        Samples several short windows and returns one static-block temporal
+        flicker value per window: high for real film grain, near zero for a
+        denoised transfer. Windows that fail to decode or carry too few usable
+        blocks are skipped, so the list may be shorter than the nominal sample
+        size (empty when every window failed). ``core.detect.classify_grain``
+        reduces the list to a boolean GRAINY verdict.
+        """
+        ...
+
     def profile_audio_track(
         self,
         path: Path,

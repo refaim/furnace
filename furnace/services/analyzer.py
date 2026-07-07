@@ -11,9 +11,11 @@ from charset_normalizer import from_path as _from_path
 from furnace.core.audio_profile import classify_audio
 from furnace.core.detect import (
     check_unsupported_codecs,
+    classify_grain,
     detect_forced_subtitles,
     detect_hdr,
     detect_soft_telecine,
+    needs_grain_probe,
     needs_idet,
     needs_pulldown_probe,
     should_deinterlace,
@@ -113,10 +115,10 @@ class Analyzer:
 
         ``on_progress`` (when supplied) receives the analyze-phase fraction in
         ``[0, 1]``: it advances by one step per completed heavy stage (idet, the
-        pulldown probe, then one per profileable audio track) and is called once
-        more with ``1.0`` when analysis finishes. Files with no heavy stages
-        report only the final ``1.0``. Used by the parallel pipeline to drive a
-        smooth batch bar.
+        pulldown probe, the grain probe, then one per profileable audio track)
+        and is called once more with ``1.0`` when analysis finishes. Files with
+        no heavy stages report only the final ``1.0``. Used by the parallel
+        pipeline to drive a smooth batch bar.
         """
         main_file = scan_result.main_file
         output_path = scan_result.output_path
@@ -210,8 +212,14 @@ class Analyzer:
         pulldown_will_run = needs_pulldown_probe(
             video_info.codec_name, video_info.fps_num, video_info.fps_den, video_info.height,
         )
+        grain_will_run = needs_grain_probe(video_info.height)
         n_profileable = sum(1 for t in audio_tracks if t.channels in _PROFILEABLE_CHANNEL_COUNTS)
-        total_stages = (1 if idet_will_run else 0) + (1 if pulldown_will_run else 0) + n_profileable
+        total_stages = (
+            (1 if idet_will_run else 0)
+            + (1 if pulldown_will_run else 0)
+            + (1 if grain_will_run else 0)
+            + n_profileable
+        )
         stages_done = 0
 
         def _emit() -> None:
@@ -252,6 +260,21 @@ class Analyzer:
                     "%s: soft telecine detected, using coded film rate %d/%d",
                     name, video_info.fps_num, video_info.fps_den,
                 )
+            stages_done += 1
+            _emit()
+
+        # Grain: SD film sources need the CQP profile or NVENC strips their
+        # grain (waxy faces). Verdict is advisory — the file selector TUI can
+        # override per file. Fail-soft toward GRAINY: wrongly-on costs file
+        # size, wrongly-off costs visible quality.
+        if grain_will_run:
+            try:
+                flicker = self._prober.sample_grain(main_file, video_info.duration_s)
+                video_info.grainy = classify_grain(flicker)
+            except (OSError, RuntimeError, ValueError) as exc:
+                logger.warning("grain probe failed for %s: %s", name, exc)
+                video_info.grainy = True
+            logger.info("%s: grain verdict %s", name, "GRAINY" if video_info.grainy else "CLEAN")
             stages_done += 1
             _emit()
 

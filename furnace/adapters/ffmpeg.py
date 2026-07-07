@@ -33,6 +33,26 @@ _CHANNELS_STEREO = 2
 _CHANNELS_5_1 = 6
 _CHANNELS_7_1 = 8
 
+# --- Film-grain probe (SD sources) -----------------------------------------
+# Five short windows across the timeline; each pipes a handful of luma-only
+# frames and measures how much the calmest 16x16 blocks flicker frame to frame.
+# Real film grain keeps those blocks jittering; a denoised transfer holds them
+# still. The pure ``core.detect.classify_grain`` turns the per-window values
+# into a GRAINY verdict.
+_GRAIN_WINDOWS: tuple[float, ...] = (0.10, 0.30, 0.50, 0.70, 0.90)
+_GRAIN_FRAMES = 24
+_GRAIN_W, _GRAIN_H = 480, 270
+_GRAIN_BLOCK = 16
+_GRAIN_LUMA_MIN, _GRAIN_LUMA_MAX = 30.0, 220.0
+_GRAIN_MIN_VALID_BLOCKS = 20
+_GRAIN_STATIC_QUANTILE = 0.15
+# A window that decodes fewer than this many frames is too short for a
+# trustworthy temporal median — skip it.
+_GRAIN_MIN_FRAMES = 8
+# At or below this per-block temporal median the block is digital black (or a
+# frozen duplicate) rather than grain; excluded so dead areas never read static.
+_GRAIN_MIN_BLOCK_FLICKER = 0.01
+
 
 def _rms_db(x: np.ndarray) -> float:
     """RMS in dB. Empty input or near-zero signal → -120 dB floor."""
@@ -55,6 +75,48 @@ def _pearson(a: np.ndarray, b: np.ndarray) -> float:
     if na < _ZERO_NORM_EPS or nb < _ZERO_NORM_EPS:
         return 0.0
     return float((a64 * b64).sum() / (na * nb))
+
+
+def _grain_window_value(frames: np.ndarray) -> float | None:
+    """Static-block temporal flicker for one window of gray frames ``(n, H, W)``.
+
+    Splits each frame into 16x16 blocks and takes, per block, its mean luma
+    (over every frame) and its temporal median absolute frame-to-frame
+    difference. Blocks that are letterbox/black (luma <= 30), blown highlights
+    (luma >= 220) or frozen/digital-black (median flicker <= 0.01) are dropped.
+    With fewer than 20 valid blocks the window is untrustworthy and ``None`` is
+    returned; otherwise the value is the 0.15 quantile of the valid block
+    medians — the flicker of the calmest blocks, i.e. the grain floor.
+
+    The per-block *median* over time (not the mean) gives scene-cut immunity: a
+    single hard cut in the window spikes one temporal step, which the median of
+    the remaining steps ignores.
+    """
+    n = frames.shape[0]
+    h_blocks = _GRAIN_H // _GRAIN_BLOCK
+    w_blocks = _GRAIN_W // _GRAIN_BLOCK
+    used_h = h_blocks * _GRAIN_BLOCK
+    used_w = w_blocks * _GRAIN_BLOCK
+    cropped = frames[:, :used_h, :used_w]
+
+    # Mean luma per block (over every frame and every pixel in the block).
+    luma = cropped.reshape(n, h_blocks, _GRAIN_BLOCK, w_blocks, _GRAIN_BLOCK).mean(axis=(0, 2, 4))
+
+    # Temporal abs-diff per step, averaged within each block -> (n-1, hb, wb),
+    # then per-block median over the temporal axis.
+    step_diff = np.abs(np.diff(cropped, axis=0))
+    block_flicker = step_diff.reshape(n - 1, h_blocks, _GRAIN_BLOCK, w_blocks, _GRAIN_BLOCK).mean(axis=(2, 4))
+    block_median = np.median(block_flicker, axis=0)
+
+    valid = (
+        (luma > _GRAIN_LUMA_MIN)
+        & (luma < _GRAIN_LUMA_MAX)
+        & (block_median > _GRAIN_MIN_BLOCK_FLICKER)
+    )
+    valid_medians = block_median[valid]
+    if valid_medians.size < _GRAIN_MIN_VALID_BLOCKS:
+        return None
+    return float(np.quantile(valid_medians, _GRAIN_STATIC_QUANTILE))
 
 
 def _parse_ffmpeg_progress_block(kv: dict[str, str]) -> ProgressSample | None:
@@ -498,6 +560,63 @@ class FFmpegAdapter:
             flags.extend(window_flags)
 
         return flags
+
+    def sample_grain(self, path: Path, duration_s: float) -> list[float]:
+        """Measure film-grain amplitude via static-block temporal flicker.
+
+        Pipes five short luma-only windows (``scale=480:270,format=gray``
+        rawvideo, 24 frames at 10/30/50/70/90% of ``duration_s``) out of ffmpeg
+        and, per window, measures how much the calmest 16x16 blocks flicker
+        between frames (see :func:`_grain_window_value`) — real grain keeps them
+        jittering, a denoised transfer holds them still. Returns one flicker
+        value per window; ``core.detect.classify_grain`` reduces the list to a
+        boolean verdict.
+
+        Fail-soft per window: an ffmpeg error, a truncated read (< 8 frames), or
+        a window with too few valid static blocks (all letterbox/black/blown)
+        contributes nothing, so the list may be shorter than five — empty when
+        every window failed.
+        """
+        frame_px = _GRAIN_H * _GRAIN_W
+        values: list[float] = []
+
+        for pct in _GRAIN_WINDOWS:
+            seek = duration_s * pct
+            cmd = [
+                str(self._ffmpeg),
+                "-v", "error",
+                "-ss", f"{seek:.2f}",
+                "-i", str(path),
+                "-frames:v", str(_GRAIN_FRAMES),
+                "-vf", f"scale={_GRAIN_W}:{_GRAIN_H},format=gray",
+                "-f", "rawvideo",
+                "-pix_fmt", "gray",
+                "-",
+            ]
+            logger.debug("sample_grain cmd: %s", cmd)
+            result = subprocess.run(cmd, capture_output=True, check=False)
+            if result.returncode != 0:
+                logger.warning(
+                    "sample_grain window at %.2fs failed (rc=%d)",
+                    seek, result.returncode,
+                )
+                continue
+            buf = np.frombuffer(result.stdout, dtype=np.uint8)
+            n = buf.size // frame_px
+            if n < _GRAIN_MIN_FRAMES:
+                logger.warning(
+                    "sample_grain window at %.2fs decoded only %d frame(s) (< %d)",
+                    seek, n, _GRAIN_MIN_FRAMES,
+                )
+                continue
+            frames = buf[: n * frame_px].astype(np.float32).reshape(n, _GRAIN_H, _GRAIN_W)
+            window_value = _grain_window_value(frames)
+            if window_value is None:
+                logger.debug("sample_grain window at %.2fs had too few static blocks", seek)
+                continue
+            values.append(window_value)
+
+        return values
 
     # ------------------------------------------------------------------
     # VideoCopier

@@ -588,6 +588,79 @@ class TestPlanPassthroughRoundtrip:
 
 
 # ---------------------------------------------------------------------------
+# test_plan_grain_roundtrip
+# ---------------------------------------------------------------------------
+
+class TestPlanGrainRoundtrip:
+    def test_roundtrip_grain_true(self, tmp_path: Path) -> None:
+        """video_params.grain=True survives save -> load."""
+        vp = make_video_params(grain=True)
+        job = Job(
+            id="grain-job", source_files=["/src/grain.mkv"], output_file="/out/grain.mkv",
+            video_params=vp, audio=[], subtitles=[], attachments=[],
+            copy_chapters=False, chapters_source=None, status=JobStatus.PENDING, source_size=0,
+        )
+        plan = make_plan(jobs=[job])
+        plan_path = tmp_path / "plan.json"
+        save_plan(plan, plan_path)
+        loaded = load_plan(plan_path)
+        assert loaded.jobs[0].video_params.grain is True
+
+    def test_roundtrip_grain_false(self, tmp_path: Path) -> None:
+        """video_params.grain=False survives save -> load."""
+        plan = make_plan()
+        plan_path = tmp_path / "plan.json"
+        save_plan(plan, plan_path)
+        loaded = load_plan(plan_path)
+        assert loaded.jobs[0].video_params.grain is False
+
+    def test_legacy_plan_without_grain_key_defaults_false(self, tmp_path: Path) -> None:
+        """A plan JSON produced before grain existed must load with False."""
+        job_raw = {
+            "id": "legacy-job",
+            "source_files": ["/src/movie.mkv"],
+            "output_file": "/out/movie.mkv",
+            "video_params": {
+                "cq": 25, "crop": None, "deinterlace": False,
+                "color_matrix": "bt709", "color_range": "tv",
+                "color_transfer": "bt709", "color_primaries": "bt709",
+                "hdr": None, "gop": 120, "fps_num": 24, "fps_den": 1,
+                "source_width": 1920, "source_height": 1080,
+                "source_codec": "", "source_bitrate": 0,
+                "sar_num": 1, "sar_den": 1, "dv_mode": None,
+                "passthrough": False,
+                # no 'grain' key — simulates legacy plan
+            },
+            "audio": [],
+            "subtitles": [],
+            "attachments": [],
+            "copy_chapters": False,
+            "chapters_source": None,
+            "status": "pending",
+            "error": None,
+            "vmaf_score": None,
+            "ssim_score": None,
+            "source_size": 0,
+            "output_size": None,
+        }
+        data = {
+            "version": "2",
+            "furnace_version": "0.1.0",
+            "created_at": "2026-01-01T00:00:00",
+            "source": "/src",
+            "destination": "/out",
+            "vmaf_enabled": False,
+            "jobs": [job_raw],
+        }
+        plan_path = tmp_path / "plan.json"
+        plan_path.write_text(json.dumps(data), encoding="utf-8")
+
+        loaded = load_plan(plan_path)
+
+        assert loaded.jobs[0].video_params.grain is False
+
+
+# ---------------------------------------------------------------------------
 # test_mixed_passthrough_encode_plan
 # ---------------------------------------------------------------------------
 

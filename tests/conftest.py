@@ -54,6 +54,7 @@ def make_video_info(
     bitrate: int = 0,
     sar_num: int = 1,
     sar_den: int = 1,
+    grainy: bool = False,
 ) -> VideoInfo:
     return VideoInfo(
         index=index,
@@ -75,6 +76,7 @@ def make_video_info(
         bitrate=bitrate,
         sar_num=sar_num,
         sar_den=sar_den,
+        grainy=grainy,
     )
 
 
@@ -103,6 +105,7 @@ def make_video_params(
     sar_den: int = 1,
     dv_mode: DvMode | None = None,
     passthrough: bool = False,
+    grain: bool = False,
 ) -> VideoParams:
     return VideoParams(
         cq=cq,
@@ -124,6 +127,7 @@ def make_video_params(
         sar_den=sar_den,
         dv_mode=dv_mode,
         passthrough=passthrough,
+        grain=grain,
     )
 
 

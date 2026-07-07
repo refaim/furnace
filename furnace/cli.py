@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
@@ -24,7 +25,9 @@ from .adapters.mkvpropedit import MkvpropeditAdapter
 from .adapters.mpv import MpvAdapter
 from .adapters.nvencc import NVEncCAdapter
 from .adapters.qaac import QaacAdapter
+from .adapters.svtav1 import SvtAv1Adapter
 from .config import load_config
+from .core.detect import classify_grain, needs_grain_probe
 from .core.models import (
     DiscSource,
     DiscTitle,
@@ -258,16 +261,122 @@ def _dvd_demuxed_paths(
     return dvd_demuxed
 
 
-def _probe_file_infos(demuxed_paths: list[Path], ffmpeg_adapter: FFmpegAdapter) -> list[tuple[Path, float, int]]:
-    """Probe each demuxed file for duration/size for the file-selector UI."""
-    file_infos: list[tuple[Path, float, int]] = []
+def _probe_file_infos(
+    demuxed_paths: list[Path], ffmpeg_adapter: FFmpegAdapter
+) -> list[tuple[Path, float, int, int]]:
+    """Probe each file for duration/size/height for the file-selector UI.
+
+    Height is read from the first video stream (0 when none is present) and
+    drives the SD grain gate; duration and size feed the on-screen file list.
+    Duration mirrors the analyzer's precedence exactly — the first video
+    stream's ``duration`` first, falling back to ``format.duration`` — so the
+    grain pre-probe seeks the same window as the headless grain verdict and the
+    two agree at the classify boundary.
+    """
+    file_infos: list[tuple[Path, float, int, int]] = []
     for mkv_path in demuxed_paths:
         probe_data = ffmpeg_adapter.probe(mkv_path)
         fmt = probe_data.get("format", {})
-        duration_s = float(fmt.get("duration", 0))
         size_bytes = int(fmt.get("size", 0))
-        file_infos.append((mkv_path, duration_s, size_bytes))
+        streams = probe_data.get("streams", [])
+        video_streams = [s for s in streams if s.get("codec_type") == "video"]
+        video_stream = video_streams[0] if video_streams else {}
+        height = int(video_stream.get("height", 0))
+        duration_s = 0.0
+        if "duration" in video_stream:
+            with contextlib.suppress(ValueError, TypeError):
+                duration_s = float(video_stream["duration"])
+        if duration_s == 0.0 and "duration" in fmt:
+            with contextlib.suppress(ValueError, TypeError):
+                duration_s = float(fmt["duration"])
+        file_infos.append((mkv_path, duration_s, size_bytes, height))
     return file_infos
+
+
+def _sd_grain_files(file_infos: list[tuple[Path, float, int, int]]) -> set[Path]:
+    """SD files eligible for a grain toggle in the file selector.
+
+    A height of 0 (unreadable / no video stream) is treated as non-SD so a file
+    whose resolution we could not measure never triggers the fragile grain probe.
+    """
+    return {p for (p, _dur, _size, height) in file_infos if height > 0 and needs_grain_probe(height)}
+
+
+def _classify_one(path: Path, dur: float, ffmpeg_adapter: FFmpegAdapter) -> bool:
+    """Grain verdict for a single SD file, fail-soft to GRAINY.
+
+    Mirrors the analyzer's grain stage: ``sample_grain`` returns ``[]`` (never
+    raises) for expected per-window failures, but a catastrophic raise — a
+    broken ffmpeg subprocess (``OSError``) or an internal parse error — is
+    caught here and treated as GRAINY rather than crashing the whole ``plan``
+    run. Wrongly-on costs a few extra bytes; wrongly-off smears real film grain.
+    """
+    try:
+        return classify_grain(ffmpeg_adapter.sample_grain(path, dur))
+    except (OSError, RuntimeError, ValueError):
+        logger.warning("grain pre-probe failed for %s, defaulting to GRAINY", path)
+        return True
+
+
+def _grain_pre_probe(
+    file_infos: list[tuple[Path, float, int, int]],
+    sd_files: set[Path],
+    ffmpeg_adapter: FFmpegAdapter,
+) -> set[Path]:
+    """Seed the file-selector grain default: an SD file whose sampled flicker
+    classifies GRAINY starts with grain ON.
+
+    Only ``sd_files`` are probed, so the result is always a subset of
+    ``sd_files`` (never seed a default for a non-SD path). Each file is
+    classified independently and fail-soft (see ``_classify_one``), so one
+    file's hard probe failure never loses the others.
+    """
+    grain_defaults: set[Path] = set()
+    for (p, dur, _size, _height) in file_infos:
+        if p in sd_files and _classify_one(p, dur, ffmpeg_adapter):
+            grain_defaults.add(p)
+    return grain_defaults
+
+
+def _run_file_selector(
+    *,
+    file_infos: list[tuple[Path, float, int, int]],
+    dvd_files: set[Path],
+    sd_files: set[Path],
+    ffmpeg_adapter: FFmpegAdapter,
+    mpv_adapter: MpvAdapter,
+    reporter: RichPlanReporter | None,
+    file_app_runner: Callable[[Callable[[], Screen[FileSelection]]], FileSelection | None],
+) -> FileSelection | None:
+    """Pre-probe grain for the SD files, then run the file selector.
+
+    Brackets the interactive screen (and the slow grain pre-probe) with the
+    reporter's pause/resume. Returns the ``FileSelection`` or ``None`` if the
+    screen was dismissed.
+    """
+    if reporter is not None:
+        reporter.pause()
+    grain_defaults = _grain_pre_probe(file_infos, sd_files, ffmpeg_adapter)
+    files_for_screen = [(p, dur, size) for (p, dur, size, _height) in file_infos]
+
+    def _factory(
+        _files: list[tuple[Path, float, int]] = files_for_screen,
+        _dvd: set[Path] = dvd_files,
+        _sd: set[Path] = sd_files,
+        _grain: set[Path] = grain_defaults,
+    ) -> Screen[FileSelection]:
+        return FileSelectorScreen(
+            files=_files,
+            dvd_files=_dvd,
+            sd_files=_sd,
+            grain_defaults=_grain,
+            preview_cb=lambda p, a: mpv_adapter.preview_file(p, aspect_override=a),
+        )
+
+    result = file_app_runner(_factory)
+    if reporter is not None:
+        reporter.resume()
+    return result
 
 
 def _run_disc_demux_interactive(
@@ -285,14 +394,14 @@ def _run_disc_demux_interactive(
     file_app_runner: Callable[
         [Callable[[], Screen[FileSelection]]], FileSelection | None
     ] = _run_screen_app,
-) -> tuple[Path | None, list[Path], set[Path]]:
+) -> tuple[Path | None, list[Path], set[Path], dict[Path, bool]]:
     """Coordinate the interactive disc demux flow.
 
-    Returns `(demux_dir, demuxed_paths, sar_override_paths)`. When no discs are
-    provided, returns `(None, [], set())`.
+    Returns `(demux_dir, demuxed_paths, sar_override_paths, grain_overrides)`.
+    When no discs are provided, returns `(None, [], set(), {})`.
     """
     if not detected_discs:
-        return None, [], set()
+        return None, [], set(), {}
 
     selected_titles = _collect_selected_titles(
         detected_discs,
@@ -302,7 +411,7 @@ def _run_disc_demux_interactive(
     )
 
     if not selected_titles:
-        return None, [], set()
+        return None, [], set(), {}
 
     demux_dir = source / ".furnace_demux"
     demuxed_paths = disc_demuxer.demux(
@@ -314,30 +423,29 @@ def _run_disc_demux_interactive(
 
     dvd_demuxed = _dvd_demuxed_paths(detected_discs, selected_titles, demuxed_paths)
     sar_override_paths: set[Path] = set()
+    grain_overrides: dict[Path, bool] = {}
 
-    if dvd_demuxed or len(demuxed_paths) > 1:
-        if reporter is not None:
-            reporter.pause()
-        file_infos = _probe_file_infos(demuxed_paths, ffmpeg_adapter)
+    file_infos = _probe_file_infos(demuxed_paths, ffmpeg_adapter)
+    sd_files = _sd_grain_files(file_infos)
 
-        def _factory(
-            _file_infos: list[tuple[Path, float, int]] = file_infos,
-            _dvd: set[Path] = dvd_demuxed,
-        ) -> Screen[FileSelection]:
-            return FileSelectorScreen(
-                files=_file_infos,
-                dvd_files=_dvd,
-                preview_cb=lambda p, a: mpv_adapter.preview_file(p, aspect_override=a),
-            )
-
-        file_selection = file_app_runner(_factory)
-        if reporter is not None:
-            reporter.resume()
+    # Show the file selector when a DVD needs a SAR toggle, when there are
+    # multiple files to pick from, or when any SD file offers a grain toggle.
+    if dvd_demuxed or len(demuxed_paths) > 1 or sd_files:
+        file_selection = _run_file_selector(
+            file_infos=file_infos,
+            dvd_files=dvd_demuxed,
+            sd_files=sd_files,
+            ffmpeg_adapter=ffmpeg_adapter,
+            mpv_adapter=mpv_adapter,
+            reporter=reporter,
+            file_app_runner=file_app_runner,
+        )
         if file_selection is not None:
             demuxed_paths = file_selection.selected
             sar_override_paths = file_selection.sar_override
+            grain_overrides = file_selection.grain
 
-    return demux_dir, demuxed_paths, sar_override_paths
+    return demux_dir, demuxed_paths, sar_override_paths, grain_overrides
 
 
 # ---------------------------------------------------------------------------
@@ -482,9 +590,10 @@ def plan(
         demux_dir: Path | None = None
         demuxed_paths: list[Path] = []
         sar_override_paths: set[Path] = set()
+        disc_grain_overrides: dict[Path, bool] = {}
 
         if not dry_run:
-            demux_dir, demuxed_paths, sar_override_paths = _run_disc_demux_interactive(
+            demux_dir, demuxed_paths, sar_override_paths, disc_grain_overrides = _run_disc_demux_interactive(
                 source=source,
                 detected_discs=detected_discs,
                 disc_titles=disc_titles,
@@ -501,6 +610,31 @@ def plan(
 
         scanner = Scanner(prober=ffmpeg_adapter, reporter=reporter)
         scan_results = scanner.scan(source, output, names_map)
+
+        # Plain-files grain flow: with no disc demux, plain SD sources still need
+        # the file selector so the user can confirm/override the grain verdict.
+        # Probe the scanned main files; if any is SD, show the same selector
+        # (no DVDs -> the SAR hint stays hidden). HD-only sources skip it, which
+        # preserves the previous "no screen without discs" behaviour.
+        plain_grain_overrides: dict[Path, bool] = {}
+        if not dry_run and scan_results:
+            plain_infos = _probe_file_infos([sr.main_file for sr in scan_results], ffmpeg_adapter)
+            plain_sd_files = _sd_grain_files(plain_infos)
+            if plain_sd_files:
+                plain_selection = _run_file_selector(
+                    file_infos=plain_infos,
+                    dvd_files=set(),
+                    sd_files=plain_sd_files,
+                    ffmpeg_adapter=ffmpeg_adapter,
+                    mpv_adapter=mpv_adapter,
+                    reporter=reporter,
+                    file_app_runner=_run_screen_app,
+                )
+                if plain_selection is not None:
+                    plain_grain_overrides = plain_selection.grain
+                    selected_plain = set(plain_selection.selected)
+                    scan_results = [sr for sr in scan_results if sr.main_file in selected_plain]
+
         _append_demuxed_scan_results(scan_results, demuxed_paths, output)
         # The appended demuxed entries also deserve scan_file events
         for mkv_path in demuxed_paths:
@@ -549,6 +683,13 @@ def plan(
         if not dry_run:
             reporter.resume()
 
+        # Merge the disc and plain-files grain decisions. An empty merge means no
+        # interactive screen ran (dry-run or HD-only), so pass None and let the
+        # analyzer's per-file verdict rule.
+        grain_overrides: dict[Path, bool] | None = None
+        if not dry_run:
+            grain_overrides = {**disc_grain_overrides, **plain_grain_overrides} or None
+
         plan_obj = planner.create_plan(
             movies=movies_with_paths,
             audio_lang_filter=audio_lang_list,
@@ -558,6 +699,7 @@ def plan(
             downmix_overrides=downmix_overrides,
             lang_overrides=lang_overrides,
             precomputed_crops=precomputed_crops,
+            grain_overrides=grain_overrides,
             copy_video=copy_video,
         )
         _apply_demux_dir_to_plan(plan_obj, demux_dir)
@@ -614,6 +756,7 @@ def run(
         mkvpropedit_adapter = MkvpropeditAdapter(cfg.mkvpropedit, on_output=tool_output)
         mkclean_adapter = MkcleanAdapter(cfg.mkclean, on_output=tool_output)
         nvencc_adapter = NVEncCAdapter(cfg.nvencc, on_output=tool_output)
+        svt_adapter = SvtAv1Adapter(cfg.ffmpeg, on_output=tool_output)
 
         dovi_adapter: DoviToolAdapter | None = None
         if cfg.dovi_tool is not None:
@@ -623,6 +766,7 @@ def run(
 
         executor = Executor(
             encoder=nvencc_adapter,
+            grain_encoder=svt_adapter,
             audio_extractor=ffmpeg_adapter,
             audio_decoder=eac3to_adapter,
             aac_encoder=qaac_adapter,

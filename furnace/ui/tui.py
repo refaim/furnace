@@ -629,6 +629,9 @@ class FileSelection:
 
     selected: list[Path]
     sar_override: set[Path]  # files with SAR override (64:45)
+    # grain decisions for SD files only (path -> on/off); defaults empty for callers
+    # that don't populate it (e.g. mocked returns).
+    grain: dict[Path, bool] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -647,6 +650,7 @@ class FileSelectorScreen(Screen[FileSelection]):
         Binding("down", "move_down", "Down", show=False),
         Binding("space", "toggle_item", "Toggle"),
         Binding("s", "toggle_sar", "SAR fix"),
+        Binding("g", "toggle_grain", "Grain"),
         Binding("p", "preview", "Preview"),
         Binding("d", "done", "Done"),
     ]
@@ -655,22 +659,30 @@ class FileSelectorScreen(Screen[FileSelection]):
         self,
         files: list[tuple[Path, float, int]],  # (path, duration_s, size_bytes)
         dvd_files: set[Path] | None = None,  # which files are from DVD (SAR toggle available)
+        sd_files: set[Path] | None = None,  # which files may be grain-toggled (SD)
+        grain_defaults: set[Path] | None = None,  # SD files that start with grain ON
         preview_cb: Callable[[Path, str | None], None] | None = None,  # (path, aspect_override)
     ) -> None:
         super().__init__()
         self._files = files
         self._dvd_files = dvd_files or set()
+        self._sd_files = sd_files or set()
+        self._grain_defaults = grain_defaults or set()
         self._preview_cb = preview_cb
         self._selected: list[bool] = [True] * len(files)
         self._sar_override: list[bool] = [False] * len(files)
+        self._grain: list[bool] = [f[0] in self._grain_defaults for f in files]
         self._cursor: int = 0
 
     def compose(self) -> ComposeResult:
         yield Header()
         has_dvd = any(f[0] in self._dvd_files for f in self._files)
+        has_sd = any(f[0] in self._sd_files for f in self._files)
         hint = "Select files  (Space=toggle  P=preview"
         if has_dvd:
             hint += "  S=SAR fix"
+        if has_sd:
+            hint += "  G=grain"
         hint += "  D=done)"
         yield Static(hint, id="file-hint")
 
@@ -688,7 +700,8 @@ class FileSelectorScreen(Screen[FileSelection]):
         duration = _fmt_duration(duration_s)
         size = fmt_size(size_bytes)
         sar_tag = "  SAR" if self._sar_override[index] else ""
-        return f"\\[{mark}]  {path.name}  |  {duration}  {size}{sar_tag}"
+        grain_tag = "  GRAIN" if self._grain[index] else ""
+        return f"\\[{mark}]  {path.name}  |  {duration}  {size}{sar_tag}{grain_tag}"
 
     def _refresh_item(self, index: int) -> None:
         label_widget = self.query_one(f"#file-label-{index}", Static)
@@ -719,6 +732,15 @@ class FileSelectorScreen(Screen[FileSelection]):
         self._sar_override[self._cursor] = not self._sar_override[self._cursor]
         self._refresh_item(self._cursor)
 
+    def action_toggle_grain(self) -> None:
+        if not self._files:
+            return
+        path = self._files[self._cursor][0]
+        if path not in self._sd_files:
+            return
+        self._grain[self._cursor] = not self._grain[self._cursor]
+        self._refresh_item(self._cursor)
+
     def action_preview(self) -> None:
         if not self._files or self._preview_cb is None:
             return
@@ -733,7 +755,12 @@ class FileSelectorScreen(Screen[FileSelection]):
             for f, sel, sar in zip(self._files, self._selected, self._sar_override, strict=True)
             if sel and sar
         }
-        self.dismiss(FileSelection(selected=selected, sar_override=sar_set))
+        grain = {
+            f[0]: g
+            for f, sel, g in zip(self._files, self._selected, self._grain, strict=True)
+            if sel and f[0] in self._sd_files
+        }
+        self.dismiss(FileSelection(selected=selected, sar_override=sar_set, grain=grain))
 
     def on_list_view_highlighted(self, event: ListView.Highlighted) -> None:
         if event.item is not None:

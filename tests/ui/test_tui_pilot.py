@@ -621,6 +621,7 @@ async def test_file_selector_empty_guards_and_highlight() -> None:
         await pilot.pause()
         await pilot.press("space")  # empty guard
         await pilot.press("s")  # empty guard
+        await pilot.press("g")  # empty guard (grain)
         await pilot.press("p")  # preview: files empty
         screen = app.screen
         assert isinstance(screen, FileSelectorScreen)
@@ -670,6 +671,94 @@ async def test_file_selector_move_up_down_bounds() -> None:
         screen.action_move_down()  # clamped at top
         await pilot.press("d")
         await pilot.pause()
+
+
+async def test_file_selector_grain_toggle_on_sd_file() -> None:
+    p1 = Path("/demux/sd.mkv")
+    files = [(p1, 3600.0, 1_000_000)]
+    app = _HostApp(lambda: FileSelectorScreen(files=files, sd_files={p1}))
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, FileSelectorScreen)
+        # grain starts off -> no tag
+        assert "GRAIN" not in screen._render_line(0)
+        await pilot.press("g")  # SD file: grain flips on
+        assert "GRAIN" in screen._render_line(0)
+        # widget was refreshed with the tag
+        label = screen.query_one("#file-label-0", Static)
+        assert "GRAIN" in str(label.render())
+        await pilot.press("d")
+        await pilot.pause()
+    assert isinstance(app.result, FileSelection)
+    assert app.result.grain == {p1: True}
+
+
+async def test_file_selector_grain_defaults_prelit_and_untouched() -> None:
+    p1 = Path("/demux/sd.mkv")
+    files = [(p1, 3600.0, 1_000_000)]
+    app = _HostApp(
+        lambda: FileSelectorScreen(files=files, sd_files={p1}, grain_defaults={p1})
+    )
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, FileSelectorScreen)
+        # default pre-lights the tag before any keypress
+        assert "GRAIN" in screen._render_line(0)
+        await pilot.press("d")  # untouched
+        await pilot.pause()
+    assert isinstance(app.result, FileSelection)
+    assert app.result.grain == {p1: True}
+
+
+async def test_file_selector_grain_packing_only_selected_sd() -> None:
+    p1 = Path("/demux/sd1.mkv")  # SD, default on, kept selected -> True
+    p2 = Path("/demux/sd2.mkv")  # SD, default on, deselected -> excluded
+    p3 = Path("/demux/hd.mkv")  # non-SD, cursor lands here, g is a no-op
+    files = [(p1, 3600.0, 1), (p2, 3600.0, 2), (p3, 3600.0, 3)]
+    app = _HostApp(
+        lambda: FileSelectorScreen(
+            files=files, sd_files={p1, p2}, grain_defaults={p1, p2}
+        )
+    )
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, FileSelectorScreen)
+        # defaults pre-lit for SD files only
+        assert "GRAIN" in screen._render_line(0)
+        assert "GRAIN" in screen._render_line(1)
+        assert "GRAIN" not in screen._render_line(2)
+        screen.action_move_down()  # cursor -> p2
+        await pilot.press("space")  # deselect p2
+        screen.action_move_down()  # cursor -> p3 (non-SD)
+        await pilot.press("g")  # no-op: p3 not SD
+        assert "GRAIN" not in screen._render_line(2)
+        await pilot.press("d")
+        await pilot.pause()
+    assert isinstance(app.result, FileSelection)
+    # Only the selected SD file appears; deselected SD and non-SD excluded.
+    assert app.result.grain == {p1: True}
+    assert p2 not in app.result.selected
+    assert p3 in app.result.selected
+
+
+async def test_file_selector_grain_hint_shown_and_hidden() -> None:
+    p1 = Path("/demux/sd.mkv")
+    files = [(p1, 60.0, 100)]
+    # sd_files non-empty -> hint offers G=grain
+    app = _HostApp(lambda: FileSelectorScreen(files=files, sd_files={p1}))
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        hint = app.screen.query_one("#file-hint", Static)
+        assert "G=grain" in str(hint.render())
+    # no sd_files -> hint hides G=grain
+    app2 = _HostApp(lambda: FileSelectorScreen(files=files))
+    async with app2.run_test() as pilot:
+        await pilot.pause()
+        hint = app2.screen.query_one("#file-hint", Static)
+        assert "G=grain" not in str(hint.render())
 
 
 # ---------------------------------------------------------------------------

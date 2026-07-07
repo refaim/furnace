@@ -103,6 +103,7 @@ class TestBuildVideoParamsPassthrough:
             crop=None,
             source_file=video.source_file,
             sar_overrides=set(),
+            grain_overrides={},
             passthrough=True,
         )
         assert vp.passthrough is True
@@ -124,6 +125,7 @@ class TestBuildVideoParamsPassthrough:
             crop=None,
             source_file=video.source_file,
             sar_overrides=set(),
+            grain_overrides={},
             passthrough=True,
         )
         assert vp.deinterlace is False
@@ -136,6 +138,7 @@ class TestBuildVideoParamsPassthrough:
             crop=None,
             source_file=video.source_file,
             sar_overrides=set(),
+            grain_overrides={},
         )
         assert vp.passthrough is False
         assert vp.deinterlace is True

@@ -3474,3 +3474,136 @@ class TestVideoIntermediateName:
 
     def test_passthrough_branch_uses_mkv(self) -> None:
         assert _video_intermediate_name(passthrough=True) == "video.mkv"
+
+
+# ---------------------------------------------------------------------------
+# Grain encoder routing (Task 4)
+# ---------------------------------------------------------------------------
+
+
+def _grain_executor(
+    *,
+    grain_encoder: Any | None,
+) -> tuple[Executor, SimpleNamespace]:
+    """Executor with a main encoder plus an optional second grain encoder.
+
+    Both encoders return a successful EncodeResult; mux/tag/clean succeed and
+    clean writes the final output so the pipeline runs end to end.
+    """
+    mocks = SimpleNamespace(
+        encoder=MagicMock(),
+        grain_encoder=grain_encoder,
+        audio_extractor=MagicMock(),
+        audio_decoder=MagicMock(),
+        aac_encoder=MagicMock(),
+        muxer=MagicMock(),
+        tagger=MagicMock(),
+        cleaner=MagicMock(),
+        prober=MagicMock(),
+        video_copier=MagicMock(),
+    )
+    mocks.encoder.encode.return_value = EncodeResult(return_code=0, encoder_settings="main")
+    if grain_encoder is not None:
+        grain_encoder.encode.return_value = EncodeResult(return_code=0, encoder_settings="grain")
+    mocks.muxer.mux.return_value = 0
+    mocks.tagger.set_encoder_tag.return_value = 0
+    mocks.video_copier.copy_video.return_value = 0
+
+    def fake_clean(input_path: Any, output_path: Any, on_progress: Any = None) -> int:
+        Path(output_path).write_bytes(b"CLEAN")
+        return 0
+
+    mocks.cleaner.clean.side_effect = fake_clean
+
+    executor = Executor(
+        encoder=mocks.encoder,
+        audio_extractor=mocks.audio_extractor,
+        audio_decoder=mocks.audio_decoder,
+        aac_encoder=mocks.aac_encoder,
+        muxer=mocks.muxer,
+        tagger=mocks.tagger,
+        cleaner=mocks.cleaner,
+        prober=mocks.prober,
+        video_copier=mocks.video_copier,
+        grain_encoder=grain_encoder,
+    )
+    executor._vmaf_enabled = False
+    return executor, mocks
+
+
+def _grain_job(tmp_path: Path, *, grain: bool, passthrough: bool = False) -> Any:
+    """Pipeline job whose grain / passthrough flags drive encoder routing."""
+    return make_job(
+        job_id="grain-job",
+        source_files=["/src/movie.mkv"],
+        output_file=str(tmp_path / "output" / "movie.mkv"),
+        video_params=make_video_params(grain=grain, passthrough=passthrough),
+        audio=[],
+        subtitles=[],
+        attachments=[],
+        copy_chapters=False,
+        source_size=0,
+        duration_s=100.0,
+    )
+
+
+class TestGrainEncoderRouting:
+    """Jobs with video_params.grain route to the second (grain) encoder."""
+
+    def test_grain_job_routes_to_grain_encoder(self, tmp_path: Path) -> None:
+        grain_enc = MagicMock()
+        executor, mocks = _grain_executor(grain_encoder=grain_enc)
+        job = _grain_job(tmp_path, grain=True)
+        output_path = Path(job.output_file)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        executor._run_pipeline(job, output_path, tmp_path)
+
+        grain_enc.encode.assert_called_once()
+        assert not mocks.encoder.encode.called
+
+    def test_non_grain_job_routes_to_main_encoder(self, tmp_path: Path) -> None:
+        grain_enc = MagicMock()
+        executor, mocks = _grain_executor(grain_encoder=grain_enc)
+        job = _grain_job(tmp_path, grain=False)
+        output_path = Path(job.output_file)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        executor._run_pipeline(job, output_path, tmp_path)
+
+        mocks.encoder.encode.assert_called_once()
+        assert not grain_enc.encode.called
+
+    def test_grain_job_falls_back_to_main_when_no_grain_encoder(self, tmp_path: Path) -> None:
+        executor, mocks = _grain_executor(grain_encoder=None)
+        job = _grain_job(tmp_path, grain=True)
+        output_path = Path(job.output_file)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # No grain encoder configured → main encoder handles it, no crash.
+        executor._run_pipeline(job, output_path, tmp_path)
+
+        mocks.encoder.encode.assert_called_once()
+
+    def test_passthrough_job_uses_no_encoder(self, tmp_path: Path) -> None:
+        grain_enc = MagicMock()
+        executor, mocks = _grain_executor(grain_encoder=grain_enc)
+        job = _grain_job(tmp_path, grain=False, passthrough=True)
+        output_path = Path(job.output_file)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        executor._run_pipeline(job, output_path, tmp_path)
+
+        assert not mocks.encoder.encode.called
+        assert not grain_enc.encode.called
+        mocks.video_copier.copy_video.assert_called_once()
+
+    def test_grain_encoder_in_adapters_when_set(self) -> None:
+        grain_enc = MagicMock()
+        executor, _mocks = _grain_executor(grain_encoder=grain_enc)
+        assert grain_enc in executor._adapters
+
+    def test_grain_encoder_absent_when_none(self) -> None:
+        executor, mocks = _grain_executor(grain_encoder=None)
+        assert mocks.encoder in executor._adapters  # sanity: main still wired
+        assert None not in executor._adapters

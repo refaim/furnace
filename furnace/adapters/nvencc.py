@@ -168,9 +168,10 @@ class NVEncCAdapter:
         parts: list[str] = ["av1_nvenc"]
         if version:
             parts.append(f"NVEncC={version}")
+        parts += ["main", "output-depth=10"]
+        # Rate-control fields must mirror those chosen in _build_encode_cmd
+        # so the ENCODER_SETTINGS tag is never misleading.
         parts += [
-            "main",
-            "output-depth=10",
             f"qvbr={vp.cq}",
             "preset=P4",
             "tune=uhq",
@@ -216,20 +217,12 @@ class NVEncCAdapter:
         # Codec, profile, bit depth (AV1: no tier)
         cmd += ["-c", "av1", "--profile", "main", "--output-depth", "10"]
 
-        # Quality / rate control (AV1: no lookahead-level)
+        # Quality / rate control (AV1: no lookahead-level). QVBR perceptual
+        # profile for all jobs; grain sources route to SVT-AV1 at the executor.
         cmd += [
-            "--preset",
-            "P4",
-            "--tune",
-            "uhq",
-            "--qvbr",
-            str(vp.cq),
-            "--aq",
-            "--aq-temporal",
-            "--lookahead",
-            "32",
-            "--multipass",
-            "2pass-quarter",
+            "--preset", "P4", "--tune", "uhq", "--qvbr", str(vp.cq),
+            "--aq", "--aq-temporal", "--lookahead", "32",
+            "--multipass", "2pass-quarter",
         ]
 
         # GOP structure

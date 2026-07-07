@@ -33,6 +33,7 @@ def make_prober(
     prober.run_idet.return_value = 0.0
     prober.probe_hdr_side_data.return_value = hdr_side_data or []
     prober.sample_repeat_pict.return_value = []
+    prober.sample_grain.return_value = []
     return prober
 
 
@@ -1113,7 +1114,8 @@ class TestSoftTelecinePath:
         assert (movie.video.fps_num, movie.video.fps_den) == (30000, 1001)
 
     def test_pulldown_probe_counts_as_progress_stage(self, tmp_path: Path) -> None:
-        """tt NTSC DVD: idet + pulldown = two stages → fractions 0.5, 1.0, 1.0."""
+        """tt NTSC DVD: idet + pulldown + grain = three stages (the SD source
+        also gets a grain probe) → fractions 1/3, 2/3, 1.0, then a final 1.0."""
         scan_result = make_scan_result(tmp_path)
         prober = make_prober(probe_data=_ntsc_dvd_probe_data())
         prober.sample_repeat_pict.return_value = [0, 1] * 250
@@ -1123,7 +1125,7 @@ class TestSoftTelecinePath:
             outcome = Analyzer(prober=prober).analyze(scan_result, on_progress=fractions.append)
 
         assert outcome.status is AnalyzeStatus.DONE
-        assert fractions == [0.5, 1.0, 1.0]
+        assert fractions == pytest.approx([1 / 3, 2 / 3, 1.0, 1.0])
 
     def test_deinterlace_and_soft_telecine_can_coexist(self, tmp_path: Path) -> None:
         """idet saying interlaced does not suppress the pulldown probe: the
@@ -1142,6 +1144,92 @@ class TestSoftTelecinePath:
         assert movie is not None
         assert movie.video.interlaced is True
         assert (movie.video.fps_num, movie.video.fps_den) == (24000, 1001)
+
+
+# ---------------------------------------------------------------------------
+# Grain probe (SD film sources) path
+# ---------------------------------------------------------------------------
+
+
+class TestGrainPath:
+    """SD sources are probed for film grain so the encoder can preserve it;
+    the boolean verdict lands on ``VideoInfo.grainy`` as advisory metadata the
+    file selector TUI can override. HD/UHD skip the probe entirely, and any
+    probe error fails soft toward GRAINY (wrongly-on costs bytes, wrongly-off
+    smears real grain into wax)."""
+
+    def test_grainy_source_flagged(self, tmp_path: Path) -> None:
+        """SD source whose flicker median clears the threshold → grainy=True,
+        probed once with the main file and its duration."""
+        scan_result = make_scan_result(tmp_path)
+        prober = make_prober(probe_data=_ntsc_dvd_probe_data())
+        prober.sample_grain.return_value = [0.8, 0.9, 0.7, 0.8, 0.8]
+
+        with patch("furnace.services.analyzer.should_skip_file", return_value=(False, "")):
+            outcome = Analyzer(prober=prober).analyze(scan_result)
+
+        assert outcome.status is AnalyzeStatus.DONE
+        movie = outcome.movie
+        assert movie is not None
+        assert movie.video.grainy is True
+        prober.sample_grain.assert_called_once_with(scan_result.main_file, 4889.0)
+
+    def test_clean_source_not_flagged(self, tmp_path: Path) -> None:
+        """SD source whose flicker median sits below the threshold → grainy=False."""
+        scan_result = make_scan_result(tmp_path)
+        prober = make_prober(probe_data=_ntsc_dvd_probe_data())
+        prober.sample_grain.return_value = [0.2, 0.2, 0.2, 0.2, 0.2]
+
+        with patch("furnace.services.analyzer.should_skip_file", return_value=(False, "")):
+            outcome = Analyzer(prober=prober).analyze(scan_result)
+
+        assert outcome.status is AnalyzeStatus.DONE
+        movie = outcome.movie
+        assert movie is not None
+        assert movie.video.grainy is False
+
+    def test_hd_source_never_probed(self, tmp_path: Path) -> None:
+        """HD (1080) is outside the grain-probe domain → sample_grain not called,
+        grainy stays at its False default."""
+        scan_result = make_scan_result(tmp_path)
+        prober = make_prober(probe_data=_h264_probe_data())
+
+        with patch("furnace.services.analyzer.should_skip_file", return_value=(False, "")):
+            outcome = Analyzer(prober=prober).analyze(scan_result)
+
+        assert outcome.status is AnalyzeStatus.DONE
+        movie = outcome.movie
+        assert movie is not None
+        assert movie.video.grainy is False
+        prober.sample_grain.assert_not_called()
+
+    def test_probe_failure_fails_soft_to_grainy(self, tmp_path: Path) -> None:
+        """sample_grain raising → warning, grainy=True (fail-soft), outcome DONE."""
+        scan_result = make_scan_result(tmp_path)
+        prober = make_prober(probe_data=_ntsc_dvd_probe_data())
+        prober.sample_grain.side_effect = RuntimeError("ffmpeg crash")
+
+        with patch("furnace.services.analyzer.should_skip_file", return_value=(False, "")):
+            outcome = Analyzer(prober=prober).analyze(scan_result)
+
+        assert outcome.status is AnalyzeStatus.DONE
+        movie = outcome.movie
+        assert movie is not None
+        assert movie.video.grainy is True
+
+    def test_grain_probe_counts_as_progress_stage(self, tmp_path: Path) -> None:
+        """tt NTSC DVD: idet + pulldown + grain = three stages →
+        fractions 1/3, 2/3, 1.0, then a final 1.0."""
+        scan_result = make_scan_result(tmp_path)
+        prober = make_prober(probe_data=_ntsc_dvd_probe_data())
+        prober.sample_grain.return_value = [0.8, 0.9, 0.7, 0.8, 0.8]
+        fractions: list[float] = []
+
+        with patch("furnace.services.analyzer.should_skip_file", return_value=(False, "")):
+            outcome = Analyzer(prober=prober).analyze(scan_result, on_progress=fractions.append)
+
+        assert outcome.status is AnalyzeStatus.DONE
+        assert fractions == pytest.approx([1 / 3, 2 / 3, 1.0, 1.0])
 
 
 # ---------------------------------------------------------------------------

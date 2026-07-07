@@ -129,10 +129,12 @@ class Executor:
         prober: Prober,
         dovi_processor: DoviProcessor | None = None,
         video_copier: VideoCopier | None = None,
+        grain_encoder: Encoder | None = None,
         progress: Any | None = None,  # RunApp or similar (optional, avoids circular import)
         log_dir: Path | None = None,
     ) -> None:
         self._encoder = encoder
+        self._grain_encoder = grain_encoder
         self._audio_extractor = audio_extractor
         self._audio_decoder = audio_decoder
         self._aac_encoder = aac_encoder
@@ -150,6 +152,8 @@ class Executor:
             self._adapters.append(dovi_processor)
         if video_copier is not None:
             self._adapters.append(video_copier)
+        if grain_encoder is not None:
+            self._adapters.append(grain_encoder)
 
     def _make_progress_callback(
         self,
@@ -389,7 +393,8 @@ class Executor:
                 self._progress.update_status("Encoding video")
                 self._progress.add_tool_line(f"[furnace] Encoding video: {main_source.name}")
 
-            rc_result = self._encoder.encode(
+            enc = self._grain_encoder if (job.video_params.grain and self._grain_encoder is not None) else self._encoder
+            rc_result = enc.encode(
                 input_path=main_source,
                 output_path=video_output,
                 video_params=job.video_params,

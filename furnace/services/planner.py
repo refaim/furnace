@@ -115,6 +115,7 @@ class PlannerService:
         downmix_overrides: dict[tuple[Path, int], DownmixMode] | None = None,
         lang_overrides: dict[tuple[Path, int], str] | None = None,
         precomputed_crops: dict[Path, CropRect] | None = None,
+        grain_overrides: dict[Path, bool] | None = None,
         copy_video: bool = False,
     ) -> Plan:
         """For each Movie:
@@ -145,6 +146,7 @@ class PlannerService:
         )
         effective_sar_overrides: set[Path] = sar_overrides if sar_overrides is not None else set()
         effective_crops: dict[Path, CropRect] = precomputed_crops if precomputed_crops is not None else {}
+        effective_grain_overrides: dict[Path, bool] = grain_overrides if grain_overrides is not None else {}
 
         for movie, output_path in movies:
             if self._reporter is not None:
@@ -158,6 +160,7 @@ class PlannerService:
                 downmix_overrides=effective_overrides,
                 lang_overrides=effective_lang_overrides,
                 precomputed_crops=effective_crops,
+                grain_overrides=effective_grain_overrides,
                 copy_video=copy_video,
             )
             if self._reporter is not None:
@@ -190,6 +193,7 @@ class PlannerService:
         downmix_overrides: dict[tuple[Path, int], DownmixMode],
         lang_overrides: dict[tuple[Path, int], str],
         precomputed_crops: dict[Path, CropRect],
+        grain_overrides: dict[Path, bool],
         copy_video: bool = False,
     ) -> tuple[Job, str | None]:
         """Build a single Job for a Movie.
@@ -211,6 +215,7 @@ class PlannerService:
             crop,
             source_file=movie.main_file,
             sar_overrides=sar_overrides,
+            grain_overrides=grain_overrides,
             passthrough=passthrough,
         )
 
@@ -442,6 +447,7 @@ class PlannerService:
         *,
         source_file: Path,
         sar_overrides: set[Path],
+        grain_overrides: dict[Path, bool],
         passthrough: bool = False,
     ) -> VideoParams:
         """CQ interpolation, GOP calc, colorspace determination, deinterlace detection.
@@ -493,6 +499,16 @@ class PlannerService:
             sar_num = video.sar_num
             sar_den = video.sar_den
 
+        # Grain: a passthrough job copies the stream verbatim, so there is
+        # nothing to tune -> always False. Otherwise an explicit per-file
+        # override wins over the analyzer's ``grainy`` verdict.
+        if passthrough:
+            grain = False
+        elif source_file in grain_overrides:
+            grain = grain_overrides[source_file]
+        else:
+            grain = video.grainy
+
         return VideoParams(
             cq=cq,
             crop=crop,
@@ -513,6 +529,7 @@ class PlannerService:
             sar_den=sar_den,
             dv_mode=dv_mode,
             passthrough=passthrough,
+            grain=grain,
         )
 
     def _build_audio_instruction(
