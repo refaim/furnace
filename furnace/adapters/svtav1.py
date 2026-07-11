@@ -221,15 +221,28 @@ class SvtAv1Adapter:
     ) -> float | None:
         """Measure pooled mean VMAF of ``encoded_obu`` against ``source``.
 
-        The reference stream is decimated to the coded rate (``fps=`` front)
-        then rescaled to the *encoded* geometry (same crop/scale/deinterlace as
-        :func:`_geometry_filters`, but without the 10-bit / setsar tail) so
-        distorted and reference frames line up. The leading ``fps=`` matters for
-        soft-telecine sources: the OBU is at the coded rate (encode ``-r``) but
-        the source decodes with pulldown applied, so without decimation libvmaf
-        would pair mismatched frame counts by order. ``setpts=N`` on both inputs
-        matches them frame-by-frame regardless of timestamps. libvmaf writes a
-        JSON log which is parsed for ``pooled_metrics.vmaf.mean``.
+        Frame-exact alignment in three steps, so distorted frame N is always
+        compared against the source frame N that produced it:
+
+        1. The reference is brought to the *encoded* geometry -- the
+           crop/scale/deinterlace from :func:`_geometry_filters` when the source
+           needs any (a plain source needs none), but never the 10-bit / setsar
+           tail, so no pixel format is forced.
+        2. ``fps=<coded rate>`` decimates the reference to the OBU's frame
+           *count*. This matters for soft-telecine sources: the OBU is at the
+           coded rate (encode ``-r``) but the source decodes with 2:3 pulldown
+           applied, so without decimation the two carry different frame counts.
+        3. ``setpts=N`` resets BOTH streams' timestamps to their frame index, so
+           libvmaf pairs index N against index N. Pairing by *timestamp* instead
+           silently drifts apart on PAL DVD sources whose demuxed reference PTS
+           carry a start offset / jitter versus the OBU's clean 0-based grid --
+           that drift collapsed the score to ~35 over a feature-length run while
+           the encode itself was pristine. Index pairing is identical to
+           timestamp pairing on clean soft-telecine (the decimated dupes are
+           bit-identical), so it fixes the PAL case without regressing telecine.
+
+        libvmaf writes a JSON log which is parsed for
+        ``pooled_metrics.vmaf.mean``.
 
         Fail-soft: a non-zero ffmpeg rc, or a missing / unparseable / key-less
         JSON, returns None. The log filename (not the full path) is passed to
@@ -239,20 +252,16 @@ class SvtAv1Adapter:
         """
         json_path = encoded_obu.with_name(f"{encoded_obu.stem}.vmaf.json")
         n_threads = max(1, (os.cpu_count() or 4) - 2)
-        # Decimate the source to the coded rate first: the OBU was encoded at
-        # vp.fps_num/fps_den (the encode's ``-r``), but the source still decodes
-        # with soft-telecine pulldown applied. Without this, libvmaf pairs
-        # differently-counted frames by order and reports a bogus low score.
+        # The raw OBU is rateless (ffmpeg would assume 25fps), so it is read with
+        # ``-r fps`` to stamp it at the coded rate. Reference chain: geometry ->
+        # ``fps=`` decimation to that same rate -> ``setpts=N`` re-index. The
+        # distorted OBU is likewise re-indexed with ``setpts=N`` so libvmaf pairs
+        # frame-by-frame (index N vs index N), never by timestamp.
         fps = f"{vp.fps_num}/{vp.fps_den}"
-        # Alignment: the raw OBU is rateless (ffmpeg would assume 25fps), so read
-        # it with ``-r fps`` to stamp it at the coded rate; decimate the source's
-        # soft-telecine pulldown to the same rate (trailing ``fps=``); then let
-        # libvmaf pair frames by TIMESTAMP. Order-based pairing (``setpts=N``)
-        # desynced the differently-phased streams and scored a bogus ~0.
-        ref_chain = ",".join([*_geometry_filters(vp), f"fps={fps}"])
+        ref_chain = ",".join([*_geometry_filters(vp), f"fps={fps}", "setpts=N"])
         lavfi = (
-            f"[1:v]{ref_chain}[r];"
-            f"[0:v][r]libvmaf=log_path={json_path.name}:log_fmt=json:"
+            f"[0:v]setpts=N[d];[1:v]{ref_chain}[r];"
+            f"[d][r]libvmaf=log_path={json_path.name}:log_fmt=json:"
             f"n_threads={n_threads}"
         )
         # Absolute inputs: run_tool runs this pass with cwd=json_path.parent

@@ -275,29 +275,34 @@ class TestVmafPass:
         lavfi = fake.vmaf_call["cmd"][fake.vmaf_call["cmd"].index("-lavfi") + 1]
         assert "crop=1910:798:5:141" in lavfi
         assert "scale=1904:792:flags=spline" in lavfi
+        # Geometry -> fps decimation -> re-index, in that order, on the reference.
+        assert (
+            "[1:v]crop=1910:798:5:141,scale=1904:792:flags=spline,"
+            "fps=24000/1001,setpts=N[r]" in lavfi
+        )
         # The reference chain must NOT carry the 10-bit / setsar tail.
         assert "format=yuv420p10le" not in lavfi
         assert "setsar=1" not in lavfi
 
     def test_vmaf_reference_vf_plain_source(self, tmp_path: Path) -> None:
-        """No crop/scale/bwdif -> the reference chain is just `fps=<rate>`
-        (decimates the source's pulldown to the coded rate); no setpts, so
-        libvmaf pairs by timestamp.
+        """No crop/scale/bwdif -> the reference chain decimates to the coded
+        rate (``fps=<rate>``) then re-indexes (``setpts=N``) so libvmaf pairs
+        frame-by-frame, not by timestamp.
         """
         adapter = SvtAv1Adapter(Path("ffmpeg"))
         fake = _FakeRunTool()
         _run(adapter, fake, tmp_path, vmaf_enabled=True)
         lavfi = fake.vmaf_call["cmd"][fake.vmaf_call["cmd"].index("-lavfi") + 1]
-        assert "[1:v]fps=24000/1001[r]" in lavfi
-        assert "setpts" not in lavfi
+        assert "[1:v]fps=24000/1001,setpts=N[r]" in lavfi
 
-    def test_vmaf_obu_read_at_coded_rate_and_timestamp_sync(
+    def test_vmaf_obu_read_at_coded_rate_and_frame_index_sync(
         self, tmp_path: Path,
     ) -> None:
         """The OBU is rateless, so it's read with ``-r <fps>`` to stamp it at the
-        coded rate; the source is decimated to the same rate (trailing ``fps=``)
-        and libvmaf pairs by timestamp (distorted `[0:v]` goes straight in, no
-        setpts). Order-based pairing scored a bogus ~0 for soft-telecine.
+        coded rate; the source is decimated to the same rate (``fps=``). BOTH
+        streams are then re-indexed with ``setpts=N`` so libvmaf pairs frame N
+        against frame N. Timestamp pairing drifted apart on PAL DVD sources whose
+        demuxed PTS carry a start offset / jitter, collapsing VMAF to ~35.
         """
         adapter = SvtAv1Adapter(Path("ffmpeg"))
         fake = _FakeRunTool()
@@ -309,11 +314,13 @@ class TestVmafPass:
         assert cmd[r_idx + 1] == "24000/1001"
         assert r_idx < obu_idx
         lavfi = cmd[cmd.index("-lavfi") + 1]
-        # Distorted chain (input 0) goes straight to libvmaf: no filter, no setpts.
-        assert lavfi.startswith("[1:v]")
-        assert "[0:v][r]libvmaf" in lavfi
-        assert "[0:v]fps=" not in lavfi
-        assert "setpts" not in lavfi
+        # Distorted chain (input 0) is re-indexed, then paired against the
+        # re-indexed reference: index N <-> index N.
+        assert lavfi.startswith("[0:v]setpts=N[d];")
+        assert "[d][r]libvmaf" in lavfi
+        # fps decimation must come BEFORE setpts on the reference (decimate to
+        # the coded rate first, then re-index the surviving frames from 0).
+        assert "fps=24000/1001,setpts=N[r]" in lavfi
 
     def test_vmaf_log_wired_when_log_dir_set(self, tmp_path: Path) -> None:
         adapter = SvtAv1Adapter(Path("ffmpeg"), log_dir=tmp_path)
