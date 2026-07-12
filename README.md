@@ -16,7 +16,7 @@ Batch video transcoder for home archival. Scans your movie collection, lets you 
 - **HDR10 passthrough** — mastering display, content light level, BT.2020/PQ preserved through encode
 - **Auto deinterlace** — nnedi (neural network); HD interlaced content is always deinterlaced, SD is confirmed with idet before committing
 - **Smart crop** — black bars detected automatically across the timeline
-- **Quality scoring** — optional VMAF + SSIM per encode (`--vmaf`)
+- **Quality scoring** — optional GPU perceptual metrics per encode (`--vmaf`): SSIMULACRA2 + Butteraugli on the NVEnc path (plus VMAF), and SSIMULACRA2 + Butteraugli + CVVDP on the SVT-AV1 grain path via VapourSynth + Vship
 - **mpv preview** — audition audio tracks, check subtitles, or preview video right from the TUI before committing
 - **Per-track downmix** — fold 7.1 or 5.1 into stereo or 5.1 from the track selector, useful when the multichannel mix is a fake upmix or the movie is dialogue-heavy
 - **Satellite files** — external audio and subtitle files next to the video are picked up as extra tracks automatically
@@ -47,6 +47,12 @@ furnace run furnace-plan.json
 - [NVEncC](https://github.com/rigaya/NVEnc) (video encoder)
 - [dovi_tool](https://github.com/quietvoid/dovi_tool) (Dolby Vision RPU, optional)
 
+**Optional — VapourSynth plugins for GPU perceptual metrics** (`--metrics` on the SVT-AV1 grain path). VapourSynth itself installs as a furnace dependency; drop these DLLs into one folder (e.g. `C:\Tools\Media\vapoursynth-plugins\`) and point `bestsource` / `vship` / `bwdif` at them in `furnace.toml`:
+
+- [BestSource](https://github.com/vapoursynth/bestsource/releases) — source filter; `BestSource.dll` from `BestSource-R19.7z`
+- [Vship](https://codeberg.org/Line-fr/Vship/releases) — GPU metric engine (SSIMULACRA2 / Butteraugli / CVVDP); `libvship_NVIDIA.dll` from `libvship_NVIDIA.zip` (NVIDIA/CUDA build)
+- [Bwdif](https://github.com/HolyWu/VapourSynth-Bwdif/releases/tag/r4.1) — single-rate deinterlacer for interlaced grain sources; `Bwdif.dll` from `Bwdif-r4.1-win64.7z`
+
 ## Install
 
 ```bash
@@ -70,9 +76,9 @@ furnace plan D:\Movies -o E:\Encoded --audio-lang rus,eng --sub-lang rus,eng
 furnace run E:\Encoded\furnace-plan.json
 ```
 
-Enable VMAF + SSIM quality scoring (single pass):
+Enable perceptual quality scoring (SSIMULACRA2 / Butteraugli, plus VMAF and CVVDP where available):
 ```bash
-furnace plan D:\Movies -o E:\Encoded --audio-lang eng --sub-lang eng --vmaf
+furnace plan D:\Movies -o E:\Encoded --audio-lang eng --sub-lang eng --metrics
 ```
 
 Copy eligible video streams verbatim instead of re-encoding (audio still processed, container rebuilt):

@@ -130,6 +130,8 @@ def _make_tool_paths(tmp_path: Path) -> MagicMock:
     cfg.makemkvcon = tmp_path / "makemkvcon"
     cfg.nvencc = tmp_path / "nvencc"
     cfg.dovi_tool = None
+    cfg.bestsource = None
+    cfg.vship = None
     return cfg
 
 
@@ -296,8 +298,7 @@ class TestPlanDryRun:
         assert planner_init_kwargs.kwargs["track_selector"] is None
         assert planner_init_kwargs.kwargs["und_resolver"] is None
 
-    def test_dry_run_vmaf_flag(self, tmp_path: Path) -> None:
-        """--vmaf flag is forwarded to planner.create_plan()."""
+    def _run_metrics_flag(self, tmp_path: Path, flag: str) -> Any:
         source = tmp_path / "src"
         source.mkdir()
         output = tmp_path / "out"
@@ -322,12 +323,19 @@ class TestPlanDryRun:
 
             result = runner.invoke(
                 app,
-                ["plan", str(source), "-o", str(output), "-al", "eng", "-sl", "eng", "--dry-run", "--vmaf"],
+                ["plan", str(source), "-o", str(output), "-al", "eng", "-sl", "eng", "--dry-run", flag],
             )
 
         assert result.exit_code == 0, result.output
-        call_kwargs = mock_planner_cls.return_value.create_plan.call_args.kwargs
-        assert call_kwargs["vmaf_enabled"] is True
+        return mock_planner_cls.return_value.create_plan.call_args.kwargs
+
+    def test_dry_run_metrics_flag(self, tmp_path: Path) -> None:
+        """--metrics flag is forwarded to planner.create_plan() as vmaf_enabled."""
+        assert self._run_metrics_flag(tmp_path, "--metrics")["vmaf_enabled"] is True
+
+    def test_dry_run_vmaf_alias(self, tmp_path: Path) -> None:
+        """The deprecated --vmaf alias still enables metrics."""
+        assert self._run_metrics_flag(tmp_path, "--vmaf")["vmaf_enabled"] is True
 
     def test_copy_video_flag_forwarded(self, tmp_path: Path) -> None:
         """--copy-video flag is forwarded to planner.create_plan()."""
@@ -1190,6 +1198,56 @@ class TestRunExecutorClosure:
         # ...and wired into the executor as the grain encoder.
         exec_kwargs = mock_executor_cls.call_args.kwargs
         assert exec_kwargs["grain_encoder"] is mock_svt.return_value
+
+    def test_executor_fn_wires_vship_metrics(self, tmp_path: Path) -> None:
+        """bestsource+vship configured -> VshipMetricsAdapter built and injected
+        into the SVT grain encoder as its metrics adapter."""
+        plan_file = tmp_path / "plan.json"
+        plan_obj = make_plan(
+            jobs=[make_job(job_id="j1", status=JobStatus.PENDING)],
+            destination=str(tmp_path / "out"),
+        )
+
+        cfg = _make_tool_paths(tmp_path)
+        cfg.bestsource = tmp_path / "BestSource.dll"
+        cfg.vship = tmp_path / "libvship.dll"
+
+        captured_executor_fn: list[Any] = []
+
+        with (
+            patch("furnace.cli.load_config", return_value=cfg),
+            patch("furnace.cli.load_plan", return_value=plan_obj),
+            patch("furnace.cli._setup_logging"),
+            patch("furnace.cli.RunApp") as mock_run_app_cls,
+            patch("furnace.cli.ReportPrinter"),
+        ):
+            def _capture() -> None:
+                captured_executor_fn.append(mock_run_app_cls.call_args.kwargs["executor_fn"])
+
+            mock_run_app_cls.return_value.run.side_effect = _capture
+
+            result = runner.invoke(app, ["run", str(plan_file)])
+
+        assert result.exit_code == 0, result.output
+        executor_fn = captured_executor_fn[0]
+        mock_progress = MagicMock()
+
+        with (
+            patch("furnace.cli.FFmpegAdapter"),
+            patch("furnace.cli.Eac3toAdapter"),
+            patch("furnace.cli.QaacAdapter"),
+            patch("furnace.cli.MkvmergeAdapter"),
+            patch("furnace.cli.MkvpropeditAdapter"),
+            patch("furnace.cli.MkcleanAdapter"),
+            patch("furnace.cli.NVEncCAdapter"),
+            patch("furnace.cli.VshipMetricsAdapter") as mock_vship,
+            patch("furnace.cli.SvtAv1Adapter") as mock_svt,
+            patch("furnace.cli.Executor"),
+        ):
+            executor_fn(mock_progress)
+
+        mock_vship.assert_called_once_with(cfg.bestsource, cfg.vship)
+        assert mock_svt.call_args.kwargs["metrics"] is mock_vship.return_value
 
     def test_executor_fn_with_dovi_tool(self, tmp_path: Path) -> None:
         """When dovi_tool is set, DoviToolAdapter is created."""

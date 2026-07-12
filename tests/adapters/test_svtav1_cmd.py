@@ -411,7 +411,9 @@ class TestSvtAv1Encode:
         assert result.return_code == 0
         assert result.encoder_settings.startswith("av1_svt")
         assert result.vmaf_score is None
-        assert result.ssim_score is None
+        assert result.ssimulacra2_score is None
+        assert result.butteraugli_score is None
+        assert result.cvvdp_score is None
 
     def test_encode_accepts_vmaf_and_rpu_kwargs(self) -> None:
         """Task 2 accepts but ignores vmaf_enabled / rpu_path (Task 3 wires them)."""

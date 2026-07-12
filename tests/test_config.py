@@ -150,6 +150,32 @@ class TestDoviTool:
             load_config(config)
 
 
+class TestVapourSynthPlugins:
+    def test_bestsource_and_vship_present(self, tmp_path: Path) -> None:
+        bs = tmp_path / "tools" / "BestSource.dll"
+        vs = tmp_path / "tools" / "libvship.dll"
+        config = _write_config(
+            tmp_path, tools_override={"bestsource": str(bs), "vship": str(vs)},
+        )
+        bs.touch()
+        vs.touch()
+        tp = load_config(config)
+        assert tp.bestsource == bs
+        assert tp.vship == vs
+
+    def test_absent_defaults_none(self, tmp_path: Path) -> None:
+        config = _write_config(tmp_path)
+        tp = load_config(config)
+        assert tp.bestsource is None
+        assert tp.vship is None
+
+    def test_vship_path_missing_raises(self, tmp_path: Path) -> None:
+        bogus = str(tmp_path / "tools" / "no_vship.dll")
+        config = _write_config(tmp_path, tools_override={"vship": bogus})
+        with pytest.raises(FileNotFoundError, match="vship"):
+            load_config(config)
+
+
 # ── 7. APPDATA fallback ──────────────────────────────────────────────
 
 

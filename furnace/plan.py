@@ -155,7 +155,9 @@ def _load_job(raw: dict[str, Any]) -> Job:
         status=JobStatus(raw.get("status", "pending")),
         error=raw.get("error"),
         vmaf_score=raw.get("vmaf_score"),
-        ssim_score=raw.get("ssim_score"),
+        ssimulacra2_score=raw.get("ssimulacra2_score"),
+        butteraugli_score=raw.get("butteraugli_score"),
+        cvvdp_score=raw.get("cvvdp_score"),
         source_size=raw.get("source_size", 0),
         output_size=raw.get("output_size"),
         duration_s=raw.get("duration_s", 0.0),
@@ -189,24 +191,34 @@ def update_job_status(
     status: JobStatus,
     error: str | None = None,
     vmaf_score: float | None = None,
-    ssim_score: float | None = None,
+    ssimulacra2_score: float | None = None,
+    butteraugli_score: float | None = None,
+    cvvdp_score: float | None = None,
     output_size: int | None = None,
 ) -> None:
     """Read JSON, find job by id, update status fields, write back atomically."""
     with plan_path.open("r", encoding="utf-8") as f:
         raw = json.load(f)
 
+    # Only overwrite fields that were actually supplied (None = leave as-is).
+    updates: dict[str, float | int] = {
+        key: value
+        for key, value in (
+            ("vmaf_score", vmaf_score),
+            ("ssimulacra2_score", ssimulacra2_score),
+            ("butteraugli_score", butteraugli_score),
+            ("cvvdp_score", cvvdp_score),
+            ("output_size", output_size),
+        )
+        if value is not None
+    }
+
     found = False
     for job in raw.get("jobs", []):
         if job["id"] == job_id:
             job["status"] = status.value
             job["error"] = error
-            if vmaf_score is not None:
-                job["vmaf_score"] = vmaf_score
-            if ssim_score is not None:
-                job["ssim_score"] = ssim_score
-            if output_size is not None:
-                job["output_size"] = output_size
+            job.update(updates)
             found = True
             break
 

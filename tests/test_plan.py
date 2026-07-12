@@ -354,16 +354,25 @@ class TestUpdateJobStatus:
         raw = json.loads(plan_path.read_text(encoding="utf-8"))
         assert raw["jobs"][0]["vmaf_score"] == pytest.approx(95.4)
 
-    def test_update_with_ssim_score(self, tmp_path: Path) -> None:
-        """ssim_score is persisted when provided."""
-        plan = make_plan(jobs=[make_job(job_id="j-ssim")])
+    def test_update_with_perceptual_metrics(self, tmp_path: Path) -> None:
+        """SSIMULACRA2 / Butteraugli / CVVDP are persisted when provided."""
+        plan = make_plan(jobs=[make_job(job_id="j-metrics")])
         plan_path = tmp_path / "plan.json"
         save_plan(plan, plan_path)
 
-        update_job_status(plan_path, "j-ssim", JobStatus.DONE, ssim_score=0.987)
+        update_job_status(
+            plan_path,
+            "j-metrics",
+            JobStatus.DONE,
+            ssimulacra2_score=88.2,
+            butteraugli_score=1.73,
+            cvvdp_score=9.1,
+        )
 
-        raw = json.loads(plan_path.read_text(encoding="utf-8"))
-        assert raw["jobs"][0]["ssim_score"] == pytest.approx(0.987)
+        raw = json.loads(plan_path.read_text(encoding="utf-8"))["jobs"][0]
+        assert raw["ssimulacra2_score"] == pytest.approx(88.2)
+        assert raw["butteraugli_score"] == pytest.approx(1.73)
+        assert raw["cvvdp_score"] == pytest.approx(9.1)
 
     def test_update_with_output_size(self, tmp_path: Path) -> None:
         """output_size is persisted when provided."""

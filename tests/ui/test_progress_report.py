@@ -183,49 +183,52 @@ class TestVmafLabels:
 
 
 # ------------------------------------------------------------------
-# 5. SSIM scores and labels
+# 5. SSIMULACRA2 / Butteraugli / CVVDP scores and labels
 # ------------------------------------------------------------------
 
 
-class TestSsimLabels:
-    def test_ssim_excellent(self) -> None:
-        jobs = [make_job(status=JobStatus.DONE, source_size=1_000_000, output_size=500_000, ssim_score=0.9950)]
+class TestSsimulacra2Labels:
+    def test_excellent_at_90(self) -> None:
+        jobs = [make_job(status=JobStatus.DONE, source_size=1_000_000, output_size=500_000, ssimulacra2_score=90.0)]
         text = _render(jobs=jobs)
-        assert "SSIM 0.9950 (excellent)" in text
+        assert "SSIMU2 90.00 (excellent)" in text
 
-    def test_ssim_good(self) -> None:
-        jobs = [make_job(status=JobStatus.DONE, source_size=1_000_000, output_size=500_000, ssim_score=0.9600)]
+    def test_good_at_80(self) -> None:
+        jobs = [make_job(status=JobStatus.DONE, source_size=1_000_000, output_size=500_000, ssimulacra2_score=88.4)]
         text = _render(jobs=jobs)
-        assert "SSIM 0.9600 (good)" in text
+        assert "SSIMU2 88.40 (good)" in text
 
-    def test_ssim_fair(self) -> None:
-        jobs = [make_job(status=JobStatus.DONE, source_size=1_000_000, output_size=500_000, ssim_score=0.9100)]
+    def test_fair_at_70(self) -> None:
+        jobs = [make_job(status=JobStatus.DONE, source_size=1_000_000, output_size=500_000, ssimulacra2_score=70.0)]
         text = _render(jobs=jobs)
-        assert "SSIM 0.9100 (fair)" in text
+        assert "SSIMU2 70.00 (fair)" in text
 
-    def test_ssim_poor(self) -> None:
-        jobs = [make_job(status=JobStatus.DONE, source_size=1_000_000, output_size=500_000, ssim_score=0.8500)]
+    def test_poor_below_70(self) -> None:
+        jobs = [make_job(status=JobStatus.DONE, source_size=1_000_000, output_size=500_000, ssimulacra2_score=55.5)]
         text = _render(jobs=jobs)
-        assert "SSIM 0.8500 (poor)" in text
+        assert "SSIMU2 55.50 (poor)" in text
 
-    def test_ssim_at_boundary_099(self) -> None:
-        jobs = [make_job(status=JobStatus.DONE, source_size=1_000_000, output_size=500_000, ssim_score=0.99)]
+    def test_poor_negative(self) -> None:
+        """SSIMULACRA2 can be negative on very poor encodes."""
+        jobs = [make_job(status=JobStatus.DONE, source_size=1_000_000, output_size=500_000, ssimulacra2_score=-18.1)]
         text = _render(jobs=jobs)
-        assert "SSIM 0.9900 (excellent)" in text
+        assert "SSIMU2 -18.10 (poor)" in text
 
-    def test_ssim_at_boundary_095(self) -> None:
-        jobs = [make_job(status=JobStatus.DONE, source_size=1_000_000, output_size=500_000, ssim_score=0.95)]
-        text = _render(jobs=jobs)
-        assert "SSIM 0.9500 (good)" in text
 
-    def test_ssim_at_boundary_090(self) -> None:
-        jobs = [make_job(status=JobStatus.DONE, source_size=1_000_000, output_size=500_000, ssim_score=0.90)]
+class TestButteraugliCvvdpDisplay:
+    def test_butteraugli_value_shown(self) -> None:
+        jobs = [make_job(status=JobStatus.DONE, source_size=1_000_000, output_size=500_000, butteraugli_score=1.73)]
         text = _render(jobs=jobs)
-        assert "SSIM 0.9000 (fair)" in text
+        assert "Butteraugli 1.73" in text
+
+    def test_cvvdp_value_shown(self) -> None:
+        jobs = [make_job(status=JobStatus.DONE, source_size=1_000_000, output_size=500_000, cvvdp_score=9.12)]
+        text = _render(jobs=jobs)
+        assert "CVVDP 9.12" in text
 
 
 # ------------------------------------------------------------------
-# 6. Average VMAF/SSIM calculation
+# 6. Average metric calculation
 # ------------------------------------------------------------------
 
 
@@ -236,59 +239,60 @@ class TestAverages:
             make_job(job_id="j2", status=JobStatus.DONE, source_size=1_000_000, output_size=500_000, vmaf_score=80.0),
         ]
         text = _render(vmaf_enabled=True, jobs=jobs)
-        assert "Average VMAF:" in text
-        assert "85.00" in text
-        assert "n=2" in text
+        assert "Average:" in text
+        assert "VMAF 85.00 (n=2)" in text
 
-    def test_average_ssim_shown_alongside_vmaf(self) -> None:
+    def test_all_metric_averages_shown(self) -> None:
         jobs = [
             make_job(
-                job_id="j1", status=JobStatus.DONE, source_size=1_000_000,
-                output_size=500_000, vmaf_score=90.0, ssim_score=0.98,
+                job_id="j1", status=JobStatus.DONE, source_size=1_000_000, output_size=500_000,
+                vmaf_score=90.0, ssimulacra2_score=88.0, butteraugli_score=1.5, cvvdp_score=9.0,
             ),
             make_job(
-                job_id="j2", status=JobStatus.DONE, source_size=1_000_000,
-                output_size=500_000, vmaf_score=80.0, ssim_score=0.96,
+                job_id="j2", status=JobStatus.DONE, source_size=1_000_000, output_size=500_000,
+                vmaf_score=80.0, ssimulacra2_score=86.0, butteraugli_score=2.5, cvvdp_score=8.0,
             ),
         ]
         text = _render(vmaf_enabled=True, jobs=jobs)
-        assert "SSIM:" in text
-        assert "0.9700" in text
+        assert "VMAF 85.00 (n=2)" in text
+        assert "SSIMU2 87.00 (n=2)" in text
+        assert "Butteraugli 2.00 (n=2)" in text
+        assert "CVVDP 8.50 (n=2)" in text
 
     def test_no_average_when_vmaf_disabled(self) -> None:
         jobs = [
             make_job(status=JobStatus.DONE, source_size=1_000_000, output_size=500_000, vmaf_score=90.0),
         ]
         text = _render(vmaf_enabled=False, jobs=jobs)
-        assert "Average VMAF:" not in text
+        assert "Average:" not in text
 
-    def test_no_average_when_no_vmaf_scores(self) -> None:
+    def test_no_average_when_no_scores(self) -> None:
         jobs = [
             make_job(status=JobStatus.DONE, source_size=1_000_000, output_size=500_000, vmaf_score=None),
         ]
         text = _render(vmaf_enabled=True, jobs=jobs)
-        assert "Average VMAF:" not in text
+        assert "Average:" not in text
 
-    def test_average_vmaf_excludes_none_scores(self) -> None:
+    def test_average_excludes_none_scores(self) -> None:
         jobs = [
             make_job(job_id="j1", status=JobStatus.DONE, source_size=1_000_000, output_size=500_000, vmaf_score=90.0),
             make_job(job_id="j2", status=JobStatus.DONE, source_size=1_000_000, output_size=500_000, vmaf_score=None),
         ]
         text = _render(vmaf_enabled=True, jobs=jobs)
-        assert "90.00" in text
-        assert "n=1" in text
+        assert "VMAF 90.00 (n=1)" in text
 
-    def test_average_ssim_not_shown_when_no_ssim_scores(self) -> None:
+    def test_only_present_metrics_averaged(self) -> None:
+        """Only metrics some job recorded appear; no separator for absent ones."""
         jobs = [
             make_job(
                 job_id="j1", status=JobStatus.DONE, source_size=1_000_000,
-                output_size=500_000, vmaf_score=90.0, ssim_score=None,
+                output_size=500_000, vmaf_score=90.0,
             ),
         ]
         text = _render(vmaf_enabled=True, jobs=jobs)
-        assert "Average VMAF:" in text
-        # The pipe separator for SSIM should not appear
-        assert "| " not in text
+        assert "VMAF 90.00 (n=1)" in text
+        # Only VMAF present -> no "  |  " separator to another metric.
+        assert "  |  " not in text
 
 
 # ------------------------------------------------------------------
@@ -403,20 +407,24 @@ class TestPerFileDisplay:
         text = _render(jobs=jobs)
         assert "Fallback.mkv" in text
 
-    def test_vmaf_and_ssim_on_same_line(self) -> None:
+    def test_all_metrics_on_same_line(self) -> None:
         jobs = [
             make_job(
                 status=JobStatus.DONE,
                 source_size=1_000_000,
                 output_size=500_000,
                 vmaf_score=92.5,
-                ssim_score=0.975,
+                ssimulacra2_score=87.5,
+                butteraugli_score=1.9,
+                cvvdp_score=9.3,
             ),
         ]
         text = _render(jobs=jobs)
-        # Both scores in the per-file section
+        # All scores in the per-file section
         assert "VMAF 92.5 (good)" in text
-        assert "SSIM 0.9750 (good)" in text
+        assert "SSIMU2 87.50 (good)" in text
+        assert "Butteraugli 1.90" in text
+        assert "CVVDP 9.30" in text
 
     def test_no_quality_when_scores_absent(self) -> None:
         jobs = [
@@ -425,9 +433,13 @@ class TestPerFileDisplay:
                 source_size=1_000_000,
                 output_size=500_000,
                 vmaf_score=None,
-                ssim_score=None,
+                ssimulacra2_score=None,
+                butteraugli_score=None,
+                cvvdp_score=None,
             ),
         ]
         text = _render(jobs=jobs)
         assert "VMAF" not in text
-        assert "SSIM" not in text
+        assert "SSIMU2" not in text
+        assert "Butteraugli" not in text
+        assert "CVVDP" not in text

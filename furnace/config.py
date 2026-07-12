@@ -20,6 +20,11 @@ class ToolPaths:
     makemkvcon: Path
     nvencc: Path
     dovi_tool: Path | None
+    # VapourSynth plugin binaries for the SVT-AV1 grain path's perceptual
+    # metrics (BestSource source filter + Vship). Optional: absent -> the grain
+    # path simply records no SSIMULACRA2/Butteraugli/CVVDP scores.
+    bestsource: Path | None = None
+    vship: Path | None = None
 
 
 def load_config(config_path: Path | None = None) -> ToolPaths:
@@ -88,12 +93,14 @@ def load_config(config_path: Path | None = None) -> ToolPaths:
             raise FileNotFoundError(f"Tool '{name}' not found at path: {tool_path}")
         resolved[name] = tool_path
 
-    # Optional tools
-    dovi_tool_path: Path | None = None
-    if "dovi_tool" in tools_section:
-        dovi_tool_path = Path(tools_section["dovi_tool"])
-        if not dovi_tool_path.exists():
-            raise FileNotFoundError(f"Tool 'dovi_tool' not found at path: {dovi_tool_path}")
+    # Optional tools: absent -> None; present but missing on disk -> hard error.
+    def optional_tool(name: str) -> Path | None:
+        if name not in tools_section:
+            return None
+        path = Path(tools_section[name])
+        if not path.exists():
+            raise FileNotFoundError(f"Tool '{name}' not found at path: {path}")
+        return path
 
     return ToolPaths(
         ffmpeg=resolved["ffmpeg"],
@@ -106,5 +113,7 @@ def load_config(config_path: Path | None = None) -> ToolPaths:
         mpv=resolved["mpv"],
         makemkvcon=resolved["makemkvcon"],
         nvencc=resolved["nvencc"],
-        dovi_tool=dovi_tool_path,
+        dovi_tool=optional_tool("dovi_tool"),
+        bestsource=optional_tool("bestsource"),
+        vship=optional_tool("vship"),
     )

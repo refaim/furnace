@@ -18,3 +18,10 @@ mpv         = "C:\\Tools\\mpv\\mpv.exe"
 makemkvcon  = "C:\\Program Files (x86)\\MakeMKV\\makemkvcon64.exe"
 nvencc      = "C:\\Tools\\NVEncC\\NVEncC64.exe"
 dovi_tool   = "C:\\Tools\\dovi_tool.exe"  # optional, needed for Dolby Vision content
+
+# Optional — VapourSynth plugin DLLs for the SVT-AV1 grain path's GPU perceptual
+# metrics (SSIMULACRA2 / Butteraugli / CVVDP). Absent -> grain encodes record no
+# perceptual scores. BestSource is the source filter; libvship is the metric
+# engine (use the NVIDIA/CUDA build). VapourSynth itself is a furnace dependency.
+# bestsource  = "C:\\Tools\\vapoursynth-plugins\\BestSource.dll"
+# vship       = "C:\\Tools\\vapoursynth-plugins\\libvship_NVIDIA.dll"

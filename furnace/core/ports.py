@@ -7,7 +7,17 @@ from typing import Any, Protocol, runtime_checkable
 from furnace.core.progress import ProgressSample
 
 from .audio_profile import AudioMetrics
-from .models import AnalyzeStatus, CropRect, DiscTitle, DiscType, DownmixMode, DvMode, EncodeResult, VideoParams
+from .models import (
+    AnalyzeStatus,
+    CropRect,
+    DiscTitle,
+    DiscType,
+    DownmixMode,
+    DvMode,
+    EncodeResult,
+    MetricScores,
+    VideoParams,
+)
 
 
 @runtime_checkable
@@ -118,6 +128,28 @@ class Encoder(Protocol):
         rpu_path: Path | None = None,
     ) -> EncodeResult:
         """Encode video. Returns EncodeResult with return code, settings, and optional metrics."""
+        ...
+
+
+@runtime_checkable
+class PerceptualMetrics(Protocol):
+    """GPU perceptual metric scoring for the SVT-AV1 grain path.
+    Implemented by VshipMetricsAdapter (VapourSynth + Vship)."""
+
+    def measure(
+        self,
+        reference: Path,
+        distorted: Path,
+        *,
+        crop: CropRect | None,
+        final_width: int,
+        final_height: int,
+        matrix: str,
+        fps_num: int,
+        fps_den: int,
+    ) -> MetricScores:
+        """Score ``distorted`` against ``reference`` brought to the encoded geometry.
+        Fail-soft: any failure returns an all-None ``MetricScores``."""
         ...
 
 

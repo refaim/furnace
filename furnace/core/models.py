@@ -28,6 +28,7 @@ __all__ = [
     "HdrMetadata",
     "Job",
     "JobStatus",
+    "MetricScores",
     "Movie",
     "Plan",
     "ScanResult",
@@ -152,7 +153,18 @@ class EncodeResult:
     return_code: int
     encoder_settings: str
     vmaf_score: float | None = None
-    ssim_score: float | None = None
+    ssimulacra2_score: float | None = None  # pooled mean (0..100, higher better)
+    butteraugli_score: float | None = None  # pooled 3-norm (>=0, lower better)
+    cvvdp_score: float | None = None  # ColorVideoVDP video score (JOD, higher better)
+
+
+@dataclass(frozen=True)
+class MetricScores:
+    """Pooled GPU perceptual scores for one encode; any field is None on failure."""
+
+    ssimulacra2: float | None = None
+    butteraugli: float | None = None
+    cvvdp: float | None = None
 
 
 @dataclass(frozen=True)
@@ -320,7 +332,9 @@ class Job:
     status: JobStatus = JobStatus.PENDING
     error: str | None = None
     vmaf_score: float | None = None
-    ssim_score: float | None = None
+    ssimulacra2_score: float | None = None
+    butteraugli_score: float | None = None
+    cvvdp_score: float | None = None
     source_size: int = 0
     output_size: int | None = None  # None until encoding completes
     duration_s: float = 0.0  # source video duration in seconds; 0.0 means unknown

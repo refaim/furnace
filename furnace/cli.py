@@ -26,6 +26,7 @@ from .adapters.mpv import MpvAdapter
 from .adapters.nvencc import NVEncCAdapter
 from .adapters.qaac import QaacAdapter
 from .adapters.svtav1 import SvtAv1Adapter
+from .adapters.vship_metrics import VshipMetricsAdapter
 from .config import load_config
 from .core.detect import classify_grain, needs_grain_probe
 from .core.models import (
@@ -512,7 +513,14 @@ def plan(
     sub_lang: str = typer.Option(..., "--sub-lang", "-sl", help="Subtitle languages, comma-separated (e.g. rus,eng)"),
     names: Path | None = typer.Option(None, "--names", help="Rename map file"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Show plan without saving"),
-    vmaf: bool = typer.Option(False, "--vmaf", help="Enable VMAF"),
+    metrics: bool = typer.Option(
+        False,
+        "--metrics",
+        "--vmaf",
+        help="Compute perceptual quality metrics per encode: SSIMULACRA2 + Butteraugli "
+        "(both paths), CVVDP on the SVT-AV1 grain path, plus VMAF on the NVEnc path. "
+        "'--vmaf' is a deprecated alias.",
+    ),
     copy_video: bool = typer.Option(
         False, "--copy-video", "-cv", help="Copy eligible video streams verbatim instead of re-encoding"
     ),
@@ -542,14 +550,14 @@ def plan(
 
     logger.debug(
         "plan command started: source=%s output=%s audio_lang=%s sub_lang=%s names=%s "
-        "dry_run=%s vmaf=%s copy_video=%s force=%s ignore_langs=%s",
+        "dry_run=%s metrics=%s copy_video=%s force=%s ignore_langs=%s",
         source,
         output,
         audio_lang,
         sub_lang,
         names,
         dry_run,
-        vmaf,
+        metrics,
         copy_video,
         force,
         ignore_langs,
@@ -694,7 +702,7 @@ def plan(
             movies=movies_with_paths,
             audio_lang_filter=audio_lang_list,
             sub_lang_filter=sub_lang_list,
-            vmaf_enabled=vmaf,
+            vmaf_enabled=metrics,
             sar_overrides=sar_override_paths,
             downmix_overrides=downmix_overrides,
             lang_overrides=lang_overrides,
@@ -756,7 +764,10 @@ def run(
         mkvpropedit_adapter = MkvpropeditAdapter(cfg.mkvpropedit, on_output=tool_output)
         mkclean_adapter = MkcleanAdapter(cfg.mkclean, on_output=tool_output)
         nvencc_adapter = NVEncCAdapter(cfg.nvencc, on_output=tool_output)
-        svt_adapter = SvtAv1Adapter(cfg.ffmpeg, on_output=tool_output)
+        vship_metrics: VshipMetricsAdapter | None = None
+        if cfg.bestsource is not None and cfg.vship is not None:
+            vship_metrics = VshipMetricsAdapter(cfg.bestsource, cfg.vship)
+        svt_adapter = SvtAv1Adapter(cfg.ffmpeg, on_output=tool_output, metrics=vship_metrics)
 
         dovi_adapter: DoviToolAdapter | None = None
         if cfg.dovi_tool is not None:

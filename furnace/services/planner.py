@@ -509,6 +509,18 @@ class PlannerService:
         else:
             grain = video.grainy
 
+        # Interlaced grain content is not yet supported end to end. The SVT-AV1
+        # grain path scores quality against a VapourSynth reference, and its
+        # deinterlacer (the bwdif VS plugin) is not provisioned yet -- so an
+        # interlaced grain job could never be measured. Fail loudly at plan time
+        # rather than emit an unmeasurable job. Remove once bwdif is in place.
+        if grain and deinterlace:
+            raise ValueError(
+                f"Interlaced grain content is not yet supported: {video.source_file.name}. "
+                "The SVT-AV1 grain path cannot score interlaced sources until the "
+                "bwdif VapourSynth plugin is provisioned."
+            )
+
         return VideoParams(
             cq=cq,
             crop=crop,

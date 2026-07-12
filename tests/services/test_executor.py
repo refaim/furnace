@@ -1209,7 +1209,7 @@ class TestRunPipelineTaggerWarning:
 
 
 class TestRunPipelineEncodeMetrics:
-    """Verify VMAF/SSIM metrics stored on job."""
+    """Verify quality metrics stored on job."""
 
     def test_metrics_stored(
         self,
@@ -1221,7 +1221,9 @@ class TestRunPipelineEncodeMetrics:
             return_code=0,
             encoder_settings="test",
             vmaf_score=95.5,
-            ssim_score=0.99,
+            ssimulacra2_score=88.2,
+            butteraugli_score=1.73,
+            cvvdp_score=9.1,
         )
 
         def fake_clean(input_path: Any, output_path: Any, on_progress: Any = None) -> int:
@@ -1234,7 +1236,9 @@ class TestRunPipelineEncodeMetrics:
         output_path.parent.mkdir(parents=True, exist_ok=True)
         executor._run_pipeline(job, output_path, tmp_path)
         assert job.vmaf_score == 95.5
-        assert job.ssim_score == 0.99
+        assert job.ssimulacra2_score == 88.2
+        assert job.butteraugli_score == 1.73
+        assert job.cvvdp_score == 9.1
 
 
 class TestRunPipelineChapters:
@@ -3309,7 +3313,9 @@ class TestRunPipelinePassthrough:
         executor._run_pipeline(job, output_path, tmp_path)
 
         assert job.vmaf_score is None
-        assert job.ssim_score is None
+        assert job.ssimulacra2_score is None
+        assert job.butteraugli_score is None
+        assert job.cvvdp_score is None
 
     def test_passthrough_forwards_hdr_video_meta_to_mux(
         self,

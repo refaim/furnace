@@ -287,13 +287,17 @@ class NVEncCAdapter:
                 cmd += ["--dolby-vision-rpu-prm", "crop=true"]
 
         # --- Quality metrics ---
+        # VMAF (kept for continuity with the resolution-tuned QVBR anchors) plus
+        # GPU-accelerated SSIMULACRA2 + Butteraugli via NVEncC's bundled libvship.
+        # SSIM is dropped -- SSIMULACRA2 supersedes it. CVVDP is a temporal metric
+        # reserved for the grainy SVT path, so it is not requested here.
         if vmaf_enabled:
             n_threads = max(1, (os.cpu_count() or 4) - 2)
             # Select VMAF model by resolution
             pixel_area = vp.crop.w * vp.crop.h if vp.crop is not None else vp.source_width * vp.source_height
             model = "vmaf_4k_v0.6.1" if pixel_area >= _VMAF_4K_MIN_PIXEL_AREA else "vmaf_v0.6.1"
-            cmd.append("--ssim")
             cmd += ["--vmaf", f"model={model},threads={n_threads},subsample=8"]
+            cmd += ["--vship-ssimulacra2", "--vship-butteraugli"]
 
         # --- Input / Output ---
         cmd += ["-i", str(input_path)]
@@ -337,23 +341,32 @@ class NVEncCAdapter:
         encoder_settings = self._build_encoder_settings(video_params)
 
         src_fps = video_params.fps_num / video_params.fps_den if video_params.fps_den else 0.0
-        ssim_score: float | None = None
         vmaf_score: float | None = None
-        ssim_re = re.compile(r"All:\s*(\d+\.\d+)")
-        vmaf_re = re.compile(r"VMAF\s+Score\s+(\d+\.\d+)", re.IGNORECASE)
+        ssimulacra2_score: float | None = None
+        butteraugli_score: float | None = None
+        # SSIMULACRA2/Butteraugli can be negative on very poor encodes, so the
+        # capture groups are sign-aware. Butteraugli's line prints three norms
+        # (normQ/norm3/norminf); we keep norm3, the community-standard aggregate.
+        vmaf_re = re.compile(r"VMAF\s+Score\s+(-?\d+\.\d+)", re.IGNORECASE)
+        s2_re = re.compile(r"SSIMU2\s+Score\s+(-?\d+\.\d+)", re.IGNORECASE)
+        butter_re = re.compile(r"norm3:\s*(-?\d+\.\d+)", re.IGNORECASE)
 
         def _on_output(line: str) -> None:
-            nonlocal ssim_score, vmaf_score
+            nonlocal vmaf_score, ssimulacra2_score, butteraugli_score
             if self._on_output is not None:
                 self._on_output(line)
-            if "SSIM" in line:
-                m = ssim_re.search(line)
-                if m:
-                    ssim_score = float(m.group(1))
             if "VMAF" in line:
                 m = vmaf_re.search(line)
                 if m:
                     vmaf_score = float(m.group(1))
+            if "SSIMU2" in line:
+                m = s2_re.search(line)
+                if m:
+                    ssimulacra2_score = float(m.group(1))
+            if "Butteraugli" in line:
+                m = butter_re.search(line)
+                if m:
+                    butteraugli_score = float(m.group(1))
 
         def _on_progress_line(line: str) -> bool:
             sample = _parse_nvencc_progress_line(line, src_fps=src_fps)
@@ -374,6 +387,7 @@ class NVEncCAdapter:
         return EncodeResult(
             return_code=rc,
             encoder_settings=encoder_settings,
-            ssim_score=ssim_score,
             vmaf_score=vmaf_score,
+            ssimulacra2_score=ssimulacra2_score,
+            butteraugli_score=butteraugli_score,
         )

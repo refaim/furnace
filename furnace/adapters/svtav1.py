@@ -13,14 +13,13 @@ without re-measuring.
 
 from __future__ import annotations
 
-import json
 import logging
-import os
 from collections.abc import Callable
 from pathlib import Path
 
 from furnace.core.color import CICP_MATRIX, CICP_PRIMARIES, CICP_TRANSFER
-from furnace.core.models import EncodeResult, VideoParams
+from furnace.core.models import EncodeResult, MetricScores, VideoParams
+from furnace.core.ports import PerceptualMetrics
 from furnace.core.progress import ProgressSample
 from furnace.core.quality import final_output_dimensions
 
@@ -77,14 +76,16 @@ def _color_svtav1_params(vp: VideoParams) -> str:
 
 
 def _geometry_filters(vp: VideoParams) -> list[str]:
-    """Shared crop/scale/deinterlace prefix for the encode and the VMAF pass.
+    """Shared crop/scale/deinterlace prefix for the SVT-AV1 encode filtergraph.
 
     Order matters: deinterlace on fields first, then crop, then a single
     high-quality rescale (only when the final encoded size differs from the
     pre-resize size). This is the *geometry* only -- it deliberately omits the
-    fixed 10-bit / square-SAR tail so the VMAF reference chain can reuse it to
-    match the encoded frames' geometry without forcing a pixel format. The
-    encode path (:func:`_build_vf`) appends the tail; the two never drift.
+    fixed 10-bit / square-SAR tail, which :func:`_build_vf` appends. The
+    perceptual-metrics reference reproduces this same crop+scale geometry in
+    VapourSynth (see :mod:`furnace.adapters.vship_metrics`); the two are kept
+    consistent by the planner refusing interlaced grain jobs, so metrics never
+    face a deinterlaced reference.
     """
     parts: list[str] = []
 
@@ -132,10 +133,12 @@ class SvtAv1Adapter:
         *,
         on_output: OutputCallback = None,
         log_dir: Path | None = None,
+        metrics: PerceptualMetrics | None = None,
     ) -> None:
         self._ffmpeg = ffmpeg
         self._on_output = on_output
         self._log_dir = log_dir
+        self._metrics = metrics
 
     def set_log_dir(self, log_dir: Path | None) -> None:
         self._log_dir = log_dir
@@ -210,13 +213,13 @@ class SvtAv1Adapter:
     ) -> EncodeResult:
         """Encode via ffmpeg + libsvtav1, parsing ffmpeg ``-progress`` for progress.
 
-        When ``vmaf_enabled`` and the encode succeeds, a second ffmpeg
-        ``libvmaf`` pass compares the encoded OBU against the source and the
-        pooled mean VMAF is returned; any failure of that pass is fail-soft
-        (``vmaf_score`` stays None -- a metrics failure never fails the encode).
-        ``ssim_score`` is always None: the SVT path surfaces only VMAF.
-        ``rpu_path`` is accepted for Encoder-protocol parity but ignored --
-        SVT-AV1 grain jobs are SDR (no Dolby Vision path).
+        When ``vmaf_enabled`` and the encode succeeds, GPU perceptual metrics
+        (SSIMULACRA2 / Butteraugli / CVVDP) are measured against the source via
+        the injected VapourSynth + Vship adapter; any failure is fail-soft (the
+        scores stay None -- a metrics failure never fails the encode).
+        ``vmaf_score`` is always None here: the grain path deliberately drops
+        VMAF (grain-blind) for the perceptual metrics. ``rpu_path`` is accepted
+        for Encoder-protocol parity but ignored -- SVT-AV1 grain jobs are SDR.
         """
         _ = rpu_path
         cmd = self._build_encode_cmd(input_path, output_path, video_params)
@@ -232,96 +235,24 @@ class SvtAv1Adapter:
         )
 
         encoder_settings = self._build_encoder_settings(video_params)
-        vmaf_score: float | None = None
-        if vmaf_enabled and rc == 0:
-            vmaf_score = self._run_vmaf(input_path, output_path, video_params)
+        scores = MetricScores()
+        if vmaf_enabled and rc == 0 and self._metrics is not None:
+            final_w, final_h = final_output_dimensions(video_params)
+            scores = self._metrics.measure(
+                input_path,
+                output_path,
+                crop=video_params.crop,
+                final_width=final_w,
+                final_height=final_h,
+                matrix=video_params.color_matrix,
+                fps_num=video_params.fps_num,
+                fps_den=video_params.fps_den,
+            )
 
         return EncodeResult(
             return_code=rc,
             encoder_settings=encoder_settings,
-            vmaf_score=vmaf_score,
-            ssim_score=None,
+            ssimulacra2_score=scores.ssimulacra2,
+            butteraugli_score=scores.butteraugli,
+            cvvdp_score=scores.cvvdp,
         )
-
-    # ------------------------------------------------------------------
-    # VMAF metrics pass
-    # ------------------------------------------------------------------
-
-    def _run_vmaf(
-        self,
-        source: Path,
-        encoded_obu: Path,
-        vp: VideoParams,
-    ) -> float | None:
-        """Measure pooled mean VMAF of ``encoded_obu`` against ``source``.
-
-        Frame-exact alignment in three steps, so distorted frame N is always
-        compared against the source frame N that produced it:
-
-        1. The reference is brought to the *encoded* geometry -- the
-           crop/scale/deinterlace from :func:`_geometry_filters` when the source
-           needs any (a plain source needs none), but never the 10-bit / setsar
-           tail, so no pixel format is forced.
-        2. ``fps=<coded rate>`` decimates the reference to the OBU's frame
-           *count*. This matters for soft-telecine sources: the OBU is at the
-           coded rate (encode ``-r``) but the source decodes with 2:3 pulldown
-           applied, so without decimation the two carry different frame counts.
-        3. ``setpts=N`` resets BOTH streams' timestamps to their frame index, so
-           libvmaf pairs index N against index N. Pairing by *timestamp* instead
-           silently drifts apart on PAL DVD sources whose demuxed reference PTS
-           carry a start offset / jitter versus the OBU's clean 0-based grid --
-           that drift collapsed the score to ~35 over a feature-length run while
-           the encode itself was pristine. Index pairing is identical to
-           timestamp pairing on clean soft-telecine (the decimated dupes are
-           bit-identical), so it fixes the PAL case without regressing telecine.
-
-        libvmaf writes a JSON log which is parsed for
-        ``pooled_metrics.vmaf.mean``.
-
-        Fail-soft: a non-zero ffmpeg rc, or a missing / unparseable / key-less
-        JSON, returns None. The log filename (not the full path) is passed to
-        libvmaf and ffmpeg runs with ``cwd`` set to the log's directory -- a
-        full Windows path would carry a drive-letter colon that libvmaf's
-        ``:``-delimited option parser would mangle.
-        """
-        json_path = encoded_obu.with_name(f"{encoded_obu.stem}.vmaf.json")
-        n_threads = max(1, (os.cpu_count() or 4) - 2)
-        # The raw OBU is rateless (ffmpeg would assume 25fps), so it is read with
-        # ``-r fps`` to stamp it at the coded rate. Reference chain: geometry ->
-        # ``fps=`` decimation to that same rate -> ``setpts=N`` re-index. The
-        # distorted OBU is likewise re-indexed with ``setpts=N`` so libvmaf pairs
-        # frame-by-frame (index N vs index N), never by timestamp.
-        fps = f"{vp.fps_num}/{vp.fps_den}"
-        ref_chain = ",".join([*_geometry_filters(vp), f"fps={fps}", "setpts=N"])
-        lavfi = (
-            f"[0:v]setpts=N[d];[1:v]{ref_chain}[r];"
-            f"[d][r]libvmaf=log_path={json_path.name}:log_fmt=json:"
-            f"n_threads={n_threads}"
-        )
-        # Absolute inputs: run_tool runs this pass with cwd=json_path.parent
-        # (the log_path colon workaround), so a relative source/OBU path -- as
-        # the executor passes -- would not resolve from that cwd. resolve()
-        # against the current furnace cwd before the subprocess switches.
-        cmd: list[str | Path] = [
-            self._ffmpeg, "-hide_banner",
-            "-r", fps, "-i", encoded_obu.resolve(), "-i", source.resolve(),
-            "-lavfi", lavfi,
-            "-f", "null", "-",
-        ]
-        log_path = self._log_dir / "svt_vmaf.log" if self._log_dir else None
-        rc, _out = run_tool(
-            cmd,
-            on_output=self._on_output,
-            log_path=log_path,
-            cwd=json_path.parent,
-        )
-        if rc != 0:
-            logger.warning("svtav1 VMAF pass failed (rc=%d); no score recorded", rc)
-            return None
-        try:
-            with json_path.open(encoding="utf-8") as fh:
-                data = json.load(fh)
-            return float(data["pooled_metrics"]["vmaf"]["mean"])
-        except (OSError, ValueError, KeyError, TypeError, IndexError):
-            logger.warning("svtav1 VMAF metrics unavailable; continuing without a score")
-            return None

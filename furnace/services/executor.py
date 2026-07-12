@@ -231,7 +231,9 @@ class Executor:
                     error=None,
                     output_size=output_size,
                     vmaf_score=job.vmaf_score,
-                    ssim_score=job.ssim_score,
+                    ssimulacra2_score=job.ssimulacra2_score,
+                    butteraugli_score=job.butteraugli_score,
+                    cvvdp_score=job.cvvdp_score,
                 )
                 logger.debug("Job %s completed successfully", job.id)
                 if self._progress is not None:
@@ -408,8 +410,12 @@ class Executor:
             # Store metrics from encode
             if rc_result.vmaf_score is not None:
                 job.vmaf_score = rc_result.vmaf_score
-            if rc_result.ssim_score is not None:
-                job.ssim_score = rc_result.ssim_score
+            if rc_result.ssimulacra2_score is not None:
+                job.ssimulacra2_score = rc_result.ssimulacra2_score
+            if rc_result.butteraugli_score is not None:
+                job.butteraugli_score = rc_result.butteraugli_score
+            if rc_result.cvvdp_score is not None:
+                job.cvvdp_score = rc_result.cvvdp_score
             encoder_settings = rc_result.encoder_settings
 
         # Step 5: Mux

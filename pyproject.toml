@@ -1,6 +1,6 @@
 [project]
 name = "furnace"
-version = "2.7.2"
+version = "2.8.0"
 description = "Movie collection transcoding tool for home archival"
 license = "MIT"
 requires-python = ">=3.13"
@@ -11,6 +11,9 @@ dependencies = [
     "charset-normalizer>=3.0",
     "psutil>=6.0",
     "numpy>=2.4.4",
+    # In-process host for the SVT-AV1 grain path's GPU perceptual metrics (drives
+    # the Vship VapourSynth plugin). The R74+ wheel bundles the core.
+    "vapoursynth>=74",
 ]
 
 [project.scripts]
@@ -84,6 +87,12 @@ warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = true
 disallow_any_generics = true
+
+# VapourSynth's plugin API is fully dynamic (core.<plugin>.<Func>); the module
+# ships no py.typed marker, so treat it as untyped and access it via Any.
+[[tool.mypy.overrides]]
+module = "vapoursynth"
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
