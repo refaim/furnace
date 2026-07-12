@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from .detect import detect_hdr
+from .outdated import Defect, EncoderFamily
 
 # A Furnace-stamped MKV carries an ENCODER tag of exactly ``Furnace vX.Y.Z``.
 # Anything else (no tag, a foreign encoder, a malformed Furnace tag) is treated
@@ -48,6 +49,37 @@ def parse_version_arg(s: str) -> tuple[int, int, int]:
     return int(match.group(1)), int(match.group(2)), int(match.group(3))
 
 
+# Families whose ENCODER_SETTINGS leads with the encoder name (an exact prefix).
+# Driven off ``EncoderFamily.value`` so the parser and the enum share one source
+# of truth and can never silently drift. PASSTHROUGH is matched separately: its
+# sentinel ("video stream copied (passthrough)") carries the value as a
+# substring, not a prefix. Order is irrelevant — no value is a prefix of another.
+_PREFIX_ENCODER_FAMILIES: tuple[EncoderFamily, ...] = (
+    EncoderFamily.HEVC_NVENC,
+    EncoderFamily.AV1_NVENC,
+    EncoderFamily.AV1_SVT,
+)
+
+
+def parse_encoder_family(settings: str | None) -> EncoderFamily:
+    """Classify an MKV ``ENCODER_SETTINGS`` tag into its encoder family.
+
+    The tag is a slash-separated recipe whose first token names the encoder:
+    ``hevc_nvenc`` (a legacy HEVC encode), ``av1_nvenc`` (NVEncC AV1) or
+    ``av1_svt`` (SVT-AV1 grain path). A verbatim video copy writes the sentinel
+    ``"video stream copied (passthrough)"`` instead. A missing tag or anything
+    unrecognized is ``UNKNOWN``.
+    """
+    if settings is None:
+        return EncoderFamily.UNKNOWN
+    for family in _PREFIX_ENCODER_FAMILIES:
+        if settings.startswith(family.value):
+            return family
+    if EncoderFamily.PASSTHROUGH.value in settings:
+        return EncoderFamily.PASSTHROUGH
+    return EncoderFamily.UNKNOWN
+
+
 @dataclass(frozen=True)
 class AudioTrackSummary:
     """One audio track, as shown in a scan table row."""
@@ -67,11 +99,20 @@ class SubtitleTrackSummary:
 
 @dataclass(frozen=True)
 class VideoSummary:
-    """The video-stream fields shown in a scan row: codec, bit depth, HDR class."""
+    """The video-stream fields shown in a scan row: codec, bit depth, HDR class.
+
+    ``width``/``height`` (source geometry) and ``color_matrix`` (the container
+    MatrixCoefficients tag, ffprobe's ``color_space``) feed the ``--outdated``
+    ledger; all three are ``None`` when there is no video stream or the field is
+    absent. They default to ``None`` so normal-mode construction is unaffected.
+    """
 
     codec: str | None  # first video stream's codec_name; None when no video stream
     bit_depth: int | None  # 8/10/12 from pix_fmt; None when no video stream / unknown
     hdr: str | None  # "SDR"|"HDR10"|"HLG"|"DV P{n}"|"DV"; None when no video stream
+    width: int | None = None  # first video stream's width; None when absent
+    height: int | None = None  # first video stream's height; None when absent
+    color_matrix: str | None = None  # container matrix tag (color_space); None when absent
 
 
 @dataclass(frozen=True)
@@ -91,6 +132,8 @@ class ScanRow:
     audio: tuple[AudioTrackSummary, ...]
     subtitles: tuple[SubtitleTrackSummary, ...]
     unreadable: bool = False
+    encoder_family: EncoderFamily = EncoderFamily.UNKNOWN
+    defects: tuple[Defect, ...] = ()
 
 
 def bit_depth_from_pix_fmt(pix_fmt: str | None) -> int | None:
@@ -150,6 +193,9 @@ def summarize_streams(
             codec=vs.get("codec_name", "unknown"),
             bit_depth=bit_depth_from_pix_fmt(vs.get("pix_fmt")),
             hdr=hdr_label(vs, vs.get("side_data_list") or []),
+            width=vs.get("width"),
+            height=vs.get("height"),
+            color_matrix=vs.get("color_space"),
         )
     else:
         video = VideoSummary(None, None, None)

@@ -876,14 +876,29 @@ def scan(
     max_version: str | None = typer.Option(
         None, "--max-version", help="Show Furnace files at version <= X.Y.Z"
     ),
+    outdated: bool = typer.Option(
+        False,
+        "--outdated",
+        help="Show only the re-encode work-list: files a known Furnace-version "
+        "defect or foreign origin makes a re-encode/remux candidate "
+        "(standalone — not combined with the status filters)",
+    ),
     config: Path | None = typer.Option(None, "--config", help="Path to config file"),
 ) -> None:
     """Inventory video files and their Furnace-encode status (read-only).
 
     Filter flags select on encode status and union (OR): no flag shows every
-    video file. The table goes to stdout (redirect-safe); the summary and any
-    warnings go to stderr.
+    video file. ``--outdated`` is standalone and instead surfaces only the files
+    worth re-encoding or remuxing. The table goes to stdout (redirect-safe); the
+    summary and any warnings go to stderr.
     """
+    if outdated and (not_encoded or encoded or max_version is not None):
+        raise typer.BadParameter(
+            "--outdated is standalone; it cannot be combined with "
+            "--not-encoded, --encoded or --max-version",
+            param_hint="--outdated",
+        )
+
     max_version_tuple: tuple[int, int, int] | None = None
     if max_version is not None:
         try:
@@ -902,6 +917,7 @@ def scan(
         not_encoded=not_encoded,
         encoded=encoded,
         max_version=max_version_tuple,
+        outdated=outdated,
     )
     warnings = [f"could not read {row.path}" for row in rows if row.unreadable]
-    render_scan_table(rows, root=src, total=total, warnings=warnings)
+    render_scan_table(rows, root=src, total=total, warnings=warnings, outdated=outdated)

@@ -23,6 +23,7 @@ from rich.box import ASCII
 from rich.console import Console
 from rich.table import Table
 
+from furnace.core.outdated import row_fix, row_severity
 from furnace.core.scan import AudioTrackSummary, ScanRow, SubtitleTrackSummary, VideoSummary
 
 # Placeholder for an absent value — no video stream, or any stream column on an
@@ -98,6 +99,47 @@ def _cells(row: ScanRow, root: Path) -> tuple[str, str, str, str, str, str]:
     return file_cell, status, video, hdr, audio, subs
 
 
+def _outdated_cells(row: ScanRow, root: Path) -> tuple[str, str, str, str, str, str]:
+    """The six ``--outdated`` cells (File, Severity, Fix, Reason, Video, HDR).
+
+    Severity is the worst severity among the row's defects and Fix the strongest
+    remedy; Reason stacks every defect label (already severity-ordered) on its
+    own line. An unreadable row keeps its ``—`` stream columns.
+    """
+    file_cell = _rel_path(row.path, root)
+    severity = row_severity(row.defects).label
+    fix = row_fix(row.defects).label
+    reason = "\n".join(defect.reason for defect in row.defects)
+    if row.unreadable:
+        return file_cell, severity, fix, reason, _NONE, _NONE
+    video = _video_cell(row.video)
+    hdr = row.video.hdr or _NONE
+    return file_cell, severity, fix, reason, video, hdr
+
+
+def _build_table(rows: Sequence[ScanRow], root: Path, *, outdated: bool) -> Table:
+    """Build the ASCII table for either the normal inventory or outdated modes.
+
+    Normal mode lists every row in discovery order across the full stream
+    inventory. Outdated mode swaps in the defect columns and sorts rows
+    worst-first by row severity (a stable sort, so ties keep discovery order).
+    """
+    table = Table(box=ASCII)
+    if outdated:
+        for name in ("File", "Severity", "Fix", "Reason", "Video", "HDR"):
+            table.add_column(name, no_wrap=True)
+        display_rows = sorted(rows, key=lambda row: row_severity(row.defects).order)
+        for row in display_rows:
+            table.add_row(*_outdated_cells(row, root))
+        return table
+
+    for name in ("File", "Status", "Video", "HDR", "Audio", "Subs"):
+        table.add_column(name, no_wrap=True)
+    for row in rows:
+        table.add_row(*_cells(row, root))
+    return table
+
+
 def render_scan_table(
     rows: Sequence[ScanRow],
     *,
@@ -106,6 +148,7 @@ def render_scan_table(
     warnings: Sequence[str] = (),
     file: TextIO | None = None,
     err: TextIO | None = None,
+    outdated: bool = False,
 ) -> None:
     """Render the scan inventory.
 
@@ -114,19 +157,15 @@ def render_scan_table(
     "no video files found" note are written to ``err`` (default stderr), so a
     redirected stdout stays pure table. When ``total`` is ``0`` the empty
     table header still prints and the note replaces the summary.
+
+    With ``outdated`` set the table shows the defect work-list columns
+    (``File | Severity | Fix | Reason | Video | HDR``) with rows sorted
+    worst-first; ``N`` is then the flagged count and ``M`` the total scanned.
     """
     out = sys.stdout if file is None else file
     err_out = sys.stderr if err is None else err
 
-    table = Table(box=ASCII)
-    table.add_column("File", no_wrap=True)
-    table.add_column("Status", no_wrap=True)
-    table.add_column("Video", no_wrap=True)
-    table.add_column("HDR", no_wrap=True)
-    table.add_column("Audio", no_wrap=True)
-    table.add_column("Subs", no_wrap=True)
-    for row in rows:
-        table.add_row(*_cells(row, root))
+    table = _build_table(rows, root, outdated=outdated)
 
     Console(file=out, width=_NO_TRUNCATE_WIDTH, highlight=False).print(table)
 

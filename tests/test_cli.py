@@ -3194,6 +3194,150 @@ class TestScanCommand:
         assert "encoded.mkv" not in out
         assert "1 of 2 shown" in out
 
+    def test_outdated_flag_forwarded(self, tmp_path: Path) -> None:
+        src = tmp_path / "movies"
+        src.mkdir()
+        cfg = _make_tool_paths(tmp_path)
+
+        with (
+            patch("furnace.cli.load_config", return_value=cfg),
+            patch("furnace.cli.FFmpegAdapter"),
+            patch("furnace.cli.ScanService") as mock_service_cls,
+            patch("furnace.cli.render_scan_table") as mock_render,
+        ):
+            mock_service_cls.return_value.scan.return_value = ([], 0)
+
+            result = runner.invoke(app, ["scan", str(src), "--outdated"])
+
+        assert result.exit_code == 0, result.output
+        assert mock_service_cls.return_value.scan.call_args.kwargs["outdated"] is True
+        assert mock_render.call_args.kwargs["outdated"] is True
+
+    def test_outdated_defaults_false(self, tmp_path: Path) -> None:
+        src = tmp_path / "movies"
+        src.mkdir()
+        cfg = _make_tool_paths(tmp_path)
+
+        with (
+            patch("furnace.cli.load_config", return_value=cfg),
+            patch("furnace.cli.FFmpegAdapter"),
+            patch("furnace.cli.ScanService") as mock_service_cls,
+            patch("furnace.cli.render_scan_table") as mock_render,
+        ):
+            mock_service_cls.return_value.scan.return_value = ([], 0)
+
+            result = runner.invoke(app, ["scan", str(src)])
+
+        assert result.exit_code == 0, result.output
+        assert mock_service_cls.return_value.scan.call_args.kwargs["outdated"] is False
+        assert mock_render.call_args.kwargs["outdated"] is False
+
+    @pytest.mark.parametrize(
+        "clashing",
+        [["--not-encoded"], ["--encoded"], ["--max-version", "2.0.0"]],
+    )
+    def test_outdated_is_standalone(self, tmp_path: Path, clashing: list[str]) -> None:
+        """--outdated combined with any status filter is a usage error, raised early."""
+        src = tmp_path / "movies"
+        src.mkdir()
+
+        with (
+            patch("furnace.cli.load_config") as mock_load_cfg,
+            patch("furnace.cli.FFmpegAdapter"),
+            patch("furnace.cli.ScanService") as mock_service_cls,
+            patch("furnace.cli.render_scan_table"),
+        ):
+            result = runner.invoke(app, ["scan", str(src), "--outdated", *clashing])
+
+        assert result.exit_code != 0
+        assert "outdated" in result.output
+        mock_load_cfg.assert_not_called()
+        mock_service_cls.return_value.scan.assert_not_called()
+
+    def test_integration_outdated_flags_and_drops(self, tmp_path: Path) -> None:
+        """End-to-end --outdated: foreign + defective kept, clean current dropped."""
+        src = tmp_path / "movies"
+        src.mkdir()
+        clean = src / "a_clean.mkv"
+        foreign = src / "b_foreign.mkv"
+        old = src / "c_old.mkv"
+        for p in (clean, foreign, old):
+            p.touch()
+        cfg = _make_tool_paths(tmp_path)
+
+        probe_map: dict[Path, dict[str, Any]] = {
+            clean: {
+                "streams": [
+                    {"codec_type": "video", "codec_name": "av1", "height": 1080, "color_space": "bt709"},
+                    {"codec_type": "audio", "codec_name": "aac", "channels": 2, "tags": {"language": "eng"}},
+                ],
+                "format": {"tags": {"ENCODER": "Furnace v2.9.0", "ENCODER_SETTINGS": "av1_nvenc / main"}},
+            },
+            foreign: {
+                "streams": [{"codec_type": "video", "codec_name": "h264", "height": 1080}],
+                "format": {"tags": {"ENCODER": "Lavf60"}},
+            },
+            old: {
+                "streams": [{"codec_type": "video", "codec_name": "av1", "height": 1080, "color_space": "bt709"}],
+                "format": {"tags": {"ENCODER": "Furnace v2.1.0", "ENCODER_SETTINGS": "av1_nvenc / main"}},
+            },
+        }
+        fake_prober = MagicMock()
+        fake_prober.probe.side_effect = lambda p: probe_map[p]
+
+        with (
+            patch("furnace.cli.load_config", return_value=cfg),
+            patch("furnace.cli.FFmpegAdapter", return_value=fake_prober),
+        ):
+            result = runner.invoke(app, ["scan", str(src), "--outdated"])
+
+        assert result.exit_code == 0, result.output
+        out = result.output
+        assert "Severity" in out
+        assert "b_foreign.mkv" in out
+        assert "FOREIGN" in out
+        assert "c_old.mkv" in out
+        assert "a_clean.mkv" not in out
+        assert "2 of 3 shown" in result.output
+
+    def test_integration_outdated_keeps_unreadable_and_exits_zero(self, tmp_path: Path) -> None:
+        """--outdated still exits 0 and surfaces an unreadable file as its own row."""
+        src = tmp_path / "movies"
+        src.mkdir()
+        good = src / "a_good.mkv"
+        bad = src / "b_bad.mkv"
+        good.touch()
+        bad.touch()
+        cfg = _make_tool_paths(tmp_path)
+
+        def probe(p: Path) -> dict[str, Any]:
+            if p == bad:
+                raise OSError("boom")
+            # Clean current file → dropped from the outdated work-list.
+            return {
+                "streams": [
+                    {"codec_type": "video", "codec_name": "av1", "height": 1080, "color_space": "bt709"},
+                    {"codec_type": "audio", "codec_name": "aac", "channels": 2, "tags": {"language": "eng"}},
+                ],
+                "format": {"tags": {"ENCODER": "Furnace v2.9.0", "ENCODER_SETTINGS": "av1_nvenc / main"}},
+            }
+
+        fake_prober = MagicMock()
+        fake_prober.probe.side_effect = probe
+
+        with (
+            patch("furnace.cli.load_config", return_value=cfg),
+            patch("furnace.cli.FFmpegAdapter", return_value=fake_prober),
+        ):
+            result = runner.invoke(app, ["scan", str(src), "--outdated"])
+
+        assert result.exit_code == 0, result.output
+        out = result.output
+        assert "b_bad.mkv" in out
+        assert "UNREADABLE" in out
+        assert "a_good.mkv" not in out
+        assert "1 of 2 shown" in out
+
 
 # ---------------------------------------------------------------------------
 # _probe_file_infos — height (SD grain gate) is captured

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from furnace.core.outdated import EncoderFamily
 from furnace.core.scan import (
     AudioTrackSummary,
     ScanRow,
@@ -9,6 +10,7 @@ from furnace.core.scan import (
     VideoSummary,
     bit_depth_from_pix_fmt,
     hdr_label,
+    parse_encoder_family,
     parse_furnace_version,
     parse_version_arg,
     row_matches,
@@ -221,6 +223,113 @@ def test_summarize_streams_video_dolby_vision_from_side_data() -> None:
     }
     video, _, _ = summarize_streams(probe)
     assert video == VideoSummary(codec="hevc", bit_depth=10, hdr="DV P8")
+
+
+# ---------------------------------------------------------------------------
+# summarize_streams: geometry + container matrix tag (new outdated fields)
+# ---------------------------------------------------------------------------
+
+
+def test_summarize_streams_populates_width_height_matrix() -> None:
+    probe = {
+        "streams": [
+            {
+                "codec_type": "video",
+                "codec_name": "av1",
+                "width": 1920,
+                "height": 1080,
+                "color_space": "bt709",
+            },
+        ]
+    }
+    video, _, _ = summarize_streams(probe)
+    assert video.width == 1920
+    assert video.height == 1080
+    assert video.color_matrix == "bt709"
+
+
+def test_summarize_streams_missing_geometry_is_none() -> None:
+    probe = {"streams": [{"codec_type": "video", "codec_name": "av1"}]}
+    video, _, _ = summarize_streams(probe)
+    assert video.width is None
+    assert video.height is None
+    assert video.color_matrix is None
+
+
+def test_summarize_streams_color_space_unknown_passed_through() -> None:
+    # summarize keeps the literal "unknown"; the outdated ledger interprets it.
+    probe = {
+        "streams": [
+            {"codec_type": "video", "codec_name": "av1", "color_space": "unknown"},
+        ]
+    }
+    video, _, _ = summarize_streams(probe)
+    assert video.color_matrix == "unknown"
+
+
+def test_summarize_streams_no_video_stream_has_no_geometry() -> None:
+    probe = {"streams": [{"codec_type": "audio", "codec_name": "aac", "channels": 2}]}
+    video, _, _ = summarize_streams(probe)
+    assert video == VideoSummary(None, None, None)
+    assert video.width is None
+    assert video.height is None
+    assert video.color_matrix is None
+
+
+# ---------------------------------------------------------------------------
+# parse_encoder_family
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("settings", "expected"),
+    [
+        ("hevc_nvenc / NVEncC=7.00 / main", EncoderFamily.HEVC_NVENC),
+        ("av1_nvenc / NVEncC=8.00 / main", EncoderFamily.AV1_NVENC),
+        ("av1_svt / SVT-AV1 / preset=4", EncoderFamily.AV1_SVT),
+        ("video stream copied (passthrough)", EncoderFamily.PASSTHROUGH),
+        (None, EncoderFamily.UNKNOWN),
+        ("x265 / crf=18", EncoderFamily.UNKNOWN),
+        ("", EncoderFamily.UNKNOWN),
+    ],
+)
+def test_parse_encoder_family(settings: str | None, expected: EncoderFamily) -> None:
+    assert parse_encoder_family(settings) == expected
+
+
+@pytest.mark.parametrize(
+    "family",
+    [
+        EncoderFamily.HEVC_NVENC,
+        EncoderFamily.AV1_NVENC,
+        EncoderFamily.AV1_SVT,
+        EncoderFamily.PASSTHROUGH,
+    ],
+)
+def test_parse_encoder_family_matches_enum_value(family: EncoderFamily) -> None:
+    # The parser is driven off ``EncoderFamily.value`` — feeding a settings
+    # string that leads with the enum's own value round-trips to that family, so
+    # the parser and the enum can never silently drift apart.
+    assert parse_encoder_family(f"{family.value} / trailing tokens") is family
+
+
+# ---------------------------------------------------------------------------
+# ScanRow: new outdated fields default cleanly
+# ---------------------------------------------------------------------------
+
+
+def test_scan_row_outdated_fields_default() -> None:
+    from pathlib import Path
+
+    row = ScanRow(
+        path=Path("a.mkv"),
+        furnace_version=(2, 9, 0),
+        video=VideoSummary(codec="av1", bit_depth=10, hdr="SDR"),
+        audio=(),
+        subtitles=(),
+    )
+    assert row.encoder_family is EncoderFamily.UNKNOWN
+    assert row.defects == ()
 
 
 # ---------------------------------------------------------------------------

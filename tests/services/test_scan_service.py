@@ -6,6 +6,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from furnace.core.outdated import EncoderFamily, Fix, Severity
 from furnace.core.scan import AudioTrackSummary, ScanRow, SubtitleTrackSummary, VideoSummary
 from furnace.services.scan_service import ScanService
 
@@ -17,9 +18,12 @@ from furnace.services.scan_service import ScanService
 def make_probe(
     *,
     encoder: str | None = None,
+    encoder_settings: str | None = None,
     video: str | None = "hevc",
     pix_fmt: str | None = None,
     color_transfer: str | None = None,
+    color_space: str | None = None,
+    height: int | None = None,
     audios: tuple[tuple[str | None, str, int | None], ...] = (),
     subs: tuple[tuple[str | None, str], ...] = (),
 ) -> dict[str, Any]:
@@ -31,6 +35,10 @@ def make_probe(
             vs["pix_fmt"] = pix_fmt
         if color_transfer is not None:
             vs["color_transfer"] = color_transfer
+        if color_space is not None:
+            vs["color_space"] = color_space
+        if height is not None:
+            vs["height"] = height
         streams.append(vs)
     for lang, codec, channels in audios:
         s: dict[str, Any] = {"codec_type": "audio", "codec_name": codec, "channels": channels}
@@ -42,9 +50,12 @@ def make_probe(
         if lang is not None:
             sub["tags"] = {"language": lang}
         streams.append(sub)
-    fmt: dict[str, Any] = {}
+    tags: dict[str, Any] = {}
     if encoder is not None:
-        fmt["tags"] = {"ENCODER": encoder}
+        tags["ENCODER"] = encoder
+    if encoder_settings is not None:
+        tags["ENCODER_SETTINGS"] = encoder_settings
+    fmt: dict[str, Any] = {"tags": tags} if tags else {}
     return {"streams": streams, "format": fmt}
 
 
@@ -336,3 +347,175 @@ class TestUnreadable:
 
         assert [r.path.name for r in rows] == ["a_good.mkv", "b_bad.mkv"]
         assert rows[1].unreadable is True
+
+
+# ---------------------------------------------------------------------------
+# Encoder family (ENCODER_SETTINGS)
+# ---------------------------------------------------------------------------
+
+
+class TestEncoderFamily:
+    def test_reads_encoder_settings_family(self, tmp_path: Path) -> None:
+        movie = tmp_path / "movie.mkv"
+        movie.touch()
+        probe = make_probe(
+            encoder="Furnace v2.1.0",
+            encoder_settings="av1_nvenc / NVEncC=8.00 / main",
+            video="av1",
+        )
+        service, _ = make_service({movie: probe})
+
+        rows, _ = service.scan(tmp_path, outdated=True)
+
+        assert rows[0].encoder_family is EncoderFamily.AV1_NVENC
+
+    def test_encoder_settings_lowercase_fallback(self, tmp_path: Path) -> None:
+        movie = tmp_path / "movie.mkv"
+        movie.touch()
+        probe = {
+            "streams": [{"codec_type": "video", "codec_name": "av1", "height": 480}],
+            "format": {
+                "tags": {
+                    "ENCODER": "Furnace v2.0.5",
+                    "encoder_settings": "av1_svt / SVT-AV1 / preset=4",
+                }
+            },
+        }
+        service, _ = make_service({movie: probe})
+
+        rows, _ = service.scan(tmp_path, outdated=True)
+
+        assert rows[0].encoder_family is EncoderFamily.AV1_SVT
+
+    def test_uppercase_encoder_settings_precedence(self, tmp_path: Path) -> None:
+        movie = tmp_path / "movie.mkv"
+        movie.touch()
+        probe = {
+            "streams": [{"codec_type": "video", "codec_name": "av1", "height": 2160}],
+            "format": {
+                "tags": {
+                    "ENCODER": "Furnace v2.1.0",
+                    "ENCODER_SETTINGS": "av1_nvenc / main",
+                    "encoder_settings": "av1_svt / SVT-AV1",
+                }
+            },
+        }
+        service, _ = make_service({movie: probe})
+
+        rows, _ = service.scan(tmp_path, outdated=True)
+
+        assert rows[0].encoder_family is EncoderFamily.AV1_NVENC
+
+
+# ---------------------------------------------------------------------------
+# --outdated filtering
+# ---------------------------------------------------------------------------
+
+
+class TestOutdated:
+    def test_keeps_only_flagged_files(self, tmp_path: Path) -> None:
+        clean = tmp_path / "a_clean.mkv"
+        foreign = tmp_path / "b_foreign.mkv"
+        old = tmp_path / "c_old.mkv"
+        for p in (clean, foreign, old):
+            p.touch()
+        probe_map = {
+            # Current Furnace AV1, HD, matrix present, stereo → no defect.
+            clean: make_probe(
+                encoder="Furnace v2.9.0",
+                encoder_settings="av1_nvenc / main",
+                video="av1",
+                height=1080,
+                color_space="bt709",
+                audios=(("eng", "aac", 2),),
+            ),
+            # Non-Furnace file → FOREIGN defect.
+            foreign: make_probe(encoder="Lavf60", video="h264", height=1080, color_space="bt709"),
+            # Old NVENC AV1 → crop 4px / fps drift.
+            old: make_probe(
+                encoder="Furnace v2.1.0",
+                encoder_settings="av1_nvenc / main",
+                video="av1",
+                height=1080,
+                color_space="bt709",
+            ),
+        }
+        service, _ = make_service(probe_map)
+
+        rows, total = service.scan(tmp_path, outdated=True)
+
+        assert [r.path.name for r in rows] == ["b_foreign.mkv", "c_old.mkv"]
+        assert total == 3
+
+    def test_attaches_defects_to_row(self, tmp_path: Path) -> None:
+        foreign = tmp_path / "f.mkv"
+        foreign.touch()
+        probe = make_probe(encoder=None, video="h264", height=1080, color_space="bt709")
+        service, _ = make_service({foreign: probe})
+
+        rows, _ = service.scan(tmp_path, outdated=True)
+
+        assert len(rows[0].defects) == 1
+        defect = rows[0].defects[0]
+        assert defect.reason == "h264"
+        assert defect.severity is Severity.FOREIGN
+        assert defect.fix is Fix.RE_ENCODE
+
+    def test_unreadable_row_always_kept_and_classified(self, tmp_path: Path) -> None:
+        good = tmp_path / "a_good.mkv"
+        bad = tmp_path / "b_bad.mkv"
+        good.touch()
+        bad.touch()
+        prober = MagicMock()
+
+        def probe(p: Path) -> dict[str, Any]:
+            if p == bad:
+                raise OSError("boom")
+            # A current, clean Furnace file that would otherwise be dropped.
+            return make_probe(
+                encoder="Furnace v2.9.0",
+                encoder_settings="av1_nvenc / main",
+                video="av1",
+                height=1080,
+                color_space="bt709",
+                audios=(("eng", "aac", 2),),
+            )
+
+        prober.probe.side_effect = probe
+        service = ScanService(prober=prober)
+
+        rows, total = service.scan(tmp_path, outdated=True)
+
+        assert [r.path.name for r in rows] == ["b_bad.mkv"]
+        assert rows[0].unreadable is True
+        assert rows[0].defects[0].reason == "unreadable"
+        assert total == 2
+
+    def test_stacked_defects_sorted_worst_first(self, tmp_path: Path) -> None:
+        movie = tmp_path / "old.mkv"
+        movie.touch()
+        # Early NVENC AV1, NTSC SD, missing matrix → fps drift + crop 4px +
+        # grain loss + color tags.
+        probe = make_probe(
+            encoder="Furnace v2.0.5",
+            encoder_settings="av1_nvenc / main",
+            video="av1",
+            height=480,
+            color_space=None,
+        )
+        service, _ = make_service({movie: probe})
+
+        rows, _ = service.scan(tmp_path, outdated=True)
+
+        reasons = [d.reason for d in rows[0].defects]
+        assert reasons == ["fps drift", "crop 4px", "grain loss", "color tags"]
+
+    def test_normal_mode_does_not_attach_defects(self, tmp_path: Path) -> None:
+        movie = tmp_path / "old.mkv"
+        movie.touch()
+        probe = make_probe(encoder="Furnace v2.0.5", encoder_settings="av1_nvenc / main", video="av1", height=480)
+        service, _ = make_service({movie: probe})
+
+        rows, _ = service.scan(tmp_path)
+
+        assert rows[0].defects == ()
