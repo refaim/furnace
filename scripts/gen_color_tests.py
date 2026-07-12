@@ -132,17 +132,17 @@ def resolve(mx, tr, pri, system, hdr):
     elif fam == "bt709":
         transfer = "bt709"
     else:
-        # bt601: infer from resolved primaries
+        # bt601: infer from resolved primaries. SD "nominal gamma" primaries map
+        # to the real BT.601 transfer curve (smpte170m == bt709 curve), NOT the
+        # paper gamma-2.8/2.2 the primaries name implies.
         _pri_transfer = {
-            "bt470bg": "bt470bg",
+            "bt470bg": "smpte170m",
             "smpte170m": "smpte170m",
-            "bt470m": "bt470m",
+            "bt470m": "smpte170m",
             "bt709": "bt709",
         }
         if primaries in _pri_transfer:
             transfer = _pri_transfer[primaries]
-        elif system == "PAL":
-            transfer = "bt470bg"
         else:
             transfer = "smpte170m"
 
@@ -166,10 +166,10 @@ def print_table(cases):
 
 
 def _fmt(val):
-    """Format a value as a Python repr for code generation."""
+    """Format a value as a double-quoted Python literal for code generation."""
     if val is None:
         return "None"
-    return repr(val)
+    return f'"{val}"'
 
 
 def _sys_enum(s):
@@ -187,7 +187,6 @@ def print_pytest(cases):
         "",
         "from furnace.core.detect import ResolvedColor, VideoSystem, resolve_color_metadata",
         "",
-        "",
         "# fmt: off",
         "CASES = [",
     ]
@@ -204,10 +203,17 @@ def print_pytest(cases):
     lines.append("")
     lines.append("")
     lines.append("@pytest.mark.parametrize(")
-    lines.append('    "matrix_raw, transfer_raw, primaries_raw, system, has_hdr, expected",')
+    lines.append('    ("matrix_raw", "transfer_raw", "primaries_raw", "system", "has_hdr", "expected"),')
     lines.append("    CASES,")
     lines.append(")")
-    lines.append("def test_resolve_color_metadata(matrix_raw, transfer_raw, primaries_raw, system, has_hdr, expected):")
+    lines.append("def test_resolve_color_metadata(")
+    lines.append("    matrix_raw: str | None,")
+    lines.append("    transfer_raw: str | None,")
+    lines.append("    primaries_raw: str | None,")
+    lines.append("    system: VideoSystem,")
+    lines.append("    has_hdr: bool,")
+    lines.append("    expected: ResolvedColor,")
+    lines.append(") -> None:")
     lines.append("    result = resolve_color_metadata(matrix_raw, transfer_raw, primaries_raw, system, has_hdr=has_hdr)")
     lines.append("    assert result == expected, (")
     lines.append('        f"Input: mx={matrix_raw}, tr={transfer_raw}, pri={primaries_raw}, sys={system}, hdr={has_hdr}\\n"')
@@ -220,6 +226,10 @@ def print_pytest(cases):
 
 
 def main():
+    # Force LF line endings so the emitted file is byte-identical across
+    # platforms (Windows stdout would otherwise translate \n -> \r\n and the
+    # generated golden would fail ruff/line-ending checks).
+    sys.stdout.reconfigure(newline="\n")
     cases = list(iter_cases())
     if "--pytest" in sys.argv:
         print_pytest(cases)

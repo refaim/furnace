@@ -117,6 +117,36 @@ class TestMkvmergeColorTransfer:
         assert "--color-transfer-characteristics" not in cmd
 
 
+class TestMkvmergeColorMatrix:
+    def test_bt709(self) -> None:
+        cmd = _build_cmd({"color_matrix": "bt709"})
+        idx = cmd.index("--color-matrix-coefficients")
+        assert cmd[idx + 1] == "0:1"
+
+    def test_bt470bg(self) -> None:
+        cmd = _build_cmd({"color_matrix": "bt470bg"})
+        idx = cmd.index("--color-matrix-coefficients")
+        assert cmd[idx + 1] == "0:5"
+
+    def test_smpte170m(self) -> None:
+        cmd = _build_cmd({"color_matrix": "smpte170m"})
+        idx = cmd.index("--color-matrix-coefficients")
+        assert cmd[idx + 1] == "0:6"
+
+    def test_bt2020nc(self) -> None:
+        cmd = _build_cmd({"color_matrix": "bt2020nc"})
+        idx = cmd.index("--color-matrix-coefficients")
+        assert cmd[idx + 1] == "0:9"
+
+    def test_unknown_skipped(self) -> None:
+        cmd = _build_cmd({"color_matrix": "nope"})
+        assert "--color-matrix-coefficients" not in cmd
+
+    def test_no_video_meta_no_matrix(self) -> None:
+        cmd = _build_cmd(None)
+        assert "--color-matrix-coefficients" not in cmd
+
+
 class TestMkvmergeHdrMetadata:
     def test_max_content_light(self) -> None:
         cmd = _build_cmd({"hdr_max_cll": "1000"})

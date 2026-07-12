@@ -1347,6 +1347,7 @@ class TestRunPipelineVideoMeta:
             color_range="tv",
             color_primaries="bt2020",
             color_transfer="smpte2084",
+            color_matrix="bt2020nc",
             hdr=hdr,
         )
         job = make_job(
@@ -1369,6 +1370,7 @@ class TestRunPipelineVideoMeta:
         assert video_meta["color_range"] == "tv"
         assert video_meta["color_primaries"] == "bt2020"
         assert video_meta["color_transfer"] == "smpte2084"
+        assert video_meta["color_matrix"] == "bt2020nc"
         assert video_meta["hdr_max_cll"] == "1000"
         assert video_meta["hdr_max_fall"] == "400"
 
@@ -2656,6 +2658,7 @@ class TestVideoMetaEmptyFields:
             color_range="",
             color_primaries="",
             color_transfer="",
+            color_matrix="",
             hdr=None,
         )
         job = make_job(

@@ -19,6 +19,7 @@ import os
 from collections.abc import Callable
 from pathlib import Path
 
+from furnace.core.color import CICP_MATRIX, CICP_PRIMARIES, CICP_TRANSFER
 from furnace.core.models import EncodeResult, VideoParams
 from furnace.core.progress import ProgressSample
 from furnace.core.quality import final_output_dimensions
@@ -40,6 +41,39 @@ _SVT_PARAMS = (
     "tune=0:enable-variance-boost=1:variance-boost-strength=3:"
     "enable-qm=1:qm-min=0:luminance-qp-bias=50:ac-bias=6.0"
 )
+
+# AV1 video_full_range_flag: 0 = studio/limited swing, 1 = full swing.
+_SVT_COLOR_RANGE: dict[str, int] = {"tv": 0, "pc": 1}
+
+
+def _color_svtav1_params(vp: VideoParams) -> str:
+    """CICP color-description appended to ``-svtav1-params``.
+
+    libsvtav1 does not propagate ffmpeg's ``-color_primaries`` / ``-color_trc``
+    into the AV1 sequence header (only matrix + range survive the ffmpeg flags),
+    so the full description is pinned here. Values are CICP code points; the
+    ``color-range`` key is the AV1 ``video_full_range_flag`` (0 studio / 1 full),
+    NOT the Matroska range enum.
+
+    ``resolve_color_metadata`` only emits mapped values for the SD grain sources
+    this encoder handles (real DVD MPEG-2 signals bt709/bt470bg/smpte170m), but
+    ``transfer``/``primaries`` pass through source tags unvalidated, so a
+    mistagged input carrying a CICP value furnace has no code point for raises a
+    clear ValueError instead of a cryptic KeyError or a malformed OBU header.
+    """
+    try:
+        return (
+            f"color-primaries={CICP_PRIMARIES[vp.color_primaries]}:"
+            f"transfer-characteristics={CICP_TRANSFER[vp.color_transfer]}:"
+            f"matrix-coefficients={CICP_MATRIX[vp.color_matrix]}:"
+            f"color-range={_SVT_COLOR_RANGE[vp.color_range]}"
+        )
+    except KeyError as exc:
+        raise ValueError(
+            f"no CICP code point for color value {exc.args[0]!r} "
+            f"(primaries={vp.color_primaries!r} transfer={vp.color_transfer!r} "
+            f"matrix={vp.color_matrix!r} range={vp.color_range!r})"
+        ) from exc
 
 
 def _geometry_filters(vp: VideoParams) -> list[str]:
@@ -153,7 +187,7 @@ class SvtAv1Adapter:
             "-vf", _build_vf(vp),
             "-c:v", "libsvtav1", "-preset", _SVT_PRESET, "-crf", _SVT_CRF,
             "-g", str(vp.gop),
-            "-svtav1-params", _SVT_PARAMS,
+            "-svtav1-params", f"{_SVT_PARAMS}:{_color_svtav1_params(vp)}",
             "-color_range", vp.color_range, "-color_primaries", vp.color_primaries,
             "-color_trc", vp.color_transfer, "-colorspace", vp.color_matrix,
             "-r", f"{vp.fps_num}/{vp.fps_den}",

@@ -75,10 +75,15 @@ class ResolvedColor:
 _BT2020_MATRICES = frozenset({"bt2020nc", "bt2020c"})
 _BT601_MATRICES = frozenset({"bt470bg", "smpte170m"})
 
+# SD "nominal gamma" primaries map to the *real* BT.601 transfer curve
+# (smpte170m == the bt709 curve), NOT the paper gamma-2.8/2.2 that the primaries
+# name (bt470bg/bt470m) formally implies: no real SD content was mastered to
+# those, and players default to the 601/709 curve regardless. bt709 primaries
+# keep the bt709 transfer.
 _TRANSFER_FROM_PRIMARIES: dict[str, str] = {
-    "bt470bg": "bt470bg",
+    "bt470bg": "smpte170m",
     "smpte170m": "smpte170m",
-    "bt470m": "bt470m",
+    "bt470m": "smpte170m",
     "bt709": "bt709",
 }
 
@@ -148,9 +153,9 @@ def resolve_color_metadata(
     elif primaries in _TRANSFER_FROM_PRIMARIES:
         # bt601: infer from resolved primaries
         transfer = _TRANSFER_FROM_PRIMARIES[primaries]
-    elif is_pal:
-        transfer = "bt470bg"
     else:
+        # bt601 family with a non-standard resolved primaries: still the real
+        # SD curve (PAL and NTSC alike).
         transfer = "smpte170m"
 
     return ResolvedColor(matrix=matrix, transfer=transfer, primaries=primaries)

@@ -6,6 +6,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from furnace.core.color import CICP_MATRIX, CICP_PRIMARIES, CICP_TRANSFER
 from furnace.core.progress import ProgressSample
 
 from ._subprocess import OutputCallback, run_tool
@@ -29,26 +30,12 @@ def _parse_mkvmerge_progress_line(line: str) -> ProgressSample | None:
     return ProgressSample(fraction=int(m.group(1)) / 100.0)
 
 
+# Matroska Range enum (0 unspecified / 1 broadcast / 2 full) -- container-
+# specific, unlike the CICP primaries/transfer/matrix code points which are
+# shared with the encoder via furnace.core.color.
 _COLOR_RANGE_MAP: dict[str, str] = {
     "tv": "1",  # broadcast / limited (16-235)
     "pc": "2",  # full (0-255)
-}
-
-_COLOR_PRIMARIES_MAP: dict[str, str] = {
-    "bt709": "1",
-    "bt470bg": "5",
-    "smpte170m": "6",
-    "smpte240m": "7",
-    "bt2020": "9",
-}
-
-_COLOR_TRANSFER_MAP: dict[str, str] = {
-    "bt709": "1",
-    "smpte170m": "6",
-    "smpte240m": "7",
-    "linear": "8",
-    "smpte2084": "16",  # HDR10 / PQ
-    "arib-std-b67": "18",  # HLG
 }
 
 
@@ -160,13 +147,18 @@ class MkvmergeAdapter:
 
             # --color-primaries
             cp = video_meta.get("color_primaries")
-            if cp and cp in _COLOR_PRIMARIES_MAP:
-                video_flags += ["--color-primaries", f"0:{_COLOR_PRIMARIES_MAP[cp]}"]
+            if cp and cp in CICP_PRIMARIES:
+                video_flags += ["--color-primaries", f"0:{CICP_PRIMARIES[cp]}"]
 
             # --color-transfer-characteristics
             ct = video_meta.get("color_transfer")
-            if ct and ct in _COLOR_TRANSFER_MAP:
-                video_flags += ["--color-transfer-characteristics", f"0:{_COLOR_TRANSFER_MAP[ct]}"]
+            if ct and ct in CICP_TRANSFER:
+                video_flags += ["--color-transfer-characteristics", f"0:{CICP_TRANSFER[ct]}"]
+
+            # --color-matrix-coefficients
+            cm = video_meta.get("color_matrix")
+            if cm and cm in CICP_MATRIX:
+                video_flags += ["--color-matrix-coefficients", f"0:{CICP_MATRIX[cm]}"]
 
             # --max-content-light / --max-frame-light (HDR10 only)
             max_cll = video_meta.get("hdr_max_cll")

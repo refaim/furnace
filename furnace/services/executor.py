@@ -446,6 +446,8 @@ class Executor:
             video_meta["color_primaries"] = vp.color_primaries
         if vp.color_transfer:
             video_meta["color_transfer"] = vp.color_transfer
+        if vp.color_matrix:
+            video_meta["color_matrix"] = vp.color_matrix
         if vp.hdr and vp.hdr.content_light:
             # content_light format: "MaxCLL=X,MaxFALL=Y"
             for part in vp.hdr.content_light.split(","):

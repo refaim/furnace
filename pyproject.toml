@@ -1,6 +1,6 @@
 [project]
 name = "furnace"
-version = "2.7.1"
+version = "2.7.2"
 description = "Movie collection transcoding tool for home archival"
 license = "MIT"
 requires-python = ">=3.13"
@@ -64,6 +64,9 @@ ignore = [
     "FBT001",   # boolean positional args in test factories (_make_vp, _sub_track)
     "FBT002",   # boolean defaults in test factories
     "PLR0913",  # too many args in test factories — readable with keyword-only defaults
+]
+"tests/core/test_color_resolve.py" = [
+    "E501",  # auto-generated one-case-per-line data table; some CICP tuples exceed 120
 ]
 "furnace/ui/*.py" = [
     "RUF012",  # Textual pattern: BINDINGS = [...] as mutable class attr is standard

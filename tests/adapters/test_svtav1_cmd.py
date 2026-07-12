@@ -9,6 +9,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from furnace.adapters.svtav1 import (
     _SVT_CRF,
     _SVT_PARAMS,
@@ -86,14 +88,17 @@ class TestSvtAv1RecipeFlags:
     def test_crf_is_23(self) -> None:
         assert _SVT_CRF == "23"
 
-    def test_svtav1_params_exact(self) -> None:
+    def test_svtav1_params_starts_with_recipe(self) -> None:
+        # The tuned recipe is preserved verbatim as the prefix; the CICP
+        # color-description is appended after it.
         cmd = _cmd(_make_vp())
         idx = cmd.index("-svtav1-params")
-        assert cmd[idx + 1] == _SVT_PARAMS
+        assert cmd[idx + 1].startswith(_SVT_PARAMS + ":")
 
-    def test_svtav1_params_flag_pair(self) -> None:
+    def test_svtav1_params_flag_present(self) -> None:
         cmd = _cmd(_make_vp())
-        assert _contains_subseq(cmd, ["-svtav1-params", _SVT_PARAMS])
+        assert "-svtav1-params" in cmd
+        assert cmd[cmd.index("-svtav1-params") + 1].startswith(_SVT_PARAMS)
 
     def test_output_format_obu(self) -> None:
         cmd = _cmd(_make_vp())
@@ -114,6 +119,46 @@ class TestSvtAv1RecipeFlags:
             "tune=0:enable-variance-boost=1:variance-boost-strength=3:"
             "enable-qm=1:qm-min=0:luminance-qp-bias=50:ac-bias=6.0"
         )
+
+
+class TestSvtAv1ColorDescription:
+    """Full CICP color-description is appended to -svtav1-params so the AV1
+    bitstream is self-describing. libsvtav1 drops ffmpeg's -color_primaries /
+    -color_trc, so without this the OBU carries no primaries/transfer.
+    """
+
+    def test_pal_color_description(self) -> None:
+        cmd = _cmd(_make_vp(
+            color_primaries="bt470bg", color_transfer="smpte170m",
+            color_matrix="bt470bg", color_range="tv",
+        ))
+        params = cmd[cmd.index("-svtav1-params") + 1]
+        assert "color-primaries=5" in params
+        assert "transfer-characteristics=6" in params
+        assert "matrix-coefficients=5" in params
+        assert "color-range=0" in params  # tv / studio-swing
+
+    def test_hd_color_description(self) -> None:
+        cmd = _cmd(_make_vp(
+            color_primaries="bt709", color_transfer="bt709",
+            color_matrix="bt709", color_range="tv",
+        ))
+        params = cmd[cmd.index("-svtav1-params") + 1]
+        assert "color-primaries=1" in params
+        assert "transfer-characteristics=1" in params
+        assert "matrix-coefficients=1" in params
+
+    def test_full_range_maps_to_one(self) -> None:
+        cmd = _cmd(_make_vp(color_range="pc"))
+        params = cmd[cmd.index("-svtav1-params") + 1]
+        assert "color-range=1" in params  # pc / full-swing
+
+    def test_unmapped_color_value_raises_valueerror(self) -> None:
+        # transfer/primaries pass through source tags unvalidated; a legit H.273
+        # value furnace has no CICP code point for must fail loudly (clear
+        # ValueError), not crash with a cryptic KeyError or emit a bad OBU.
+        with pytest.raises(ValueError, match="no CICP code point"):
+            _cmd(_make_vp(color_primaries="film"))
 
 
 class TestSvtAv1ForbiddenForkParams:
