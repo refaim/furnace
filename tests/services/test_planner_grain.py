@@ -13,8 +13,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
 from furnace.core.models import (
     AudioCodecId,
     Movie,
@@ -175,18 +173,22 @@ class TestGrainOverrides:
 
         assert movie.video.grainy is True
 
-    def test_interlaced_grain_raises_at_plan_time(self, tmp_path: Path) -> None:
-        """Interlaced + grain is unsupported (no VS deinterlacer) -> loud plan-time error."""
+    def test_interlaced_grain_plans_normally(self, tmp_path: Path) -> None:
+        """Interlaced + grain is supported now that bwdif deinterlaces the metric
+        reference: the job plans with both grain and deinterlace set."""
         movie = _make_movie_grain(tmp_path, grainy=True, interlaced=True)
         planner = PlannerService(previewer=None)
 
-        with pytest.raises(ValueError, match="Interlaced grain content is not yet supported"):
-            planner.create_plan(
-                [(movie, tmp_path / "out.mkv")],
-                audio_lang_filter=["eng"],
-                sub_lang_filter=["eng"],
-                vmaf_enabled=False,
-            )
+        plan = planner.create_plan(
+            [(movie, tmp_path / "out.mkv")],
+            audio_lang_filter=["eng"],
+            sub_lang_filter=["eng"],
+            vmaf_enabled=False,
+        )
+
+        vp = plan.jobs[0].video_params
+        assert vp.grain is True
+        assert vp.deinterlace is True
 
     def test_interlaced_without_grain_plans_normally(self, tmp_path: Path) -> None:
         """The guard is grain-specific: interlaced clean content still plans (nvenc deint)."""

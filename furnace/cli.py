@@ -27,7 +27,7 @@ from .adapters.nvencc import NVEncCAdapter
 from .adapters.qaac import QaacAdapter
 from .adapters.svtav1 import SvtAv1Adapter
 from .adapters.vship_metrics import VshipMetricsAdapter
-from .config import load_config
+from .config import ToolPaths, load_config
 from .core.detect import classify_grain, needs_grain_probe
 from .core.models import (
     DiscSource,
@@ -727,6 +727,38 @@ def plan(
         reporter.stop()
 
 
+def _check_interlaced_grain_metrics_ready(plan_obj: Plan, cfg: ToolPaths) -> None:
+    """Fail fast — before any encoding — on an interlaced grain job that cannot be
+    scored for lack of a bwdif plugin.
+
+    Perceptual metrics run on the SVT grain path only when bestsource+vship are
+    configured. Scoring an *interlaced* source additionally needs bwdif to
+    deinterlace the metric reference; without it :class:`VshipMetricsAdapter`
+    raises — but only *after* a full, slow SVT-AV1 encode, which is then
+    discarded. Surfacing it here, where the plan, its metrics flag and the
+    resolved tool paths are all known, keeps the failure loud AND early.
+    """
+    metrics_on = plan_obj.vmaf_enabled and cfg.bestsource is not None and cfg.vship is not None
+    if not metrics_on or cfg.bwdif is not None:
+        return
+    offenders = [
+        Path(job.output_file).name
+        for job in plan_obj.jobs
+        if job.status.value in ("pending", "error")
+        and job.video_params.grain
+        and job.video_params.deinterlace
+    ]
+    if offenders:
+        typer.secho(
+            "ERROR: interlaced grain job(s) need the bwdif VapourSynth plugin to score, "
+            f"but [tools].bwdif is not configured: {', '.join(offenders)}.\n"
+            "Set [tools].bwdif in furnace.toml, or re-plan without --metrics.",
+            err=True,
+            fg=typer.colors.RED,
+        )
+        raise typer.Exit(code=1)
+
+
 @app.command()
 def run(
     plan_file: Path = typer.Argument(..., help="JSON plan file"),
@@ -738,6 +770,9 @@ def run(
 
     # 2. Load plan (need destination for log dir)
     plan_obj = load_plan(plan_file)
+
+    # Pre-flight: refuse interlaced grain + metrics with no bwdif, before encoding.
+    _check_interlaced_grain_metrics_ready(plan_obj, cfg)
 
     # 3. Setup file logging -> destination/furnace.log (console OFF — Textual owns terminal)
     destination = Path(plan_obj.destination)
@@ -766,7 +801,7 @@ def run(
         nvencc_adapter = NVEncCAdapter(cfg.nvencc, on_output=tool_output)
         vship_metrics: VshipMetricsAdapter | None = None
         if cfg.bestsource is not None and cfg.vship is not None:
-            vship_metrics = VshipMetricsAdapter(cfg.bestsource, cfg.vship)
+            vship_metrics = VshipMetricsAdapter(cfg.bestsource, cfg.vship, cfg.bwdif)
         svt_adapter = SvtAv1Adapter(cfg.ffmpeg, on_output=tool_output, metrics=vship_metrics)
 
         dovi_adapter: DoviToolAdapter | None = None

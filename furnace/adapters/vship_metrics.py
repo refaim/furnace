@@ -4,15 +4,17 @@ The SVT-AV1 grain path cannot compute these with ffmpeg (no such avfilter exists
 and the standalone FFVship binary cannot apply geometry transforms. So Vship is
 driven as a VapourSynth plugin, in process: BestSource opens the reference (the
 original source) and the encoded AV1 OBU, the reference is brought to the encoded
-geometry with bundled crop/scale nodes, both are converted to RGBS, and
-``clip.vship.<METRIC>`` scores them frame-on-demand on the GPU -- no lossless
+geometry with bundled deinterlace/crop/scale nodes, both are converted to RGBS,
+and ``clip.vship.<METRIC>`` scores them frame-on-demand on the GPU -- no lossless
 intermediate is ever written to disk.
 
-Deinterlacing is intentionally absent: the planner refuses interlaced grain jobs
-(no bwdif VS plugin is provisioned yet), so this graph only needs crop + scale --
-which is exactly the geometry ``svtav1._geometry_filters`` applies for a
-progressive/soft-telecine grain source. That invariant (grain job => no
-deinterlace) is what keeps this reference geometry equal to the encoder's input.
+The reference must reproduce exactly the geometry ``svtav1._geometry_filters``
+applies, in the same order: deinterlace (single-rate bwdif) -> crop -> scale. The
+encoded output was already deinterlaced by the encoder's ffmpeg
+``bwdif=send_frame``; here the *reference* is deinterlaced to match, with the
+field parity read from BestSource's ``_FieldBased`` (mirroring ffmpeg's
+``parity=auto``). An interlaced source with no bwdif plugin provisioned is a real
+config gap, not a soft-degradation, so it raises loudly (see ``measure``).
 """
 
 from __future__ import annotations
@@ -49,12 +51,14 @@ class VshipMetricsAdapter:
 
     ``bestsource_dll`` and ``vship_dll`` are the VapourSynth plugin binaries;
     they are loaded per call so a missing/incompatible plugin degrades to
-    all-None scores instead of crashing the encode.
+    all-None scores instead of crashing the encode. ``bwdif_dll`` is only needed
+    for interlaced sources; when absent, an interlaced measure raises loudly.
     """
 
-    def __init__(self, bestsource_dll: Path, vship_dll: Path) -> None:
+    def __init__(self, bestsource_dll: Path, vship_dll: Path, bwdif_dll: Path | None = None) -> None:
         self._bestsource = bestsource_dll
         self._vship = vship_dll
+        self._bwdif = bwdif_dll
 
     def measure(
         self,
@@ -62,6 +66,7 @@ class VshipMetricsAdapter:
         distorted: Path,
         *,
         crop: CropRect | None,
+        deinterlace: bool,
         final_width: int,
         final_height: int,
         matrix: str,
@@ -71,11 +76,22 @@ class VshipMetricsAdapter:
         """Score ``distorted`` against ``reference`` brought to the encoded geometry.
 
         Fail-soft: any VapourSynth / GPU / plugin error returns an all-None
-        ``MetricScores`` so a metrics failure never fails the encode.
+        ``MetricScores`` so a metrics failure never fails the encode. The one
+        exception is deliberately *loud*: an interlaced source with no bwdif
+        plugin provisioned cannot be measured correctly, so it raises (outside
+        the fail-soft guard) rather than silently reporting bogus scores.
         """
+        if deinterlace and self._bwdif is None:
+            raise RuntimeError(
+                f"cannot score interlaced source {reference.name}: no bwdif VapourSynth "
+                "plugin is provisioned (set [tools].bwdif in furnace.toml)"
+            )
         try:
             return self._measure(
-                reference, distorted, crop, final_width, final_height, matrix, fps_num, fps_den,
+                reference, distorted,
+                crop=crop, deinterlace=deinterlace,
+                final_width=final_width, final_height=final_height,
+                matrix=matrix, fps_num=fps_num, fps_den=fps_den,
             )
         except Exception:  # noqa: BLE001 -- metrics are best-effort; never fail the encode
             logger.warning(
@@ -88,7 +104,9 @@ class VshipMetricsAdapter:
         self,
         reference: Path,
         distorted: Path,
+        *,
         crop: CropRect | None,
+        deinterlace: bool,
         final_width: int,
         final_height: int,
         matrix: str,
@@ -100,11 +118,26 @@ class VshipMetricsAdapter:
         core: Any = vs.core
         core.std.LoadPlugin(str(self._bestsource))
         core.std.LoadPlugin(str(self._vship))
+        if deinterlace:
+            core.std.LoadPlugin(str(self._bwdif))
 
         # rff=0: yield coded frames (never apply 2:3 pulldown), so a soft-telecine
         # source lines up 1:1 with the coded-rate OBU without decimation.
         ref = core.bs.VideoSource(str(reference), rff=0)
         dist = core.bs.VideoSource(str(distorted), rff=0)
+
+        # Deinterlace the reference first (single-rate, before any spatial op) so
+        # it matches the encoder's ffmpeg ``bwdif=send_frame``. field=0/1 select
+        # the kept field for single-rate output; pick the parity ffmpeg's
+        # parity=auto would, from BestSource's _FieldBased (1=BFF -> keep bottom,
+        # 2=TFF/0=unknown -> keep top, ffmpeg's top-field-first default). We read
+        # the field order once (frame 0) and apply it to the whole clip; ffmpeg
+        # re-derives it per frame, so a source with genuinely mixed per-frame
+        # field order (very rare) could diverge -- acceptable vs full fail-soft.
+        if deinterlace:
+            field_based = ref.get_frame(0).props.get("_FieldBased", 0)
+            field = 0 if field_based == 1 else 1
+            ref = core.bwdif.Bwdif(ref, field=field)
 
         # Bring the reference to the encoded geometry: crop, then a single rescale
         # to the final encoded size (mirrors svtav1._geometry_filters ordering).

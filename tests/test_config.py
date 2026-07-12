@@ -168,11 +168,25 @@ class TestVapourSynthPlugins:
         tp = load_config(config)
         assert tp.bestsource is None
         assert tp.vship is None
+        assert tp.bwdif is None
 
     def test_vship_path_missing_raises(self, tmp_path: Path) -> None:
         bogus = str(tmp_path / "tools" / "no_vship.dll")
         config = _write_config(tmp_path, tools_override={"vship": bogus})
         with pytest.raises(FileNotFoundError, match="vship"):
+            load_config(config)
+
+    def test_bwdif_present(self, tmp_path: Path) -> None:
+        bwdif = tmp_path / "tools" / "Bwdif.dll"
+        config = _write_config(tmp_path, tools_override={"bwdif": str(bwdif)})
+        bwdif.touch()
+        tp = load_config(config)
+        assert tp.bwdif == bwdif
+
+    def test_bwdif_path_missing_raises(self, tmp_path: Path) -> None:
+        bogus = str(tmp_path / "tools" / "no_bwdif.dll")
+        config = _write_config(tmp_path, tools_override={"bwdif": bogus})
+        with pytest.raises(FileNotFoundError, match="bwdif"):
             load_config(config)
 
 

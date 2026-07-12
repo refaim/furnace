@@ -142,6 +142,7 @@ class PerceptualMetrics(Protocol):
         distorted: Path,
         *,
         crop: CropRect | None,
+        deinterlace: bool,
         final_width: int,
         final_height: int,
         matrix: str,
@@ -149,7 +150,14 @@ class PerceptualMetrics(Protocol):
         fps_den: int,
     ) -> MetricScores:
         """Score ``distorted`` against ``reference`` brought to the encoded geometry.
-        Fail-soft: any failure returns an all-None ``MetricScores``."""
+
+        ``deinterlace`` mirrors the encoder's single-rate bwdif pass: when set,
+        the reference is deinterlaced before crop/scale so it lines up with the
+        (already-deinterlaced) encoded output.
+
+        Fail-soft: any failure returns an all-None ``MetricScores``. The lone
+        exception is an interlaced source with no deinterlacer provisioned, which
+        raises loudly rather than silently mis-scoring."""
         ...
 
 

@@ -16,7 +16,7 @@ Batch video transcoder for home archival. Scans your movie collection, lets you 
 - **HDR10 passthrough** — mastering display, content light level, BT.2020/PQ preserved through encode
 - **Auto deinterlace** — nnedi (neural network); HD interlaced content is always deinterlaced, SD is confirmed with idet before committing
 - **Smart crop** — black bars detected automatically across the timeline
-- **Quality scoring** — optional GPU perceptual metrics per encode (`--vmaf`): SSIMULACRA2 + Butteraugli on the NVEnc path (plus VMAF), and SSIMULACRA2 + Butteraugli + CVVDP on the SVT-AV1 grain path via VapourSynth + Vship
+- **Quality scoring** — optional GPU perceptual metrics per encode (`--metrics`): SSIMULACRA2 + Butteraugli on the NVEnc path (plus VMAF), and SSIMULACRA2 + Butteraugli + CVVDP on the SVT-AV1 grain path via VapourSynth + Vship (interlaced grain sources are deinterlaced with bwdif so they score too)
 - **mpv preview** — audition audio tracks, check subtitles, or preview video right from the TUI before committing
 - **Per-track downmix** — fold 7.1 or 5.1 into stereo or 5.1 from the track selector, useful when the multichannel mix is a fake upmix or the movie is dialogue-heavy
 - **Satellite files** — external audio and subtitle files next to the video are picked up as extra tracks automatically

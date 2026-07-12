@@ -13,6 +13,8 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
+import pytest
+
 from furnace.adapters.vship_metrics import VshipMetricsAdapter
 from furnace.core.models import CropRect, MetricScores
 
@@ -23,7 +25,12 @@ class _Frame:
 
 
 class _Clip:
-    """A fake VapourSynth clip node with per-frame metric props (cyclic values)."""
+    """A fake VapourSynth clip node with per-frame metric props (cyclic values).
+
+    ``field_based`` (when set) is surfaced on every frame as the ``_FieldBased``
+    property, mirroring what BestSource stamps on an interlaced source so the
+    adapter can pick the bwdif single-rate parity.
+    """
 
     def __init__(
         self,
@@ -33,17 +40,22 @@ class _Clip:
         num_frames: int = 4,
         prop: str | None = None,
         values: tuple[float, ...] = (),
+        field_based: int | None = None,
     ) -> None:
         self.width = width
         self.height = height
         self.num_frames = num_frames
         self._prop = prop
         self._values = values
+        self._field_based = field_based
 
     def get_frame(self, i: int) -> _Frame:
-        if self._prop is None:
-            return _Frame({})
-        return _Frame({self._prop: self._values[i % len(self._values)]})
+        props: dict[str, float] = {}
+        if self._prop is not None:
+            props[self._prop] = self._values[i % len(self._values)]
+        if self._field_based is not None:
+            props["_FieldBased"] = self._field_based
+        return _Frame(props)
 
 
 def _metric(prop: str, values: tuple[float, ...]) -> Any:
@@ -63,11 +75,13 @@ class _FakeCore:
         dist: _Clip,
         cropped: _Clip | None = None,
         scaled: _Clip | None = None,
+        deinterlaced: _Clip | None = None,
         raise_in: str | None = None,
     ) -> None:
         self._sources = [ref, dist]
         self._cropped = cropped
         self._scaled = scaled
+        self._deinterlaced = deinterlaced
         self._raise_in = raise_in
         self.loaded: list[str] = []
         self.crop_kwargs: dict[str, int] | None = None
@@ -75,11 +89,15 @@ class _FakeCore:
         self.trim_lasts: list[int] = []
         self.assumefps_kwargs: list[dict[str, int]] = []
         self.bicubic_matrix: list[str] = []
+        self.bwdif_kwargs: dict[str, int] | None = None
+        self.bwdif_applied_to: _Clip | None = None
+        self.crop_applied_to: _Clip | None = None
         self.std = types.SimpleNamespace(
             LoadPlugin=self._load, Crop=self._crop, Trim=self._trim, AssumeFPS=self._assumefps,
         )
         self.bs = types.SimpleNamespace(VideoSource=self._source)
         self.resize = types.SimpleNamespace(Spline36=self._spline, Bicubic=self._bicubic)
+        self.bwdif = types.SimpleNamespace(Bwdif=self._bwdif)
         self.vship = types.SimpleNamespace(
             SSIMULACRA2=_metric("_SSIMULACRA2", (80.0, 90.0)),
             BUTTERAUGLI=_metric("_BUTTERAUGLI_3Norm", (1.5, 2.5)),
@@ -94,8 +112,15 @@ class _FakeCore:
             raise RuntimeError("boom")
         return self._sources.pop(0)
 
-    def _crop(self, clip: _Clip, **kw: int) -> _Clip:  # noqa: ARG002
+    def _bwdif(self, clip: _Clip, **kw: int) -> _Clip:
+        self.bwdif_kwargs = kw
+        self.bwdif_applied_to = clip
+        assert self._deinterlaced is not None
+        return self._deinterlaced
+
+    def _crop(self, clip: _Clip, **kw: int) -> _Clip:
         self.crop_kwargs = kw
+        self.crop_applied_to = clip
         assert self._cropped is not None
         return self._cropped
 
@@ -124,13 +149,16 @@ def _measure(
     final_width: int = 1904,
     final_height: int = 792,
     matrix: str = "bt709",
+    deinterlace: bool = False,
+    bwdif: Path | None = None,
 ) -> MetricScores:
-    adapter = VshipMetricsAdapter(Path("BestSource.dll"), Path("libvship.dll"))
+    adapter = VshipMetricsAdapter(Path("BestSource.dll"), Path("libvship.dll"), bwdif)
     fake_vs = types.SimpleNamespace(core=core, RGBS="RGBS")
     with patch.dict(sys.modules, {"vapoursynth": fake_vs}):
         return adapter.measure(
             Path("ref.mkv"), Path("dist.obu"),
-            crop=crop, final_width=final_width, final_height=final_height,
+            crop=crop, deinterlace=deinterlace,
+            final_width=final_width, final_height=final_height,
             matrix=matrix, fps_num=24000, fps_den=1001,
         )
 
@@ -213,3 +241,75 @@ class TestMeasure:
         assert scores.ssimulacra2 is None
         assert scores.butteraugli is None
         assert scores.cvvdp is None
+
+
+class TestDeinterlace:
+    """When ``deinterlace`` is set, the reference is bwdif-deinterlaced (single
+    rate) *before* crop, with the parity taken from BestSource's ``_FieldBased``
+    -- matching the encoder's ffmpeg ``bwdif=send_frame`` (parity=auto)."""
+
+    @staticmethod
+    def _core(field_based: int | None) -> _FakeCore:
+        # Reference already at the final size -> only bwdif runs (no crop/scale).
+        return _FakeCore(
+            ref=_Clip(width=1904, height=792, num_frames=4, field_based=field_based),
+            dist=_Clip(width=1904, height=792, num_frames=4),
+            deinterlaced=_Clip(width=1904, height=792, num_frames=4),
+        )
+
+    def test_loads_bwdif_and_scores(self) -> None:
+        core = self._core(field_based=2)
+        scores = _measure(core, deinterlace=True, bwdif=Path("Bwdif.dll"))
+        assert core.loaded == ["BestSource.dll", "libvship.dll", "Bwdif.dll"]
+        assert scores.ssimulacra2 == 85.0  # mean(80, 90)
+
+    def test_tff_keeps_top_field(self) -> None:
+        core = self._core(field_based=2)  # _FieldBased 2 = top field first
+        _measure(core, deinterlace=True, bwdif=Path("Bwdif.dll"))
+        assert core.bwdif_kwargs == {"field": 1}
+
+    def test_bff_keeps_bottom_field(self) -> None:
+        core = self._core(field_based=1)  # _FieldBased 1 = bottom field first
+        _measure(core, deinterlace=True, bwdif=Path("Bwdif.dll"))
+        assert core.bwdif_kwargs == {"field": 0}
+
+    def test_unknown_field_order_defaults_to_top(self) -> None:
+        core = self._core(field_based=None)  # no _FieldBased property at all
+        _measure(core, deinterlace=True, bwdif=Path("Bwdif.dll"))
+        assert core.bwdif_kwargs == {"field": 1}
+
+    def test_progressive_flag_defaults_to_top(self) -> None:
+        core = self._core(field_based=0)  # _FieldBased 0 = progressive
+        _measure(core, deinterlace=True, bwdif=Path("Bwdif.dll"))
+        assert core.bwdif_kwargs == {"field": 1}
+
+    def test_bwdif_runs_before_crop(self) -> None:
+        ref = _Clip(width=720, height=480, num_frames=4, field_based=2)
+        deint = _Clip(width=720, height=480, num_frames=4)
+        core = _FakeCore(
+            ref=ref, dist=_Clip(width=640, height=480, num_frames=4),
+            deinterlaced=deint,
+            cropped=_Clip(width=704, height=480, num_frames=4),
+            scaled=_Clip(width=640, height=480, num_frames=4),
+        )
+        _measure(
+            core, crop=CropRect(w=704, h=480, x=8, y=0),
+            final_width=640, final_height=480,
+            deinterlace=True, bwdif=Path("Bwdif.dll"),
+        )
+        # bwdif consumes the raw source; crop consumes bwdif's output.
+        assert core.bwdif_applied_to is ref
+        assert core.crop_applied_to is deint
+
+    def test_no_deinterlace_skips_bwdif(self) -> None:
+        core = _FakeCore(ref=_Clip(width=1904, height=792), dist=_Clip(width=1904, height=792))
+        _measure(core, deinterlace=False, bwdif=Path("Bwdif.dll"))
+        assert "Bwdif.dll" not in core.loaded
+        assert core.bwdif_kwargs is None
+
+    def test_deinterlace_without_bwdif_raises_loudly(self) -> None:
+        # A metrics failure is normally fail-soft (all-None scores); a missing
+        # bwdif for an interlaced source is a real config gap -> loud, not silent.
+        core = self._core(field_based=2)
+        with pytest.raises(RuntimeError, match="bwdif"):
+            _measure(core, deinterlace=True, bwdif=None)

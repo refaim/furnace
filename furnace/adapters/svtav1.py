@@ -82,10 +82,9 @@ def _geometry_filters(vp: VideoParams) -> list[str]:
     high-quality rescale (only when the final encoded size differs from the
     pre-resize size). This is the *geometry* only -- it deliberately omits the
     fixed 10-bit / square-SAR tail, which :func:`_build_vf` appends. The
-    perceptual-metrics reference reproduces this same crop+scale geometry in
-    VapourSynth (see :mod:`furnace.adapters.vship_metrics`); the two are kept
-    consistent by the planner refusing interlaced grain jobs, so metrics never
-    face a deinterlaced reference.
+    perceptual-metrics reference reproduces this same deinterlace->crop->scale
+    geometry in VapourSynth (see :mod:`furnace.adapters.vship_metrics`), so the
+    reference lines up frame-for-frame with this (already-deinterlaced) encode.
     """
     parts: list[str] = []
 
@@ -242,6 +241,7 @@ class SvtAv1Adapter:
                 input_path,
                 output_path,
                 crop=video_params.crop,
+                deinterlace=video_params.deinterlace,
                 final_width=final_w,
                 final_height=final_h,
                 matrix=video_params.color_matrix,

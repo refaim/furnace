@@ -81,6 +81,7 @@ class _FakeMetrics:
         distorted: Path,
         *,
         crop: CropRect | None,
+        deinterlace: bool,
         final_width: int,
         final_height: int,
         matrix: str,
@@ -92,6 +93,7 @@ class _FakeMetrics:
                 "reference": reference,
                 "distorted": distorted,
                 "crop": crop,
+                "deinterlace": deinterlace,
                 "final_width": final_width,
                 "final_height": final_height,
                 "matrix": matrix,
@@ -237,9 +239,19 @@ class TestMetrics:
         assert call["reference"] == tmp_path / "in.mkv"
         assert call["distorted"] == tmp_path / "out.obu"
         assert call["crop"] == CropRect(w=1910, h=798, x=5, y=141)
+        assert call["deinterlace"] is False
         assert (call["final_width"], call["final_height"]) == (1904, 792)
         assert call["matrix"] == "bt709"
         assert (call["fps_num"], call["fps_den"]) == (24000, 1001)
+
+    def test_measure_receives_deinterlace_flag(self, tmp_path: Path) -> None:
+        metrics = _FakeMetrics()
+        adapter = SvtAv1Adapter(Path("ffmpeg"), metrics=metrics)
+        fake = _FakeRunTool()
+        vp = _make_vp(deinterlace=True)
+        with patch("furnace.adapters.svtav1.run_tool", side_effect=fake):
+            adapter.encode(tmp_path / "in.mkv", tmp_path / "out.obu", vp, vmaf_enabled=True)
+        assert metrics.calls[0]["deinterlace"] is True
 
     def test_disabled_skips_measure(self, tmp_path: Path) -> None:
         metrics = _FakeMetrics(MetricScores(ssimulacra2=88.2))
