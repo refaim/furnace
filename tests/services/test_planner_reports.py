@@ -67,7 +67,6 @@ def test_plan_file_emits_start_and_done() -> None:
         movies=[(_make_movie(), Path("/out/x.mkv"))],
         audio_lang_filter=["eng"],
         sub_lang_filter=[],
-        vmaf_enabled=False,
     )
 
     methods = [e.method for e in reporter.events]
@@ -86,7 +85,6 @@ def test_plan_without_reporter_is_silent() -> None:
         movies=[(_make_movie(), Path("/out/x.mkv"))],
         audio_lang_filter=["eng"],
         sub_lang_filter=[],
-        vmaf_enabled=False,
     )
 
     assert len(plan.jobs) == 1
@@ -100,7 +98,6 @@ def test_format_plan_summary_no_crop_no_deinterlace() -> None:
         movies=[(movie, Path("/out/x.mkv"))],
         audio_lang_filter=["eng"],
         sub_lang_filter=[],
-        vmaf_enabled=False,
     )
     summary = _format_plan_summary(movie, plan.jobs[0])
     assert summary.endswith("1920x1080 to 1920x1080")
@@ -116,7 +113,6 @@ def test_format_plan_summary_with_crop_uses_cropped_dims() -> None:
         movies=[(movie, Path("/out/x.mkv"))],
         audio_lang_filter=["eng"],
         sub_lang_filter=[],
-        vmaf_enabled=False,
         precomputed_crops={movie.main_file: CropRect(w=1920, h=800, x=0, y=140)},
     )
     summary = _format_plan_summary(movie, plan.jobs[0])
@@ -132,7 +128,6 @@ def test_format_plan_summary_includes_deinterlace_flag() -> None:
         movies=[(movie, Path("/out/x.mkv"))],
         audio_lang_filter=["eng"],
         sub_lang_filter=[],
-        vmaf_enabled=False,
     )
     summary = _format_plan_summary(movie, plan.jobs[0])
     assert summary.endswith(", deinterlace")
@@ -153,7 +148,6 @@ def test_format_plan_summary_anamorphic_dvd_uses_real_output_dims() -> None:
         movies=[(movie, Path("/out/x.mkv"))],
         audio_lang_filter=["eng"],
         sub_lang_filter=[],
-        vmaf_enabled=False,
         precomputed_crops={movie.main_file: CropRect(w=704, h=400, x=8, y=88)},
     )
     summary = _format_plan_summary(movie, plan.jobs[0])
@@ -168,7 +162,6 @@ def test_plan_file_done_summary_is_emitted_via_reporter() -> None:
         movies=[(_make_movie(), Path("/out/x.mkv"))],
         audio_lang_filter=["eng"],
         sub_lang_filter=[],
-        vmaf_enabled=False,
     )
 
     done_events = [e for e in reporter.events if e.method == "plan_file_done"]
@@ -187,7 +180,6 @@ def test_format_plan_summary_passthrough() -> None:
         movies=[(movie, Path("/out/x.mkv"))],
         audio_lang_filter=["eng"],
         sub_lang_filter=[],
-        vmaf_enabled=False,
         copy_video=True,
     )
     summary = _format_plan_summary(movie, plan.jobs[0])
@@ -202,7 +194,6 @@ def test_format_plan_summary_interlaced_fallback() -> None:
         movies=[(movie, Path("/out/x.mkv"))],
         audio_lang_filter=["eng"],
         sub_lang_filter=[],
-        vmaf_enabled=False,
         copy_video=True,
     )
     summary = _format_plan_summary(movie, plan.jobs[0], "interlaced")
@@ -227,7 +218,6 @@ def test_format_plan_summary_dv_p7_fallback() -> None:
         movies=[(movie, Path("/out/x.mkv"))],
         audio_lang_filter=["eng"],
         sub_lang_filter=[],
-        vmaf_enabled=False,
         copy_video=True,
     )
     job = plan.jobs[0]
@@ -247,7 +237,6 @@ def test_format_plan_summary_normal_encode_has_no_reason_prefix() -> None:
         movies=[(movie, Path("/out/x.mkv"))],
         audio_lang_filter=["eng"],
         sub_lang_filter=[],
-        vmaf_enabled=False,
     )
     summary = _format_plan_summary(movie, plan.jobs[0])
     assert summary.startswith("cq ")
@@ -263,7 +252,6 @@ def test_passthrough_summary_emitted_via_reporter() -> None:
         movies=[(_make_movie(), Path("/out/x.mkv"))],
         audio_lang_filter=["eng"],
         sub_lang_filter=[],
-        vmaf_enabled=False,
         copy_video=True,
     )
     done = [e for e in reporter.events if e.method == "plan_file_done"]
@@ -280,7 +268,6 @@ def test_interlaced_fallback_reason_emitted_via_reporter() -> None:
         movies=[(movie, Path("/out/x.mkv"))],
         audio_lang_filter=["eng"],
         sub_lang_filter=[],
-        vmaf_enabled=False,
         copy_video=True,
     )
     done = [e for e in reporter.events if e.method == "plan_file_done"]
@@ -298,7 +285,6 @@ def test_dv_p7_fallback_reason_emitted_via_reporter() -> None:
         movies=[(movie, Path("/out/x.mkv"))],
         audio_lang_filter=["eng"],
         sub_lang_filter=[],
-        vmaf_enabled=False,
         copy_video=True,
     )
     done = [e for e in reporter.events if e.method == "plan_file_done"]

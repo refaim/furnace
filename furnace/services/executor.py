@@ -41,6 +41,7 @@ from furnace.core.ports import (
 )
 from furnace.core.progress import ProgressSample, ProgressTracker
 from furnace.plan import update_job_status
+from furnace.services.target_quality import TargetQualityService
 
 logger = logging.getLogger(__name__)
 
@@ -130,11 +131,13 @@ class Executor:
         dovi_processor: DoviProcessor | None = None,
         video_copier: VideoCopier | None = None,
         grain_encoder: Encoder | None = None,
+        target_quality: TargetQualityService | None = None,
         progress: Any | None = None,  # RunApp or similar (optional, avoids circular import)
         log_dir: Path | None = None,
     ) -> None:
         self._encoder = encoder
         self._grain_encoder = grain_encoder
+        self._target_quality = target_quality
         self._audio_extractor = audio_extractor
         self._audio_decoder = audio_decoder
         self._aac_encoder = aac_encoder
@@ -194,8 +197,6 @@ class Executor:
         Update JSON after each via update_job_status.
         Check _shutdown_event between jobs.
         """
-        self._vmaf_enabled = plan.vmaf_enabled
-
         pending_jobs = [job for job in plan.jobs if job.status in (JobStatus.PENDING, JobStatus.ERROR)]
 
         logger.debug(
@@ -230,10 +231,7 @@ class Executor:
                     JobStatus.DONE,
                     error=None,
                     output_size=output_size,
-                    vmaf_score=job.vmaf_score,
-                    ssimulacra2_score=job.ssimulacra2_score,
-                    butteraugli_score=job.butteraugli_score,
-                    cvvdp_score=job.cvvdp_score,
+                    chosen_cq=job.chosen_cq,
                 )
                 logger.debug("Job %s completed successfully", job.id)
                 if self._progress is not None:
@@ -242,11 +240,14 @@ class Executor:
             except (OSError, RuntimeError, ValueError, KeyError, subprocess.SubprocessError) as exc:
                 error_msg = str(exc)
                 logger.exception("Job %s failed", job.id)
+                # Persist a QVBR already chosen before the failure so a re-run
+                # reuses it instead of repeating the probe search.
                 update_job_status(
                     plan_path,
                     job.id,
                     JobStatus.ERROR,
                     error=error_msg,
+                    chosen_cq=job.chosen_cq,
                 )
 
     def _execute_job(self, job: Job) -> None:
@@ -390,32 +391,34 @@ class Executor:
                 raise RuntimeError(f"Video passthrough copy failed with return code {rc}")
             encoder_settings = "video stream copied (passthrough)"
         else:
+            # The encoder for a job is chosen from `vp.grain` + the presence of a
+            # grain encoder. The target-quality service picks the knob domain (CRF
+            # vs QVBR) from the same two facts; cli wires BOTH from the one SVT
+            # adapter instance, so the executor's encoder and the service's knob
+            # can never disagree about which path (grain/SVT vs non-grain/NVEnc) a
+            # job takes.
+            enc = self._grain_encoder if (job.video_params.grain and self._grain_encoder is not None) else self._encoder
+
+            # Target-quality search: probe the knob (QVBR/CRF) that hits the
+            # domain target, then encode the final at it with NO metrics.
+            cq_override = self._maybe_search_target_quality(job, main_source, temp_dir)
+
             logger.info("Encoding video: %s", main_source.name)
             if self._progress is not None:
                 self._progress.update_status("Encoding video")
                 self._progress.add_tool_line(f"[furnace] Encoding video: {main_source.name}")
 
-            enc = self._grain_encoder if (job.video_params.grain and self._grain_encoder is not None) else self._encoder
             rc_result = enc.encode(
                 input_path=main_source,
                 output_path=video_output,
                 video_params=job.video_params,
                 on_progress=video_on_progress,
-                vmaf_enabled=self._vmaf_enabled,
                 rpu_path=rpu_path,
+                cq_override=cq_override,
             )
             if rc_result.return_code != 0:
                 raise RuntimeError(f"Video encoding failed with return code {rc_result.return_code}")
 
-            # Store metrics from encode
-            if rc_result.vmaf_score is not None:
-                job.vmaf_score = rc_result.vmaf_score
-            if rc_result.ssimulacra2_score is not None:
-                job.ssimulacra2_score = rc_result.ssimulacra2_score
-            if rc_result.butteraugli_score is not None:
-                job.butteraugli_score = rc_result.butteraugli_score
-            if rc_result.cvvdp_score is not None:
-                job.cvvdp_score = rc_result.cvvdp_score
             encoder_settings = rc_result.encoder_settings
 
         # Step 5: Mux
@@ -519,6 +522,65 @@ class Executor:
         # Move cleaned output to final destination
         shutil.move(str(cleaned_path), str(output_path))
         logger.debug("Job output written to %s", output_path)
+
+    def _maybe_search_target_quality(self, job: Job, source: Path, temp_dir: Path) -> int | None:
+        """Search the target-quality knob (QVBR for NVEnc, CRF for grain/SVT), or
+        return None to skip.
+
+        Structurally skipped (silently) when no target-quality service is
+        configured or the service can't search this job -- notably a grain job
+        with no SVT/metrics adapters, which falls back to the fixed CRF recipe. A
+        job that already carries a ``chosen_cq`` (a prior run searched it) reuses
+        it, so re-running an errored job never repeats the probe search. When the
+        source duration is unknown -- so probe windows can't be laid out -- the
+        search is skipped LOUDLY and the encode falls back to the encoder's
+        default knob (no metrics). Records the chosen knob on the job.
+        """
+        if self._target_quality is None or not self._target_quality.can_search(job.video_params):
+            return None
+
+        knob = "CRF" if job.video_params.grain else "QVBR"
+
+        if job.chosen_cq is not None:
+            logger.info("Reusing cached target-quality %s %d for %s", knob, job.chosen_cq, source.name)
+            return job.chosen_cq
+
+        if job.duration_s <= 0:
+            logger.warning(
+                "Target-quality skipped for %s: source duration unknown; "
+                "encoding at the encoder's default knob",
+                source.name,
+            )
+            if self._progress is not None:
+                self._progress.add_tool_line(
+                    "[furnace] WARNING: target-quality skipped (unknown duration); using default knob"
+                )
+            return None
+
+        logger.info("Searching target quality (%s) for %s", knob, source.name)
+        if self._progress is not None:
+            self._progress.update_status("Searching target quality...")
+            self._progress.add_tool_line(f"[furnace] Searching target-quality {knob} (probing)")
+
+        result = self._target_quality.search(source, job.video_params, job.duration_s, temp_dir)
+        job.chosen_cq = result.knob
+        if result.hit:
+            logger.info("Target quality: %s %d (score %.3f)", knob, result.knob, result.score)
+            if self._progress is not None:
+                self._progress.add_tool_line(
+                    f"[furnace] Target-quality {knob} {result.knob} (score {result.score:.3f})"
+                )
+        else:
+            logger.warning(
+                "Target-quality band not hit for %s; using closest %s %d (score %.3f)",
+                source.name, knob, result.knob, result.score,
+            )
+            if self._progress is not None:
+                self._progress.add_tool_line(
+                    f"[furnace] WARNING: target-quality band not hit; using {knob} {result.knob} "
+                    f"(score {result.score:.3f})"
+                )
+        return result.knob
 
     def _process_audio_track(self, instr: AudioInstruction, temp_dir: Path, job: Job) -> Path:
         """Returns path to processed audio file.

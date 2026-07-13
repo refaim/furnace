@@ -194,7 +194,6 @@ class TestIgnoreLangsPlan:
             [(movie, tmp_path / "out.mkv")],
             audio_lang_filter=["jpn"],
             sub_lang_filter=["eng"],
-            vmaf_enabled=False,
         )
 
         assert selector_calls == []
@@ -221,7 +220,6 @@ class TestIgnoreLangsPlan:
             [(movie, tmp_path / "out.mkv")],
             audio_lang_filter=["jpn"],
             sub_lang_filter=["eng"],
-            vmaf_enabled=False,
         )
 
         assert captured == [["fre", "ger"]]
@@ -241,7 +239,6 @@ class TestIgnoreLangsPlan:
             [(movie, tmp_path / "out.mkv")],
             audio_lang_filter=["jpn"],
             sub_lang_filter=["eng"],
-            vmaf_enabled=False,
             lang_overrides={(main, 2): "rus"},
         )
 
@@ -264,7 +261,6 @@ class TestIgnoreLangsPlan:
             [(movie, tmp_path / "out.mkv")],
             audio_lang_filter=["jpn", "eng"],
             sub_lang_filter=["eng"],
-            vmaf_enabled=False,
             lang_overrides={(main, 1): "eng", (main, 2): "jpn"},
         )
 
@@ -284,7 +280,6 @@ class TestIgnoreLangsPlan:
             [(movie, tmp_path / "out.mkv")],
             audio_lang_filter=[],
             sub_lang_filter=["eng"],
-            vmaf_enabled=False,
         )
 
         assert plan.jobs[0].audio[0].language == "und"
@@ -309,7 +304,6 @@ class TestRegressionDefault:
             [(movie, tmp_path / "out.mkv")],
             audio_lang_filter=["eng"],
             sub_lang_filter=["eng"],
-            vmaf_enabled=False,
         )
 
         # The 'fre' track was dropped (not in filter, not 'und'); only the

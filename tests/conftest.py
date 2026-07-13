@@ -253,13 +253,10 @@ def make_job(
     chapters_source: str | None = None,
     status: JobStatus = JobStatus.PENDING,
     error: str | None = None,
-    vmaf_score: float | None = None,
-    ssimulacra2_score: float | None = None,
-    butteraugli_score: float | None = None,
-    cvvdp_score: float | None = None,
     source_size: int = 1_000_000,
     output_size: int | None = None,
     duration_s: float = 0.0,
+    chosen_cq: int | None = None,
 ) -> Job:
     return Job(
         id=job_id,
@@ -273,13 +270,10 @@ def make_job(
         chapters_source=chapters_source,
         status=status,
         error=error,
-        vmaf_score=vmaf_score,
-        ssimulacra2_score=ssimulacra2_score,
-        butteraugli_score=butteraugli_score,
-        cvvdp_score=cvvdp_score,
         source_size=source_size,
         output_size=output_size,
         duration_s=duration_s,
+        chosen_cq=chosen_cq,
     )
 
 
@@ -294,7 +288,6 @@ def make_plan(
     created_at: str = "2026-04-01T00:00:00",
     source: str = "/src",
     destination: str = "/out",
-    vmaf_enabled: bool = False,
     demux_dir: str | None = None,
     jobs: list[Job] | None = None,
 ) -> Plan:
@@ -304,7 +297,6 @@ def make_plan(
         created_at=created_at,
         source=source,
         destination=destination,
-        vmaf_enabled=vmaf_enabled,
         demux_dir=demux_dir,
         jobs=jobs if jobs is not None else [make_job()],
     )

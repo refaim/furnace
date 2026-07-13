@@ -110,7 +110,6 @@ class PlannerService:
         audio_lang_filter: list[str],
         sub_lang_filter: list[str],
         *,
-        vmaf_enabled: bool,
         sar_overrides: set[Path] | None = None,
         downmix_overrides: dict[tuple[Path, int], DownmixMode] | None = None,
         lang_overrides: dict[tuple[Path, int], str] | None = None,
@@ -178,7 +177,6 @@ class PlannerService:
             created_at=now,
             source=source,
             destination=destination,
-            vmaf_enabled=vmaf_enabled,
             jobs=jobs,
         )
 
@@ -316,7 +314,6 @@ class PlannerService:
             chapters_source=chapters_source,
             status=JobStatus.PENDING,
             error=None,
-            vmaf_score=None,
             source_size=movie.file_size,
             output_size=None,
             duration_s=movie.video.duration_s,

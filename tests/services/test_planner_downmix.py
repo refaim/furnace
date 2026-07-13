@@ -174,7 +174,6 @@ class TestCreatePlanDownmixOverrides:
             [(movie, output_path)],
             audio_lang_filter=["eng"],
             sub_lang_filter=["eng"],
-            vmaf_enabled=False,
             downmix_overrides=downmix_overrides,
         )
 
@@ -233,7 +232,6 @@ class TestCreatePlanDownmixOverrides:
             [(movie, tmp_path / "out.mkv")],
             audio_lang_filter=["eng"],
             sub_lang_filter=["eng"],
-            vmaf_enabled=False,
             downmix_overrides=downmix_overrides,
         )
 
@@ -263,7 +261,6 @@ class TestCreatePlanDownmixOverrides:
             [(movie, tmp_path / "out.mkv")],
             audio_lang_filter=["eng"],
             sub_lang_filter=["eng"],
-            vmaf_enabled=False,
         )
 
         assert plan.jobs[0].audio[0].downmix is None

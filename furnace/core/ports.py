@@ -8,6 +8,7 @@ from furnace.core.progress import ProgressSample
 
 from .audio_profile import AudioMetrics
 from .models import (
+    METRIC_NAMES,
     AnalyzeStatus,
     CropRect,
     DiscTitle,
@@ -15,6 +16,7 @@ from .models import (
     DownmixMode,
     DvMode,
     EncodeResult,
+    MetricPool,
     MetricScores,
     VideoParams,
 )
@@ -115,7 +117,7 @@ class Prober(Protocol):
 
 @runtime_checkable
 class Encoder(Protocol):
-    """Video encoding via NVEncC."""
+    """Video encoding via NVEncC (QVBR) or SVT-AV1 (CRF)."""
 
     def encode(
         self,
@@ -124,10 +126,34 @@ class Encoder(Protocol):
         video_params: VideoParams,
         *,
         on_progress: Callable[[ProgressSample], None] | None = None,
-        vmaf_enabled: bool = False,
         rpu_path: Path | None = None,
+        cq_override: int | None = None,
     ) -> EncodeResult:
-        """Encode video. Returns EncodeResult with return code, settings, and optional metrics."""
+        """Encode video. Returns EncodeResult with return code and settings.
+        ``cq_override`` (the target-quality search result) replaces the encoder's
+        default quality knob (QVBR for NVEnc, CRF for SVT) for this encode."""
+        ...
+
+
+@runtime_checkable
+class InlineQualityProbe(Protocol):
+    """Encode a short window at a candidate knob and self-measure one perceptual
+    metric inline, returning the aggregate score. The NVEnc target-quality probe
+    path (implemented by NVEncCAdapter); QVBR is scene-adaptive so a mean over
+    hard sample windows suffices -- no external reference or VapourSynth."""
+
+    def probe(
+        self,
+        input_path: Path,
+        output_path: Path,
+        video_params: VideoParams,
+        *,
+        qvbr: int,
+        metric: str,
+    ) -> float:
+        """Encode ``input_path`` (a short window) at ``qvbr`` with the job's
+        geometry and a single perceptual ``metric`` measured inline; return the
+        aggregate score. Raises on encode failure or a missing metric."""
         ...
 
 
@@ -148,16 +174,21 @@ class PerceptualMetrics(Protocol):
         matrix: str,
         fps_num: int,
         fps_den: int,
+        pool: MetricPool = MetricPool.MEAN,
+        metrics: frozenset[str] = METRIC_NAMES,
     ) -> MetricScores:
         """Score ``distorted`` against ``reference`` brought to the encoded geometry.
 
         ``deinterlace`` mirrors the encoder's single-rate bwdif pass: when set,
         the reference is deinterlaced before crop/scale so it lines up with the
-        (already-deinterlaced) encoded output.
+        (already-deinterlaced) encoded output. ``pool`` selects mean (readout) or
+        low-percentile (worst-case, for the CRF search) frame pooling. ``metrics``
+        selects which perceptual metrics to compute (the CRF search asks for only
+        its driver metric); the unrequested fields come back None.
 
-        Fail-soft: any failure returns an all-None ``MetricScores``. The lone
-        exception is an interlaced source with no deinterlacer provisioned, which
-        raises loudly rather than silently mis-scoring."""
+        Fail-soft: any failure returns an all-None ``MetricScores``. Two checks are
+        loud (outside the guard): an unknown metric name, and an interlaced source
+        with no deinterlacer provisioned -- both raise rather than mis-score."""
         ...
 
 
@@ -178,6 +209,25 @@ class VideoCopier(Protocol):
         the muxer reassembles them downstream. ``on_progress`` is called per
         ``-progress pipe:1`` block. Returns the ffmpeg exit code.
         """
+        ...
+
+
+@runtime_checkable
+class WindowExtractor(Protocol):
+    """Extract a short lossless video window for target-quality probing.
+    Implemented by FFmpegAdapter."""
+
+    def extract_window(
+        self,
+        input_path: Path,
+        output_path: Path,
+        *,
+        start_s: float,
+        frames: int,
+    ) -> int:
+        """Stream-copy ``frames`` video frames from ``start_s`` into ``output_path``
+        (an MKV). ``-ss`` before ``-i`` (keyframe seek), ``-frames:v`` count,
+        ``-c:v copy``. Returns the exit code."""
         ...
 
 

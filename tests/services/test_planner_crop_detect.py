@@ -54,7 +54,6 @@ class TestPrecomputedCropMap:
             [(movie, tmp_path / "out.mkv")],
             audio_lang_filter=["eng"],
             sub_lang_filter=["eng"],
-            vmaf_enabled=False,
             precomputed_crops={movie.main_file: CropRect(w=1920, h=804, x=0, y=138)},
         )
 
@@ -74,7 +73,6 @@ class TestPrecomputedCropMap:
             [(movie_a, tmp_path / "a_out.mkv"), (movie_b, tmp_path / "b_out.mkv")],
             audio_lang_filter=["eng"],
             sub_lang_filter=["eng"],
-            vmaf_enabled=False,
             precomputed_crops=crops,
         )
 
@@ -93,7 +91,6 @@ class TestPrecomputedCropMap:
             [(movie, tmp_path / "out.mkv")],
             audio_lang_filter=["eng"],
             sub_lang_filter=["eng"],
-            vmaf_enabled=False,
             precomputed_crops={},
         )
 
@@ -108,7 +105,6 @@ class TestPrecomputedCropMap:
             [(movie, tmp_path / "out.mkv")],
             audio_lang_filter=["eng"],
             sub_lang_filter=["eng"],
-            vmaf_enabled=False,
         )
 
         assert plan.jobs[0].video_params.crop is None

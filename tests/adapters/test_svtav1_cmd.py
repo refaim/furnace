@@ -66,6 +66,33 @@ def _cmd(vp: VideoParams) -> list[str]:
     return [str(x) for x in raw]
 
 
+class TestSvtCqOverride:
+    """cq_override replaces the fixed CRF (target-quality search result)."""
+
+    def test_cq_override_replaces_crf_in_cmd(self) -> None:
+        raw = _adapter()._build_encode_cmd(
+            Path("in.mkv"), Path("out.obu"), _make_vp(), cq_override=19,
+        )
+        cmd = [str(x) for x in raw]
+        assert cmd[cmd.index("-crf") + 1] == "19"
+
+    def test_cq_override_none_uses_default_crf(self) -> None:
+        raw = _adapter()._build_encode_cmd(
+            Path("in.mkv"), Path("out.obu"), _make_vp(), cq_override=None,
+        )
+        cmd = [str(x) for x in raw]
+        assert cmd[cmd.index("-crf") + 1] == _SVT_CRF
+
+    def test_encoder_settings_reflect_cq_override(self) -> None:
+        settings = _adapter()._build_encoder_settings(_make_vp(), cq_override=19)
+        assert "crf=19" in settings
+        assert f"crf={_SVT_CRF}" not in settings
+
+    def test_encoder_settings_default_crf(self) -> None:
+        settings = _adapter()._build_encoder_settings(_make_vp())
+        assert f"crf={_SVT_CRF}" in settings
+
+
 def _vf(vp: VideoParams) -> str:
     """Return the -vf filtergraph value from the built command."""
     cmd = _cmd(vp)
@@ -410,13 +437,9 @@ class TestSvtAv1Encode:
             result = adapter.encode(Path("input.mkv"), Path("output.obu"), vp)
         assert result.return_code == 0
         assert result.encoder_settings.startswith("av1_svt")
-        assert result.vmaf_score is None
-        assert result.ssimulacra2_score is None
-        assert result.butteraugli_score is None
-        assert result.cvvdp_score is None
 
-    def test_encode_accepts_vmaf_and_rpu_kwargs(self) -> None:
-        """Task 2 accepts but ignores vmaf_enabled / rpu_path (Task 3 wires them)."""
+    def test_encode_accepts_rpu_kwarg(self) -> None:
+        """encode accepts but ignores rpu_path (SVT-AV1 grain jobs are SDR)."""
         from unittest.mock import patch
 
         adapter = _adapter()
@@ -424,7 +447,7 @@ class TestSvtAv1Encode:
         with patch("furnace.adapters.svtav1.run_tool", side_effect=_fake_run_tool):
             result = adapter.encode(
                 Path("input.mkv"), Path("output.obu"), vp,
-                vmaf_enabled=True, rpu_path=Path("rpu.bin"),
+                rpu_path=Path("rpu.bin"),
             )
         assert result.return_code == 0
 

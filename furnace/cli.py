@@ -50,6 +50,7 @@ from .services.executor import Executor
 from .services.planner import PlannerService
 from .services.scan_service import ScanService
 from .services.scanner import Scanner
+from .services.target_quality import TargetQualityService
 from .ui.plan_console import RichPlanReporter
 from .ui.progress import ReportPrinter
 from .ui.run_tui import RunApp
@@ -513,14 +514,6 @@ def plan(
     sub_lang: str = typer.Option(..., "--sub-lang", "-sl", help="Subtitle languages, comma-separated (e.g. rus,eng)"),
     names: Path | None = typer.Option(None, "--names", help="Rename map file"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Show plan without saving"),
-    metrics: bool = typer.Option(
-        False,
-        "--metrics",
-        "--vmaf",
-        help="Compute perceptual quality metrics per encode: SSIMULACRA2 + Butteraugli "
-        "(both paths), CVVDP on the SVT-AV1 grain path, plus VMAF on the NVEnc path. "
-        "'--vmaf' is a deprecated alias.",
-    ),
     copy_video: bool = typer.Option(
         False, "--copy-video", "-cv", help="Copy eligible video streams verbatim instead of re-encoding"
     ),
@@ -550,14 +543,13 @@ def plan(
 
     logger.debug(
         "plan command started: source=%s output=%s audio_lang=%s sub_lang=%s names=%s "
-        "dry_run=%s metrics=%s copy_video=%s force=%s ignore_langs=%s",
+        "dry_run=%s copy_video=%s force=%s ignore_langs=%s",
         source,
         output,
         audio_lang,
         sub_lang,
         names,
         dry_run,
-        metrics,
         copy_video,
         force,
         ignore_langs,
@@ -702,7 +694,6 @@ def plan(
             movies=movies_with_paths,
             audio_lang_filter=audio_lang_list,
             sub_lang_filter=sub_lang_list,
-            vmaf_enabled=metrics,
             sar_overrides=sar_override_paths,
             downmix_overrides=downmix_overrides,
             lang_overrides=lang_overrides,
@@ -731,15 +722,16 @@ def _check_interlaced_grain_metrics_ready(plan_obj: Plan, cfg: ToolPaths) -> Non
     """Fail fast — before any encoding — on an interlaced grain job that cannot be
     scored for lack of a bwdif plugin.
 
-    Perceptual metrics run on the SVT grain path only when bestsource+vship are
-    configured. Scoring an *interlaced* source additionally needs bwdif to
-    deinterlace the metric reference; without it :class:`VshipMetricsAdapter`
-    raises — but only *after* a full, slow SVT-AV1 encode, which is then
-    discarded. Surfacing it here, where the plan, its metrics flag and the
-    resolved tool paths are all known, keeps the failure loud AND early.
+    The SVT grain path always target-quality-searches its CRF when bestsource +
+    vship are configured (the search scores each probe via
+    :class:`VshipMetricsAdapter`; ``--metrics`` no longer gates it). Scoring an
+    *interlaced* source additionally needs bwdif to deinterlace the metric
+    reference; without it the adapter raises — but only mid-run, after starting a
+    slow encode. Surfacing it here, where the plan and the resolved tool paths are
+    known, keeps the failure loud AND early.
     """
-    metrics_on = plan_obj.vmaf_enabled and cfg.bestsource is not None and cfg.vship is not None
-    if not metrics_on or cfg.bwdif is not None:
+    grain_scoring_on = cfg.bestsource is not None and cfg.vship is not None
+    if not grain_scoring_on or cfg.bwdif is not None:
         return
     offenders = [
         Path(job.output_file).name
@@ -750,9 +742,10 @@ def _check_interlaced_grain_metrics_ready(plan_obj: Plan, cfg: ToolPaths) -> Non
     ]
     if offenders:
         typer.secho(
-            "ERROR: interlaced grain job(s) need the bwdif VapourSynth plugin to score, "
-            f"but [tools].bwdif is not configured: {', '.join(offenders)}.\n"
-            "Set [tools].bwdif in furnace.toml, or re-plan without --metrics.",
+            "ERROR: interlaced grain job(s) need the bwdif VapourSynth plugin to score their "
+            f"target-quality probes, but [tools].bwdif is not configured: {', '.join(offenders)}.\n"
+            "Set [tools].bwdif in furnace.toml (or unset [tools].vship to encode grain at the "
+            "fixed CRF instead).",
             err=True,
             fg=typer.colors.RED,
         )
@@ -771,7 +764,8 @@ def run(
     # 2. Load plan (need destination for log dir)
     plan_obj = load_plan(plan_file)
 
-    # Pre-flight: refuse interlaced grain + metrics with no bwdif, before encoding.
+    # Pre-flight: refuse interlaced grain whose target-quality search can't score
+    # it (vship configured but no bwdif), before any encoding.
     _check_interlaced_grain_metrics_ready(plan_obj, cfg)
 
     # 3. Setup file logging -> destination/furnace.log (console OFF — Textual owns terminal)
@@ -802,13 +796,25 @@ def run(
         vship_metrics: VshipMetricsAdapter | None = None
         if cfg.bestsource is not None and cfg.vship is not None:
             vship_metrics = VshipMetricsAdapter(cfg.bestsource, cfg.vship, cfg.bwdif)
-        svt_adapter = SvtAv1Adapter(cfg.ffmpeg, on_output=tool_output, metrics=vship_metrics)
+        svt_adapter = SvtAv1Adapter(cfg.ffmpeg, on_output=tool_output)
 
         dovi_adapter: DoviToolAdapter | None = None
         if cfg.dovi_tool is not None:
             dovi_adapter = DoviToolAdapter(
                 cfg.dovi_tool, cfg.ffmpeg, on_output=tool_output,
             )
+
+        # Target-quality search: always on for the NVEnc path (ffmpeg extracts
+        # probe windows, NVEncC self-measures inline -- no extra config). The
+        # grain (SVT) path additionally needs the Vship metrics adapter to score
+        # its probes; when that's absent, grain jobs fall back to the fixed CRF
+        # recipe (see TargetQualityService.can_search).
+        target_quality = TargetQualityService(
+            ffmpeg_adapter,
+            nvencc_adapter,
+            grain_encoder=svt_adapter,
+            metrics=vship_metrics,
+        )
 
         executor = Executor(
             encoder=nvencc_adapter,
@@ -822,6 +828,7 @@ def run(
             prober=ffmpeg_adapter,
             dovi_processor=dovi_adapter,
             video_copier=ffmpeg_adapter,
+            target_quality=target_quality,
             progress=progress,
             log_dir=log_dir,
         )
@@ -835,7 +842,6 @@ def run(
         total_jobs=pending_count,
         shutdown_event=shutdown_event,
         executor_fn=_run_executor,
-        vmaf_enabled=plan_obj.vmaf_enabled,
     )
     run_app.run()
 

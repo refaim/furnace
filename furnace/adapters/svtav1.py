@@ -18,8 +18,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from furnace.core.color import CICP_MATRIX, CICP_PRIMARIES, CICP_TRANSFER
-from furnace.core.models import EncodeResult, MetricScores, VideoParams
-from furnace.core.ports import PerceptualMetrics
+from furnace.core.models import EncodeResult, VideoParams
 from furnace.core.progress import ProgressSample
 from furnace.core.quality import final_output_dimensions
 
@@ -132,12 +131,10 @@ class SvtAv1Adapter:
         *,
         on_output: OutputCallback = None,
         log_dir: Path | None = None,
-        metrics: PerceptualMetrics | None = None,
     ) -> None:
         self._ffmpeg = ffmpeg
         self._on_output = on_output
         self._log_dir = log_dir
-        self._metrics = metrics
 
     def set_log_dir(self, log_dir: Path | None) -> None:
         self._log_dir = log_dir
@@ -146,17 +143,20 @@ class SvtAv1Adapter:
     # Encoder settings string
     # ------------------------------------------------------------------
 
-    def _build_encoder_settings(self, vp: VideoParams) -> str:
+    def _build_encoder_settings(self, vp: VideoParams, *, cq_override: int | None = None) -> str:
         """Build the ENCODER_SETTINGS string for the MKV global tag.
 
         Slash-separated: the SVT-AV1 recipe is always present, filters only
-        when applied (mirrors NVEncCAdapter's convention).
+        when applied (mirrors NVEncCAdapter's convention). ``cq_override`` (the
+        target-quality search result) replaces the default CRF in the ``crf=``
+        field so the tag mirrors the actual encode.
         """
+        effective_crf = str(cq_override) if cq_override is not None else _SVT_CRF
         parts: list[str] = [
             "av1_svt",
             "SVT-AV1",
             f"preset={_SVT_PRESET}",
-            f"crf={_SVT_CRF}",
+            f"crf={effective_crf}",
             _SVT_PARAMS,
         ]
         if vp.deinterlace:
@@ -174,6 +174,8 @@ class SvtAv1Adapter:
         input_path: Path,
         output_path: Path,
         vp: VideoParams,
+        *,
+        cq_override: int | None = None,
     ) -> list[str | Path]:
         """Build the full ffmpeg + libsvtav1 encode command (raw AV1 OBU out).
 
@@ -182,12 +184,14 @@ class SvtAv1Adapter:
         NTSC-DVD sources plain ffmpeg applies the 2:3 pulldown on decode
         (inflating 23.976 -> 29.97); this drops the duplicated frames. For
         native content the input already decodes at that rate, so it is a
-        harmless no-op (no dup/drop).
+        harmless no-op (no dup/drop). ``cq_override`` (the target-quality search
+        result) replaces the default CRF for this encode.
         """
+        effective_crf = str(cq_override) if cq_override is not None else _SVT_CRF
         return [
             self._ffmpeg, "-hide_banner", "-i", input_path,
             "-vf", _build_vf(vp),
-            "-c:v", "libsvtav1", "-preset", _SVT_PRESET, "-crf", _SVT_CRF,
+            "-c:v", "libsvtav1", "-preset", _SVT_PRESET, "-crf", effective_crf,
             "-g", str(vp.gop),
             "-svtav1-params", f"{_SVT_PARAMS}:{_color_svtav1_params(vp)}",
             "-color_range", vp.color_range, "-color_primaries", vp.color_primaries,
@@ -207,21 +211,17 @@ class SvtAv1Adapter:
         video_params: VideoParams,
         *,
         on_progress: Callable[[ProgressSample], None] | None = None,
-        vmaf_enabled: bool = False,
         rpu_path: Path | None = None,
+        cq_override: int | None = None,
     ) -> EncodeResult:
         """Encode via ffmpeg + libsvtav1, parsing ffmpeg ``-progress`` for progress.
 
-        When ``vmaf_enabled`` and the encode succeeds, GPU perceptual metrics
-        (SSIMULACRA2 / Butteraugli / CVVDP) are measured against the source via
-        the injected VapourSynth + Vship adapter; any failure is fail-soft (the
-        scores stay None -- a metrics failure never fails the encode).
-        ``vmaf_score`` is always None here: the grain path deliberately drops
-        VMAF (grain-blind) for the perceptual metrics. ``rpu_path`` is accepted
-        for Encoder-protocol parity but ignored -- SVT-AV1 grain jobs are SDR.
+        ``rpu_path`` is accepted for Encoder-protocol parity but ignored --
+        SVT-AV1 grain jobs are SDR. ``cq_override`` (the target-quality search
+        result) replaces the default CRF for this encode.
         """
         _ = rpu_path
-        cmd = self._build_encode_cmd(input_path, output_path, video_params)
+        cmd = self._build_encode_cmd(input_path, output_path, video_params, cq_override=cq_override)
         str_cmd = [str(c) for c in cmd]
         logger.debug("svtav1 cmd: %s", " ".join(str_cmd))
 
@@ -233,26 +233,5 @@ class SvtAv1Adapter:
             log_path=log_path,
         )
 
-        encoder_settings = self._build_encoder_settings(video_params)
-        scores = MetricScores()
-        if vmaf_enabled and rc == 0 and self._metrics is not None:
-            final_w, final_h = final_output_dimensions(video_params)
-            scores = self._metrics.measure(
-                input_path,
-                output_path,
-                crop=video_params.crop,
-                deinterlace=video_params.deinterlace,
-                final_width=final_w,
-                final_height=final_h,
-                matrix=video_params.color_matrix,
-                fps_num=video_params.fps_num,
-                fps_den=video_params.fps_den,
-            )
-
-        return EncodeResult(
-            return_code=rc,
-            encoder_settings=encoder_settings,
-            ssimulacra2_score=scores.ssimulacra2,
-            butteraugli_score=scores.butteraugli,
-            cvvdp_score=scores.cvvdp,
-        )
+        encoder_settings = self._build_encoder_settings(video_params, cq_override=cq_override)
+        return EncodeResult(return_code=rc, encoder_settings=encoder_settings)

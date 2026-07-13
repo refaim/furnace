@@ -75,7 +75,6 @@ def _make_runapp(executor_fn: object = lambda _progress: None) -> RunApp:
         total_jobs=1,
         shutdown_event=threading.Event(),
         executor_fn=executor_fn,  # type: ignore[arg-type]
-        vmaf_enabled=False,
     )
 
 
@@ -249,7 +248,6 @@ def test_runapp_action_quit_app_sets_shutdown_and_exits() -> None:
         total_jobs=1,
         shutdown_event=shutdown,
         executor_fn=lambda _p: None,
-        vmaf_enabled=False,
     )
 
     with (
@@ -276,7 +274,6 @@ def test_runapp_action_quit_app_skips_dead_children() -> None:
         total_jobs=1,
         shutdown_event=shutdown,
         executor_fn=lambda _p: None,
-        vmaf_enabled=False,
     )
 
     class _DeadChild:

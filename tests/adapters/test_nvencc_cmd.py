@@ -48,11 +48,11 @@ def _adapter() -> NVEncCAdapter:
     return NVEncCAdapter(Path("NVEncC64.exe"))
 
 
-def _cmd(vp: VideoParams, *, vmaf_enabled: bool = False, rpu_path: Path | None = None) -> list[str]:
+def _cmd(vp: VideoParams, *, rpu_path: Path | None = None) -> list[str]:
     """Build command and convert all elements to str for easier assertion."""
     raw = _adapter()._build_encode_cmd(
         Path("input.mkv"), Path("output.obu"), vp,
-        vmaf_enabled=vmaf_enabled, rpu_path=rpu_path,
+        rpu_path=rpu_path,
     )
     return [str(x) for x in raw]
 
@@ -444,49 +444,6 @@ class TestNVEncCHdr:
         assert cmd[idx + 1] == "1000,400"
 
 
-class TestNVEncCVmaf:
-    """Quality metrics: --vmaf + GPU vship (SSIMULACRA2/Butteraugli), no --ssim."""
-
-    def test_metrics_enabled(self) -> None:
-        cmd = _cmd(_make_vp(), vmaf_enabled=True)
-        assert "--vmaf" in cmd
-        assert "--vship-ssimulacra2" in cmd
-        assert "--vship-butteraugli" in cmd
-
-    def test_ssim_never_requested(self) -> None:
-        """Legacy --ssim is dropped: SSIMULACRA2 supersedes it."""
-        cmd = _cmd(_make_vp(), vmaf_enabled=True)
-        assert "--ssim" not in cmd
-
-    def test_cvvdp_not_requested_on_nvenc(self) -> None:
-        """CVVDP is reserved for the grainy SVT path, not the NVEncC path."""
-        cmd = _cmd(_make_vp(), vmaf_enabled=True)
-        assert "--vship-cvvdp" not in cmd
-
-    def test_vmaf_params(self) -> None:
-        cmd = _cmd(_make_vp(), vmaf_enabled=True)
-        idx = cmd.index("--vmaf")
-        params = cmd[idx + 1]
-        assert "subsample=8" in params
-        assert "vmaf_4k_v0.6.1" in params  # 4K source
-
-    def test_vmaf_model_1080p(self) -> None:
-        vp = _make_vp()
-        vp.source_width = 1920
-        vp.source_height = 1080
-        cmd = _cmd(vp, vmaf_enabled=True)
-        idx = cmd.index("--vmaf")
-        params = cmd[idx + 1]
-        assert "vmaf_v0.6.1" in params
-        assert "vmaf_4k" not in params
-
-    def test_metrics_disabled(self) -> None:
-        cmd = _cmd(_make_vp(), vmaf_enabled=False)
-        assert "--vmaf" not in cmd
-        assert "--vship-ssimulacra2" not in cmd
-        assert "--vship-butteraugli" not in cmd
-
-
 class TestNVEncCEncoderSettings:
     """The encoder_settings string format for MKV tags."""
 
@@ -707,99 +664,6 @@ class TestNVEncCEncode:
         assert result.return_code == 0
         assert "av1_nvenc" in result.encoder_settings
 
-    def test_encode_ssimulacra2_parsing(self) -> None:
-        adapter = _adapter()
-        vp = _make_vp()
-
-        def fake_run_tool(
-            cmd: Any,
-            on_output: Any = None,
-            on_progress_line: Any = None,
-            log_path: Any = None,
-            cwd: Any = None,
-        ) -> tuple[int, str]:
-            if on_output is not None:
-                on_output("ssim/psnr/vmaf/vship: SSIMU2 Score 88.42 (Frames: 120)")
-            return 0, ""
-
-        with patch("furnace.adapters.nvencc.subprocess.run") as mock_sub:
-            mock_sub.return_value.stdout = ""
-            with patch("furnace.adapters.nvencc.run_tool", side_effect=fake_run_tool):
-                result = adapter.encode(Path("input.mkv"), Path("output.obu"), vp)
-        assert result.ssimulacra2_score is not None
-        assert abs(result.ssimulacra2_score - 88.42) < 0.01
-
-    def test_encode_ssimulacra2_negative(self) -> None:
-        """SSIMULACRA2 goes negative on very poor encodes; the regex is sign-aware."""
-        adapter = _adapter()
-        vp = _make_vp()
-
-        def fake_run_tool(
-            cmd: Any,
-            on_output: Any = None,
-            on_progress_line: Any = None,
-            log_path: Any = None,
-            cwd: Any = None,
-        ) -> tuple[int, str]:
-            if on_output is not None:
-                on_output("ssim/psnr/vmaf/vship: SSIMU2 Score -18.078968 (Frames: 120)")
-            return 0, ""
-
-        with patch("furnace.adapters.nvencc.subprocess.run") as mock_sub:
-            mock_sub.return_value.stdout = ""
-            with patch("furnace.adapters.nvencc.run_tool", side_effect=fake_run_tool):
-                result = adapter.encode(Path("input.mkv"), Path("output.obu"), vp)
-        assert result.ssimulacra2_score is not None
-        assert abs(result.ssimulacra2_score - (-18.078968)) < 0.001
-
-    def test_encode_butteraugli_parsing(self) -> None:
-        """Butteraugli line prints normQ/norm3/norminf; norm3 is kept."""
-        adapter = _adapter()
-        vp = _make_vp()
-
-        def fake_run_tool(
-            cmd: Any,
-            on_output: Any = None,
-            on_progress_line: Any = None,
-            log_path: Any = None,
-            cwd: Any = None,
-        ) -> tuple[int, str]:
-            if on_output is not None:
-                on_output(
-                    "ssim/psnr/vmaf/vship: Butteraugli normQ: 3.070816, "
-                    "norm3: 3.176167, norminf: 9.023210 (Frames: 120)"
-                )
-            return 0, ""
-
-        with patch("furnace.adapters.nvencc.subprocess.run") as mock_sub:
-            mock_sub.return_value.stdout = ""
-            with patch("furnace.adapters.nvencc.run_tool", side_effect=fake_run_tool):
-                result = adapter.encode(Path("input.mkv"), Path("output.obu"), vp)
-        assert result.butteraugli_score is not None
-        assert abs(result.butteraugli_score - 3.176167) < 0.0001
-
-    def test_encode_vmaf_parsing(self) -> None:
-        adapter = _adapter()
-        vp = _make_vp()
-
-        def fake_run_tool(
-            cmd: Any,
-            on_output: Any = None,
-            on_progress_line: Any = None,
-            log_path: Any = None,
-            cwd: Any = None,
-        ) -> tuple[int, str]:
-            if on_output is not None:
-                on_output("VMAF Score 95.31")
-            return 0, ""
-
-        with patch("furnace.adapters.nvencc.subprocess.run") as mock_sub:
-            mock_sub.return_value.stdout = ""
-            with patch("furnace.adapters.nvencc.run_tool", side_effect=fake_run_tool):
-                result = adapter.encode(Path("input.mkv"), Path("output.obu"), vp)
-        assert result.vmaf_score is not None
-        assert abs(result.vmaf_score - 95.31) < 0.01
-
     def test_encode_progress_callback(self) -> None:
         adapter = _adapter()
         vp = _make_vp()
@@ -844,31 +708,6 @@ class TestNVEncCEncode:
                 adapter.encode(Path("input.mkv"), Path("output.obu"), vp)
         assert captured_kwargs["log_path"] == tmp_path / "nvencc_encode.log"
 
-    def test_encode_no_on_output(self) -> None:
-        """Adapter without on_output: metric lines still parsed via internal callback."""
-        adapter = NVEncCAdapter(Path("NVEncC64.exe"), on_output=None)
-        vp = _make_vp()
-
-        def fake_run_tool(
-            cmd: Any,
-            on_output: Any = None,
-            on_progress_line: Any = None,
-            log_path: Any = None,
-            cwd: Any = None,
-        ) -> tuple[int, str]:
-            # Trigger the on_output callback with metric lines
-            if on_output is not None:
-                on_output("ssim/psnr/vmaf/vship: SSIMU2 Score 90.10 (Frames: 120)")
-                on_output("ssim/psnr/vmaf/vship: VMAF Score 96.50")
-            return 0, ""
-
-        with patch("furnace.adapters.nvencc.subprocess.run") as mock_sub:
-            mock_sub.return_value.stdout = ""
-            with patch("furnace.adapters.nvencc.run_tool", side_effect=fake_run_tool):
-                result = adapter.encode(Path("in.mkv"), Path("out.obu"), vp)
-        assert result.ssimulacra2_score is not None
-        assert result.vmaf_score is not None
-
     def test_encode_no_on_progress(self) -> None:
         """encode without on_progress: progress line still consumed, no callback."""
         adapter = _adapter()
@@ -892,8 +731,8 @@ class TestNVEncCEncode:
                 result = adapter.encode(Path("in.mkv"), Path("out.obu"), vp, on_progress=None)
         assert result.return_code == 0
 
-    def test_encode_on_output_non_metric_lines(self) -> None:
-        """Lines without metric keywords don't set scores."""
+    def test_encode_forwards_output_lines(self) -> None:
+        """The adapter's on_output receives raw tool lines verbatim."""
         output_lines: list[str] = []
         adapter = NVEncCAdapter(Path("NVEncC64.exe"), on_output=output_lines.append)
         vp = _make_vp()
@@ -914,10 +753,9 @@ class TestNVEncCEncode:
             mock_sub.return_value.stdout = ""
             with patch("furnace.adapters.nvencc.run_tool", side_effect=fake_run_tool):
                 result = adapter.encode(Path("in.mkv"), Path("out.obu"), vp)
-        assert result.ssimulacra2_score is None
-        assert result.butteraugli_score is None
-        assert result.vmaf_score is None
+        assert result.return_code == 0
         assert "encode started" in output_lines
+        assert "encode finished" in output_lines
 
     def test_encode_non_progress_line_not_consumed(self) -> None:
         """Non-progress lines return False from the progress closure."""
@@ -941,74 +779,6 @@ class TestNVEncCEncode:
             with patch("furnace.adapters.nvencc.run_tool", side_effect=fake_run_tool):
                 adapter.encode(Path("in.mkv"), Path("out.obu"), vp)
         assert results == [False]
-
-    def test_encode_ssimulacra2_line_without_numeric_skipped(self) -> None:
-        """Line contains 'SSIMU2' keyword but numeric regex fails → score stays None."""
-        adapter = _adapter()
-        vp = _make_vp()
-
-        def fake_run_tool(
-            cmd: Any,
-            on_output: Any = None,
-            on_progress_line: Any = None,
-            log_path: Any = None,
-            cwd: Any = None,
-        ) -> tuple[int, str]:
-            if on_output is not None:
-                # Keyword present, but no numeric score.
-                on_output("ssim/psnr/vmaf/vship: SSIMU2 Score N/A")
-            return 0, ""
-
-        with patch("furnace.adapters.nvencc.subprocess.run") as mock_sub:
-            mock_sub.return_value.stdout = ""
-            with patch("furnace.adapters.nvencc.run_tool", side_effect=fake_run_tool):
-                result = adapter.encode(Path("in.mkv"), Path("out.obu"), vp)
-        assert result.ssimulacra2_score is None
-
-    def test_encode_butteraugli_line_without_numeric_skipped(self) -> None:
-        """Line contains 'Butteraugli' keyword but no norm3 number → score stays None."""
-        adapter = _adapter()
-        vp = _make_vp()
-
-        def fake_run_tool(
-            cmd: Any,
-            on_output: Any = None,
-            on_progress_line: Any = None,
-            log_path: Any = None,
-            cwd: Any = None,
-        ) -> tuple[int, str]:
-            if on_output is not None:
-                on_output("ssim/psnr/vmaf/vship: Butteraugli failed")
-            return 0, ""
-
-        with patch("furnace.adapters.nvencc.subprocess.run") as mock_sub:
-            mock_sub.return_value.stdout = ""
-            with patch("furnace.adapters.nvencc.run_tool", side_effect=fake_run_tool):
-                result = adapter.encode(Path("in.mkv"), Path("out.obu"), vp)
-        assert result.butteraugli_score is None
-
-    def test_encode_vmaf_line_without_numeric_skipped(self) -> None:
-        """Line contains 'VMAF' keyword but numeric regex fails → score stays None."""
-        adapter = _adapter()
-        vp = _make_vp()
-
-        def fake_run_tool(
-            cmd: Any,
-            on_output: Any = None,
-            on_progress_line: Any = None,
-            log_path: Any = None,
-            cwd: Any = None,
-        ) -> tuple[int, str]:
-            if on_output is not None:
-                # Keyword present, but no `VMAF Score <number>` match.
-                on_output("VMAF Score calculation skipped")
-            return 0, ""
-
-        with patch("furnace.adapters.nvencc.subprocess.run") as mock_sub:
-            mock_sub.return_value.stdout = ""
-            with patch("furnace.adapters.nvencc.run_tool", side_effect=fake_run_tool):
-                result = adapter.encode(Path("in.mkv"), Path("out.obu"), vp)
-        assert result.vmaf_score is None
 
 
 def _ok_run_tool(

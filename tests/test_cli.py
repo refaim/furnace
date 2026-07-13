@@ -301,44 +301,17 @@ class TestPlanDryRun:
         assert planner_init_kwargs.kwargs["track_selector"] is None
         assert planner_init_kwargs.kwargs["und_resolver"] is None
 
-    def _run_metrics_flag(self, tmp_path: Path, flag: str) -> Any:
+    def test_metrics_flag_is_rejected(self, tmp_path: Path) -> None:
+        """--metrics is no longer a valid option."""
         source = tmp_path / "src"
         source.mkdir()
-        output = tmp_path / "out"
-
-        cfg = _make_tool_paths(tmp_path)
-        plan_obj = make_plan(jobs=[])
-
-        with (
-            patch("furnace.cli.load_config", return_value=cfg),
-            patch("furnace.cli._setup_logging"),
-            patch("furnace.cli.FFmpegAdapter"),
-            patch("furnace.cli.MpvAdapter"),
-            patch("furnace.cli.Eac3toAdapter"),
-            patch("furnace.cli.MakemkvAdapter"),
-            patch("furnace.cli.DiscDemuxer") as mock_demuxer_cls,
-            patch("furnace.cli.Scanner") as mock_scanner_cls,
-            patch("furnace.cli.PlannerService") as mock_planner_cls,
-        ):
-            mock_demuxer_cls.return_value.detect.return_value = []
-            mock_scanner_cls.return_value.scan.return_value = []
-            mock_planner_cls.return_value.create_plan.return_value = plan_obj
-
+        with patch("furnace.cli.load_config", return_value=_make_tool_paths(tmp_path)):
             result = runner.invoke(
                 app,
-                ["plan", str(source), "-o", str(output), "-al", "eng", "-sl", "eng", "--dry-run", flag],
+                ["plan", str(source), "-o", str(tmp_path / "out"),
+                 "-al", "eng", "-sl", "eng", "--dry-run", "--metrics"],
             )
-
-        assert result.exit_code == 0, result.output
-        return mock_planner_cls.return_value.create_plan.call_args.kwargs
-
-    def test_dry_run_metrics_flag(self, tmp_path: Path) -> None:
-        """--metrics flag is forwarded to planner.create_plan() as vmaf_enabled."""
-        assert self._run_metrics_flag(tmp_path, "--metrics")["vmaf_enabled"] is True
-
-    def test_dry_run_vmaf_alias(self, tmp_path: Path) -> None:
-        """The deprecated --vmaf alias still enables metrics."""
-        assert self._run_metrics_flag(tmp_path, "--vmaf")["vmaf_enabled"] is True
+        assert result.exit_code != 0
 
     def test_copy_video_flag_forwarded(self, tmp_path: Path) -> None:
         """--copy-video flag is forwarded to planner.create_plan()."""
@@ -989,31 +962,6 @@ class TestRunCommand:
         assert result.exit_code == 0, result.output
         mock_rmtree.assert_not_called()
 
-    def test_run_passes_vmaf_enabled(self, tmp_path: Path) -> None:
-        """vmaf_enabled from plan is passed to RunApp."""
-        plan_file = tmp_path / "plan.json"
-        plan_obj = make_plan(
-            jobs=[],
-            destination=str(tmp_path / "out"),
-            vmaf_enabled=True,
-        )
-
-        cfg = _make_tool_paths(tmp_path)
-
-        with (
-            patch("furnace.cli.load_config", return_value=cfg),
-            patch("furnace.cli.load_plan", return_value=plan_obj),
-            patch("furnace.cli._setup_logging"),
-            patch("furnace.cli.RunApp") as mock_run_app_cls,
-            patch("furnace.cli.ReportPrinter"),
-        ):
-            mock_run_app_cls.return_value.run.return_value = None
-
-            result = runner.invoke(app, ["run", str(plan_file)])
-
-        assert result.exit_code == 0, result.output
-        assert mock_run_app_cls.call_args.kwargs["vmaf_enabled"] is True
-
     def test_run_config_option(self, tmp_path: Path) -> None:
         """--config option is forwarded to load_config."""
         plan_file = tmp_path / "plan.json"
@@ -1150,6 +1098,8 @@ class TestRunExecutorClosure:
         # The executor must be wired with a video_copier for passthrough jobs.
         exec_kwargs = mock_executor_cls.call_args.kwargs
         assert exec_kwargs["video_copier"] is not None
+        # ...and with an always-on target-quality service (NVEnc QVBR search).
+        assert exec_kwargs["target_quality"] is not None
 
     def test_executor_fn_wires_svt_grain_encoder(self, tmp_path: Path) -> None:
         """The executor_fn builds an SvtAv1Adapter from cfg.ffmpeg as grain_encoder."""
@@ -1247,15 +1197,14 @@ class TestRunExecutorClosure:
 
     def test_executor_fn_wires_vship_metrics(self, tmp_path: Path) -> None:
         """bestsource+vship configured (bwdif absent) -> VshipMetricsAdapter built
-        with bwdif=None and injected into the SVT grain encoder."""
+        with bwdif=None (for the grain target-quality search)."""
         cfg = _make_tool_paths(tmp_path)
         cfg.bestsource = tmp_path / "BestSource.dll"
         cfg.vship = tmp_path / "libvship.dll"
 
-        mock_vship, mock_svt = self._run_executor_fn(tmp_path, cfg)
+        mock_vship, _ = self._run_executor_fn(tmp_path, cfg)
 
         mock_vship.assert_called_once_with(cfg.bestsource, cfg.vship, None)
-        assert mock_svt.call_args.kwargs["metrics"] is mock_vship.return_value
 
     def test_executor_fn_wires_bwdif_into_vship_metrics(self, tmp_path: Path) -> None:
         """bwdif configured alongside bestsource+vship -> threaded into the adapter."""
@@ -4071,7 +4020,11 @@ class TestPlanPlainFilesGrain:
 
 class TestInterlacedGrainMetricsPreflight:
     """`_check_interlaced_grain_metrics_ready` fails fast (before any encode) when
-    an interlaced grain job would be scored but no bwdif plugin is configured."""
+    an interlaced grain job would be scored but no bwdif plugin is configured.
+
+    Grain jobs always target-quality-search when bestsource+vship are configured,
+    so the check gates on those tool paths, NOT on the (retired-for-NVEnc)
+    ``--metrics`` flag."""
 
     @staticmethod
     def _cfg(tmp_path: Path, *, bestsource: Path | None, vship: Path | None, bwdif: Path | None) -> Any:
@@ -4088,33 +4041,36 @@ class TestInterlacedGrainMetricsPreflight:
         )
 
     @staticmethod
-    def _plan(*, vmaf_enabled: bool, grain: bool = True, deinterlace: bool = True,
+    def _plan(*, grain: bool = True, deinterlace: bool = True,
               status: JobStatus = JobStatus.PENDING) -> Any:
         vp = make_video_params(grain=grain, deinterlace=deinterlace)
         return make_plan(
             jobs=[make_job(job_id="j1", status=status, video_params=vp)],
-            vmaf_enabled=vmaf_enabled,
         )
 
     def test_raises_when_bwdif_missing(self, tmp_path: Path) -> None:
         cfg = self._metrics_cfg(tmp_path, bwdif=None)
-        plan = self._plan(vmaf_enabled=True)
+        plan = self._plan()
         with pytest.raises(typer.Exit) as exc:
             _check_interlaced_grain_metrics_ready(plan, cfg)
         assert exc.value.exit_code == 1
 
     def test_ok_when_bwdif_present(self, tmp_path: Path) -> None:
         cfg = self._metrics_cfg(tmp_path, bwdif=tmp_path / "bwdif.dll")
-        _check_interlaced_grain_metrics_ready(self._plan(vmaf_enabled=True), cfg)
+        _check_interlaced_grain_metrics_ready(self._plan(), cfg)
 
-    def test_ok_when_metrics_disabled(self, tmp_path: Path) -> None:
+    def test_raises_even_when_offender_is_pending(self, tmp_path: Path) -> None:
+        # The grain search runs (and needs bwdif) whenever vship is configured,
+        # so a pending interlaced grain job is still a fail-fast offender.
         cfg = self._metrics_cfg(tmp_path, bwdif=None)
-        _check_interlaced_grain_metrics_ready(self._plan(vmaf_enabled=False), cfg)
+        with pytest.raises(typer.Exit) as exc:
+            _check_interlaced_grain_metrics_ready(self._plan(), cfg)
+        assert exc.value.exit_code == 1
 
     def test_ok_when_vship_not_configured(self, tmp_path: Path) -> None:
-        # metrics flag on, but no vship adapter would be built -> no measure -> no bwdif need.
+        # No vship adapter -> grain falls back to fixed CRF (no search, no measure) -> no bwdif need.
         cfg = self._cfg(tmp_path, bestsource=None, vship=None, bwdif=None)
-        _check_interlaced_grain_metrics_ready(self._plan(vmaf_enabled=True), cfg)
+        _check_interlaced_grain_metrics_ready(self._plan(), cfg)
 
     def test_ok_when_no_interlaced_grain_offender(self, tmp_path: Path) -> None:
         # Mixed plan, no offender: a DONE interlaced-grain job (not pending), a
@@ -4130,6 +4086,5 @@ class TestInterlacedGrainMetricsPreflight:
                 make_job(job_id="nvenc", status=JobStatus.PENDING,
                          video_params=make_video_params(grain=False, deinterlace=True)),
             ],
-            vmaf_enabled=True,
         )
         _check_interlaced_grain_metrics_ready(plan, cfg)

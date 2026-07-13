@@ -16,7 +16,7 @@ from unittest.mock import patch
 import pytest
 
 from furnace.adapters.vship_metrics import VshipMetricsAdapter
-from furnace.core.models import CropRect, MetricScores
+from furnace.core.models import CropRect, MetricPool, MetricScores
 
 
 class _Frame:
@@ -58,13 +58,6 @@ class _Clip:
         return _Frame(props)
 
 
-def _metric(prop: str, values: tuple[float, ...]) -> Any:
-    def _fn(ref: Any, dist: Any) -> _Clip:
-        return _Clip(prop=prop, values=values)
-
-    return _fn
-
-
 class _FakeCore:
     """Records the graph the adapter builds and returns configured clips."""
 
@@ -79,6 +72,7 @@ class _FakeCore:
         raise_in: str | None = None,
     ) -> None:
         self._sources = [ref, dist]
+        self._source_calls = 0
         self._cropped = cropped
         self._scaled = scaled
         self._deinterlaced = deinterlaced
@@ -92,25 +86,50 @@ class _FakeCore:
         self.bwdif_kwargs: dict[str, int] | None = None
         self.bwdif_applied_to: _Clip | None = None
         self.crop_applied_to: _Clip | None = None
+        self.vship_built: list[str] = []
+        # Built-in namespaces are always present; plugin namespaces (bs / vship /
+        # bwdif) appear only after LoadPlugin, mirroring real VapourSynth so the
+        # adapter's load-once hasattr guard is exercised faithfully.
         self.std = types.SimpleNamespace(
             LoadPlugin=self._load, Crop=self._crop, Trim=self._trim, AssumeFPS=self._assumefps,
         )
-        self.bs = types.SimpleNamespace(VideoSource=self._source)
         self.resize = types.SimpleNamespace(Spline36=self._spline, Bicubic=self._bicubic)
-        self.bwdif = types.SimpleNamespace(Bwdif=self._bwdif)
-        self.vship = types.SimpleNamespace(
-            SSIMULACRA2=_metric("_SSIMULACRA2", (80.0, 90.0)),
-            BUTTERAUGLI=_metric("_BUTTERAUGLI_3Norm", (1.5, 2.5)),
-            CVVDP=_metric("_CVVDP", (9.0, 8.0)),
-        )
+
+    def _vship_metric(self, name: str, prop: str, values: tuple[float, ...]) -> Any:
+        """A vship metric constructor that records it was built (so tests can
+        assert which metrics the adapter chose to compute)."""
+
+        def _fn(ref: Any, dist: Any) -> _Clip:
+            self.vship_built.append(name)
+            return _Clip(prop=prop, values=values)
+
+        return _fn
 
     def _load(self, path: str) -> None:
+        # Real VapourSynth loads a plugin at most once per process; a second load
+        # of the same plugin raises. Model that, and register the plugin's
+        # namespace so the adapter's hasattr(core, ...) guard sees it.
+        if path in self.loaded:
+            raise RuntimeError(f"Plugin {path} already loaded")
         self.loaded.append(path)
+        low = path.lower()
+        if "bestsource" in low:
+            self.bs = types.SimpleNamespace(VideoSource=self._source)
+        elif "vship" in low:
+            self.vship = types.SimpleNamespace(
+                SSIMULACRA2=self._vship_metric("ssimulacra2", "_SSIMULACRA2", (80.0, 90.0)),
+                BUTTERAUGLI=self._vship_metric("butteraugli", "_BUTTERAUGLI_3Norm", (1.5, 2.5)),
+                CVVDP=self._vship_metric("cvvdp", "_CVVDP", (9.0, 8.0)),
+            )
+        elif "bwdif" in low:
+            self.bwdif = types.SimpleNamespace(Bwdif=self._bwdif)
 
     def _source(self, path: str, **kw: int) -> _Clip:  # noqa: ARG002 -- fake mirrors real signature
         if self._raise_in == "source":
             raise RuntimeError("boom")
-        return self._sources.pop(0)
+        clip = self._sources[self._source_calls % len(self._sources)]
+        self._source_calls += 1
+        return clip
 
     def _bwdif(self, clip: _Clip, **kw: int) -> _Clip:
         self.bwdif_kwargs = kw
@@ -151,15 +170,21 @@ def _measure(
     matrix: str = "bt709",
     deinterlace: bool = False,
     bwdif: Path | None = None,
+    pool: MetricPool = MetricPool.MEAN,
+    metrics: frozenset[str] | None = None,
 ) -> MetricScores:
     adapter = VshipMetricsAdapter(Path("BestSource.dll"), Path("libvship.dll"), bwdif)
     fake_vs = types.SimpleNamespace(core=core, RGBS="RGBS")
+    # metrics=None exercises the adapter's own default (compute all three).
+    extra = {} if metrics is None else {"metrics": metrics}
     with patch.dict(sys.modules, {"vapoursynth": fake_vs}):
         return adapter.measure(
             Path("ref.mkv"), Path("dist.obu"),
             crop=crop, deinterlace=deinterlace,
             final_width=final_width, final_height=final_height,
             matrix=matrix, fps_num=24000, fps_den=1001,
+            pool=pool,
+            **extra,
         )
 
 
@@ -241,6 +266,72 @@ class TestMeasure:
         assert scores.ssimulacra2 is None
         assert scores.butteraugli is None
         assert scores.cvvdp is None
+
+    def test_default_pool_is_mean(self) -> None:
+        """MetricPool.MEAN (the default) averages per-frame scores."""
+        core = _FakeCore(ref=_Clip(width=1904, height=792), dist=_Clip(width=1904, height=792))
+        scores = _measure(core, pool=MetricPool.MEAN)
+        assert scores.ssimulacra2 == 85.0  # mean(80, 90)
+        assert scores.cvvdp == 8.5  # mean(9.0, 8.0)
+
+    def test_low_pool_takes_worst_case_percentile(self) -> None:
+        """MetricPool.LOW takes the 5th-percentile (worst-case) per metric.
+        Frames cycle (80,90) -> [80,90,80,90]; p5 -> 80.0."""
+        core = _FakeCore(ref=_Clip(width=1904, height=792), dist=_Clip(width=1904, height=792))
+        scores = _measure(core, pool=MetricPool.LOW)
+        assert scores.ssimulacra2 == 80.0  # p5 of [80,90,80,90]
+        assert scores.butteraugli == 1.5  # p5 of [1.5,2.5,1.5,2.5]
+        assert scores.cvvdp == 8.0  # p5 of [9,8,9,8]
+
+    def test_loads_each_plugin_only_once_across_calls(self) -> None:
+        """VapourSynth's core is a process-global singleton -- a plugin loads only
+        once. A second measure() on the same core must reuse the loaded plugins,
+        not reload them (a reload raises "already loaded"). The grain CRF search
+        calls measure() many times per run, so a reload would abort every search
+        after the first probe."""
+        core = _FakeCore(ref=_Clip(width=1904, height=792), dist=_Clip(width=1904, height=792))
+        adapter = VshipMetricsAdapter(Path("BestSource.dll"), Path("libvship.dll"))
+        fake_vs = types.SimpleNamespace(core=core, RGBS="RGBS")
+        kw: dict[str, Any] = {
+            "crop": None, "deinterlace": False, "final_width": 1904, "final_height": 792,
+            "matrix": "bt709", "fps_num": 24000, "fps_den": 1001,
+        }
+        with patch.dict(sys.modules, {"vapoursynth": fake_vs}):
+            first = adapter.measure(Path("ref.mkv"), Path("d1.obu"), **kw)
+            second = adapter.measure(Path("ref.mkv"), Path("d2.obu"), **kw)
+        assert first.ssimulacra2 is not None
+        assert second.ssimulacra2 is not None  # None if it reloaded -> fail-soft
+        assert core.loaded == ["BestSource.dll", "libvship.dll"]  # loaded once total
+
+
+class TestMetricSelection:
+    """The CRF search reads only one metric, so ``measure`` computes only the
+    requested ones -- skipping the other GPU metric kernels (perf)."""
+
+    def test_default_computes_all_three(self) -> None:
+        """With no selection, every metric node is built (backward compatible)."""
+        core = _FakeCore(ref=_Clip(width=1904, height=792), dist=_Clip(width=1904, height=792))
+        scores = _measure(core)
+        assert core.vship_built == ["ssimulacra2", "butteraugli", "cvvdp"]
+        assert scores.ssimulacra2 is not None
+        assert scores.butteraugli is not None
+        assert scores.cvvdp is not None
+
+    def test_single_metric_skips_the_others(self) -> None:
+        """Requesting just SSIMULACRA2 builds only that node; the rest stay None."""
+        core = _FakeCore(ref=_Clip(width=1904, height=792), dist=_Clip(width=1904, height=792))
+        scores = _measure(core, metrics=frozenset({"ssimulacra2"}))
+        assert core.vship_built == ["ssimulacra2"]
+        assert scores.ssimulacra2 == 85.0  # mean(80, 90)
+        assert scores.butteraugli is None
+        assert scores.cvvdp is None
+
+    def test_unknown_metric_raises_loudly(self) -> None:
+        """An unknown metric name is a caller bug -> loud, outside the fail-soft
+        guard (never silently degraded to all-None)."""
+        core = _FakeCore(ref=_Clip(width=1904, height=792), dist=_Clip(width=1904, height=792))
+        with pytest.raises(ValueError, match="unknown perceptual metric"):
+            _measure(core, metrics=frozenset({"bogus"}))
 
 
 class TestDeinterlace:

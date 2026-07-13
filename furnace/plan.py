@@ -154,13 +154,10 @@ def _load_job(raw: dict[str, Any]) -> Job:
         chapters_source=raw.get("chapters_source"),
         status=JobStatus(raw.get("status", "pending")),
         error=raw.get("error"),
-        vmaf_score=raw.get("vmaf_score"),
-        ssimulacra2_score=raw.get("ssimulacra2_score"),
-        butteraugli_score=raw.get("butteraugli_score"),
-        cvvdp_score=raw.get("cvvdp_score"),
         source_size=raw.get("source_size", 0),
         output_size=raw.get("output_size"),
         duration_s=raw.get("duration_s", 0.0),
+        chosen_cq=raw.get("chosen_cq"),
     )
 
 
@@ -179,7 +176,6 @@ def load_plan(path: Path) -> Plan:
         created_at=raw["created_at"],
         source=raw["source"],
         destination=raw["destination"],
-        vmaf_enabled=raw["vmaf_enabled"],
         demux_dir=raw.get("demux_dir"),
         jobs=[_load_job(j) for j in raw.get("jobs", [])],
     )
@@ -190,11 +186,8 @@ def update_job_status(
     job_id: str,
     status: JobStatus,
     error: str | None = None,
-    vmaf_score: float | None = None,
-    ssimulacra2_score: float | None = None,
-    butteraugli_score: float | None = None,
-    cvvdp_score: float | None = None,
     output_size: int | None = None,
+    chosen_cq: int | None = None,
 ) -> None:
     """Read JSON, find job by id, update status fields, write back atomically."""
     with plan_path.open("r", encoding="utf-8") as f:
@@ -204,11 +197,8 @@ def update_job_status(
     updates: dict[str, float | int] = {
         key: value
         for key, value in (
-            ("vmaf_score", vmaf_score),
-            ("ssimulacra2_score", ssimulacra2_score),
-            ("butteraugli_score", butteraugli_score),
-            ("cvvdp_score", cvvdp_score),
             ("output_size", output_size),
+            ("chosen_cq", chosen_cq),
         )
         if value is not None
     }

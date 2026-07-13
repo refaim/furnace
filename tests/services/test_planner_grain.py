@@ -59,7 +59,6 @@ class TestGrainOverrides:
             [(movie, tmp_path / "out.mkv")],
             audio_lang_filter=["eng"],
             sub_lang_filter=["eng"],
-            vmaf_enabled=False,
         )
 
         assert plan.jobs[0].video_params.grain is True
@@ -73,7 +72,6 @@ class TestGrainOverrides:
             [(movie, tmp_path / "out.mkv")],
             audio_lang_filter=["eng"],
             sub_lang_filter=["eng"],
-            vmaf_enabled=False,
             grain_overrides={movie.main_file: False},
         )
 
@@ -88,7 +86,6 @@ class TestGrainOverrides:
             [(movie, tmp_path / "out.mkv")],
             audio_lang_filter=["eng"],
             sub_lang_filter=["eng"],
-            vmaf_enabled=False,
             grain_overrides={movie.main_file: True},
         )
 
@@ -103,7 +100,6 @@ class TestGrainOverrides:
             [(movie, tmp_path / "out.mkv")],
             audio_lang_filter=["eng"],
             sub_lang_filter=["eng"],
-            vmaf_enabled=False,
         )
 
         assert plan.jobs[0].video_params.grain is False
@@ -117,7 +113,6 @@ class TestGrainOverrides:
             [(movie, tmp_path / "out.mkv")],
             audio_lang_filter=["eng"],
             sub_lang_filter=["eng"],
-            vmaf_enabled=False,
             grain_overrides=None,
         )
 
@@ -132,7 +127,6 @@ class TestGrainOverrides:
             [(movie, tmp_path / "out.mkv")],
             audio_lang_filter=["eng"],
             sub_lang_filter=["eng"],
-            vmaf_enabled=False,
             copy_video=True,
         )
 
@@ -149,7 +143,6 @@ class TestGrainOverrides:
             [(movie, tmp_path / "out.mkv")],
             audio_lang_filter=["eng"],
             sub_lang_filter=["eng"],
-            vmaf_enabled=False,
             grain_overrides={movie.main_file: True},
             copy_video=True,
         )
@@ -167,7 +160,6 @@ class TestGrainOverrides:
             [(movie, tmp_path / "out.mkv")],
             audio_lang_filter=["eng"],
             sub_lang_filter=["eng"],
-            vmaf_enabled=False,
             grain_overrides={movie.main_file: False},
         )
 
@@ -183,7 +175,6 @@ class TestGrainOverrides:
             [(movie, tmp_path / "out.mkv")],
             audio_lang_filter=["eng"],
             sub_lang_filter=["eng"],
-            vmaf_enabled=False,
         )
 
         vp = plan.jobs[0].video_params
@@ -199,7 +190,6 @@ class TestGrainOverrides:
             [(movie, tmp_path / "out.mkv")],
             audio_lang_filter=["eng"],
             sub_lang_filter=["eng"],
-            vmaf_enabled=False,
         )
 
         vp = plan.jobs[0].video_params

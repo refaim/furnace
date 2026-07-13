@@ -24,6 +24,17 @@ logger = logging.getLogger(__name__)
 # 1440p pixel area (2560x1440). At or above this we pick the 4K-tuned VMAF model.
 _VMAF_4K_MIN_PIXEL_AREA = 2560 * 1440
 
+# Aggregate-metric line patterns for target-quality probing. NVEncC prints one
+# line per metric to stderr, prefixed "ssim/psnr/vmaf/vship:" (confirmed live on
+# NVEncC NVENC API 13.0): only SSIMU2 carries a "(Frames: N)" suffix. Scores are
+# sign-aware (SSIMULACRA2 can go negative) and the fractional part is optional so
+# an integer-valued score (e.g. "CVVDP Score 10") still parses.
+_PROBE_METRIC_PATTERNS: dict[str, re.Pattern[str]] = {
+    "vmaf": re.compile(r"VMAF\s+Score\s+(-?\d+(?:\.\d+)?)", re.IGNORECASE),
+    "ssimulacra2": re.compile(r"SSIMU2\s+Score\s+(-?\d+(?:\.\d+)?)", re.IGNORECASE),
+    "cvvdp": re.compile(r"CVVDP\s+Score\s+(-?\d+(?:\.\d+)?)", re.IGNORECASE),
+}
+
 _NVENCC_PCT_RE = re.compile(r"\[(\d+\.?\d*)%\]")
 _NVENCC_FPS_RE = re.compile(r"(\d+\.?\d*)\s*fps,")
 
@@ -159,12 +170,15 @@ class NVEncCAdapter:
     # Encoder settings string
     # ------------------------------------------------------------------
 
-    def _build_encoder_settings(self, vp: VideoParams) -> str:
+    def _build_encoder_settings(self, vp: VideoParams, *, cq_override: int | None = None) -> str:
         """Build ENCODER_SETTINGS string for MKV global tag.
 
-        Format: slash-separated, NVEncC params always present, filters only when applied.
+        Format: slash-separated, NVEncC params always present, filters only when
+        applied. ``cq_override`` (the target-quality search result) replaces
+        ``vp.cq`` in the ``qvbr=`` field so the tag mirrors the actual encode.
         """
         version = self._get_version()
+        effective_cq = cq_override if cq_override is not None else vp.cq
         parts: list[str] = ["av1_nvenc"]
         if version:
             parts.append(f"NVEncC={version}")
@@ -172,7 +186,7 @@ class NVEncCAdapter:
         # Rate-control fields must mirror those chosen in _build_encode_cmd
         # so the ENCODER_SETTINGS tag is never misleading.
         parts += [
-            f"qvbr={vp.cq}",
+            f"qvbr={effective_cq}",
             "preset=P4",
             "tune=uhq",
             "aq",
@@ -197,16 +211,41 @@ class NVEncCAdapter:
     # Command building
     # ------------------------------------------------------------------
 
+    def _probe_metric_flags(self, metric: str, vp: VideoParams) -> list[str]:
+        """Single-metric flag list for a target-quality probe.
+
+        A probe measures exactly one metric (the driver for the content domain);
+        the final encode carries none. VMAF still picks its model by resolution.
+        An unknown metric raises loudly rather than probing nothing.
+        """
+        if metric == "ssimulacra2":
+            return ["--vship-ssimulacra2"]
+        if metric == "cvvdp":
+            return ["--vship-cvvdp"]
+        if metric == "vmaf":
+            n_threads = max(1, (os.cpu_count() or 4) - 2)
+            pixel_area = vp.crop.w * vp.crop.h if vp.crop is not None else vp.source_width * vp.source_height
+            model = "vmaf_4k_v0.6.1" if pixel_area >= _VMAF_4K_MIN_PIXEL_AREA else "vmaf_v0.6.1"
+            return ["--vmaf", f"model={model},threads={n_threads},subsample=8"]
+        raise ValueError(f"unknown probe metric {metric!r}")
+
     def _build_encode_cmd(
         self,
         input_path: Path,
         output_path: Path,
         vp: VideoParams,
         *,
-        vmaf_enabled: bool = False,
         rpu_path: Path | None = None,
+        cq_override: int | None = None,
+        probe_metric: str | None = None,
     ) -> list[str | Path]:
-        """Build the full NVEncC encode command."""
+        """Build the full NVEncC encode command.
+
+        ``cq_override`` (the target-quality search result) replaces ``vp.cq`` as
+        the effective QVBR. ``probe_metric``, when set, requests exactly that one
+        perceptual metric inline (target-quality probing); the final encode
+        carries no metrics.
+        """
         cmd: list[str | Path] = [self._nvencc]
 
         # Hardware decode: NVDEC for supported codecs, sw decode otherwise.
@@ -219,8 +258,9 @@ class NVEncCAdapter:
 
         # Quality / rate control (AV1: no lookahead-level). QVBR perceptual
         # profile for all jobs; grain sources route to SVT-AV1 at the executor.
+        effective_cq = cq_override if cq_override is not None else vp.cq
         cmd += [
-            "--preset", "P4", "--tune", "uhq", "--qvbr", str(vp.cq),
+            "--preset", "P4", "--tune", "uhq", "--qvbr", str(effective_cq),
             "--aq", "--aq-temporal", "--lookahead", "32",
             "--multipass", "2pass-quarter",
         ]
@@ -286,18 +326,11 @@ class NVEncCAdapter:
             if vp.crop is not None:
                 cmd += ["--dolby-vision-rpu-prm", "crop=true"]
 
-        # --- Quality metrics ---
-        # VMAF (kept for continuity with the resolution-tuned QVBR anchors) plus
-        # GPU-accelerated SSIMULACRA2 + Butteraugli via NVEncC's bundled libvship.
-        # SSIM is dropped -- SSIMULACRA2 supersedes it. CVVDP is a temporal metric
-        # reserved for the grainy SVT path, so it is not requested here.
-        if vmaf_enabled:
-            n_threads = max(1, (os.cpu_count() or 4) - 2)
-            # Select VMAF model by resolution
-            pixel_area = vp.crop.w * vp.crop.h if vp.crop is not None else vp.source_width * vp.source_height
-            model = "vmaf_4k_v0.6.1" if pixel_area >= _VMAF_4K_MIN_PIXEL_AREA else "vmaf_v0.6.1"
-            cmd += ["--vmaf", f"model={model},threads={n_threads},subsample=8"]
-            cmd += ["--vship-ssimulacra2", "--vship-butteraugli"]
+        # --- Quality metric (target-quality probe only) ---
+        # A probe requests a single driver metric inline (self-measured against
+        # NVEncC's own filtered input). The final encode carries no metrics.
+        if probe_metric is not None:
+            cmd += self._probe_metric_flags(probe_metric, vp)
 
         # --- Input / Output ---
         cmd += ["-i", str(input_path)]
@@ -316,10 +349,16 @@ class NVEncCAdapter:
         video_params: VideoParams,
         *,
         on_progress: Callable[[ProgressSample], None] | None = None,
-        vmaf_enabled: bool = False,
         rpu_path: Path | None = None,
+        cq_override: int | None = None,
     ) -> EncodeResult:
-        """Encode video via NVEncC. Parses stderr for progress via the unified parser."""
+        """Encode video via NVEncC. Parses stderr for progress via the unified parser.
+
+        ``cq_override`` (the target-quality search result) replaces ``vp.cq`` as
+        the QVBR for this encode, in both the command and the ENCODER_SETTINGS tag.
+        The final encode carries no perceptual metrics (target-quality is searched
+        up front instead).
+        """
         if rpu_path is not None:
             version = self._get_version()
             parsed = _version_tuple(version)
@@ -332,41 +371,15 @@ class NVEncCAdapter:
             input_path,
             output_path,
             video_params,
-            vmaf_enabled=vmaf_enabled,
             rpu_path=rpu_path,
+            cq_override=cq_override,
         )
         str_cmd = [str(c) for c in cmd]
         logger.debug("nvencc cmd: %s", " ".join(str_cmd))
 
-        encoder_settings = self._build_encoder_settings(video_params)
+        encoder_settings = self._build_encoder_settings(video_params, cq_override=cq_override)
 
         src_fps = video_params.fps_num / video_params.fps_den if video_params.fps_den else 0.0
-        vmaf_score: float | None = None
-        ssimulacra2_score: float | None = None
-        butteraugli_score: float | None = None
-        # SSIMULACRA2/Butteraugli can be negative on very poor encodes, so the
-        # capture groups are sign-aware. Butteraugli's line prints three norms
-        # (normQ/norm3/norminf); we keep norm3, the community-standard aggregate.
-        vmaf_re = re.compile(r"VMAF\s+Score\s+(-?\d+\.\d+)", re.IGNORECASE)
-        s2_re = re.compile(r"SSIMU2\s+Score\s+(-?\d+\.\d+)", re.IGNORECASE)
-        butter_re = re.compile(r"norm3:\s*(-?\d+\.\d+)", re.IGNORECASE)
-
-        def _on_output(line: str) -> None:
-            nonlocal vmaf_score, ssimulacra2_score, butteraugli_score
-            if self._on_output is not None:
-                self._on_output(line)
-            if "VMAF" in line:
-                m = vmaf_re.search(line)
-                if m:
-                    vmaf_score = float(m.group(1))
-            if "SSIMU2" in line:
-                m = s2_re.search(line)
-                if m:
-                    ssimulacra2_score = float(m.group(1))
-            if "Butteraugli" in line:
-                m = butter_re.search(line)
-                if m:
-                    butteraugli_score = float(m.group(1))
 
         def _on_progress_line(line: str) -> bool:
             sample = _parse_nvencc_progress_line(line, src_fps=src_fps)
@@ -379,15 +392,62 @@ class NVEncCAdapter:
         log_path = self._log_dir / "nvencc_encode.log" if self._log_dir else None
         rc, _out = run_tool(
             str_cmd,
-            on_output=_on_output,
+            on_output=self._on_output,
             on_progress_line=_on_progress_line,
             log_path=log_path,
         )
 
-        return EncodeResult(
-            return_code=rc,
-            encoder_settings=encoder_settings,
-            vmaf_score=vmaf_score,
-            ssimulacra2_score=ssimulacra2_score,
-            butteraugli_score=butteraugli_score,
+        return EncodeResult(return_code=rc, encoder_settings=encoder_settings)
+
+    # ------------------------------------------------------------------
+    # Target-quality probe
+    # ------------------------------------------------------------------
+
+    def probe(
+        self,
+        input_path: Path,
+        output_path: Path,
+        video_params: VideoParams,
+        *,
+        qvbr: int,
+        metric: str,
+    ) -> float:
+        """Encode a short window at ``qvbr`` with a single perceptual ``metric``
+        and return the aggregate score.
+
+        Applies the job's full geometry/color pipeline (crop, deinterlace,
+        resize, SAR, HDR) at the candidate QVBR so the measured quality reflects
+        the real encode; Dolby Vision RPU is deliberately skipped (metadata, not
+        quality, and it would need a separate extraction). NVEncC self-measures
+        its own filtered input against its AV1 output, so no external reference is
+        needed. Raises ``ValueError`` for an unknown metric, ``RuntimeError`` if
+        the encode fails or the metric is not reported.
+        """
+        cmd = self._build_encode_cmd(
+            input_path,
+            output_path,
+            video_params,
+            cq_override=qvbr,
+            probe_metric=metric,
         )
+        pattern = _PROBE_METRIC_PATTERNS[metric]
+        str_cmd = [str(c) for c in cmd]
+        logger.debug("nvencc probe cmd: %s", " ".join(str_cmd))
+
+        score: float | None = None
+
+        def _on_output(line: str) -> None:
+            nonlocal score
+            if self._on_output is not None:
+                self._on_output(line)
+            m = pattern.search(line)
+            if m:
+                score = float(m.group(1))
+
+        log_path = self._log_dir / f"nvencc_probe_{metric}_q{qvbr}.log" if self._log_dir else None
+        rc, _out = run_tool(str_cmd, on_output=_on_output, log_path=log_path)
+        if rc != 0:
+            raise RuntimeError(f"NVEncC probe failed (rc={rc}) at qvbr={qvbr} metric={metric}")
+        if score is None:
+            raise RuntimeError(f"NVEncC probe reported no {metric} score at qvbr={qvbr}")
+        return score

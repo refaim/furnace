@@ -84,7 +84,6 @@ class TestVerdictTrigger:
             [(movie, tmp_path / "out.mkv")],
             audio_lang_filter=["eng"],
             sub_lang_filter=["eng"],
-            vmaf_enabled=False,
         )
 
         assert len(_audio_calls(selector)) == 1
@@ -100,7 +99,6 @@ class TestVerdictTrigger:
             [(movie, tmp_path / "out.mkv")],
             audio_lang_filter=["eng"],
             sub_lang_filter=["eng"],
-            vmaf_enabled=False,
         )
 
         assert len(_audio_calls(selector)) == 1
@@ -116,7 +114,6 @@ class TestVerdictTrigger:
             [(movie, tmp_path / "out.mkv")],
             audio_lang_filter=["eng"],
             sub_lang_filter=["eng"],
-            vmaf_enabled=False,
         )
 
         assert len(_audio_calls(selector)) == 1
@@ -132,7 +129,6 @@ class TestVerdictTrigger:
             [(movie, tmp_path / "out.mkv")],
             audio_lang_filter=["eng"],
             sub_lang_filter=["eng"],
-            vmaf_enabled=False,
         )
 
         assert _audio_calls(selector) == []
@@ -148,7 +144,6 @@ class TestVerdictTrigger:
             [(movie, tmp_path / "out.mkv")],
             audio_lang_filter=["eng"],
             sub_lang_filter=["eng"],
-            vmaf_enabled=False,
         )
 
         assert _audio_calls(selector) == []
@@ -163,7 +158,6 @@ class TestVerdictTrigger:
             [(movie, tmp_path / "out.mkv")],
             audio_lang_filter=["eng"],
             sub_lang_filter=["eng"],
-            vmaf_enabled=False,
         )
 
         assert len(plan.jobs) == 1
@@ -187,7 +181,6 @@ class TestVerdictTrigger:
             [(movie, tmp_path / "out.mkv")],
             audio_lang_filter=["eng", "rus"],
             sub_lang_filter=["eng"],
-            vmaf_enabled=False,
         )
 
         assert _audio_calls(selector) == []

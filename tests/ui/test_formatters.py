@@ -295,12 +295,6 @@ class TestBuildSteps:
         assert steps[-2] == "Set metadata"
         assert steps[-1] == "Optimize index"
 
-    def test_vmaf_adds_step(self) -> None:
-        job = make_job()
-        steps = _build_steps(job, vmaf_enabled=True)
-        assert steps[-1] == "VMAF"
-        assert len(steps) == 7
-
     def test_no_audio_no_subs(self) -> None:
         job = make_job(audio=[], subtitles=[])
         steps = _build_steps(job)

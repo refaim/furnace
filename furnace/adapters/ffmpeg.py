@@ -661,6 +661,43 @@ class FFmpegAdapter:
         return rc
 
     # ------------------------------------------------------------------
+    # WindowExtractor (target-quality probing)
+    # ------------------------------------------------------------------
+
+    def extract_window(
+        self,
+        input_path: Path,
+        output_path: Path,
+        *,
+        start_s: float,
+        frames: int,
+    ) -> int:
+        """Stream-copy ``frames`` video frames from ``start_s`` into an MKV.
+
+        A fast, lossless window extractor for target-quality probing: ``-ss``
+        before ``-i`` seeks to the nearest keyframe at/before ``start_s`` and
+        ``-frames:v`` copies that many packets verbatim (``-c:v copy``, no
+        re-encode). MKV output is the most robust container for arbitrary source
+        codecs (per ab-av1's sampling notes). Audio and subtitles are dropped;
+        the probe encoder only needs the video. Returns the ffmpeg exit code.
+        """
+        cmd = [
+            str(self._ffmpeg),
+            "-hide_banner",
+            "-loglevel", "error",
+            "-ss", f"{start_s:.3f}",
+            "-i", str(input_path),
+            "-map", "0:v:0",
+            "-frames:v", str(frames),
+            "-c:v", "copy",
+            "-an", "-sn",
+            "-y", str(output_path),
+        ]
+        log_path = self._log_dir / "ffmpeg_extract_window.log" if self._log_dir else None
+        rc, _out = run_tool(cmd, on_output=self._on_output, log_path=log_path)
+        return rc
+
+    # ------------------------------------------------------------------
     # AudioExtractor
     # ------------------------------------------------------------------
 

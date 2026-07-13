@@ -30,7 +30,6 @@ class TestJobDurationS:
             movies=[(movie, output_path)],
             audio_lang_filter=["eng"],
             sub_lang_filter=["eng"],
-            vmaf_enabled=False,
         )
 
         assert len(plan.jobs) == 1
@@ -46,7 +45,6 @@ class TestJobDurationS:
             movies=[(movie, output_path)],
             audio_lang_filter=["eng"],
             sub_lang_filter=["eng"],
-            vmaf_enabled=False,
         )
 
         assert len(plan.jobs) == 1

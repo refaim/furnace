@@ -63,7 +63,6 @@ def test_plan_emits_full_event_sequence(tmp_path: Path) -> None:
         movies=batch.movies,
         audio_lang_filter=["eng"],
         sub_lang_filter=[],
-        vmaf_enabled=False,
         precomputed_crops=batch.crops,
     )
 

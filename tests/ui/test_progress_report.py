@@ -11,9 +11,9 @@ from furnace.ui.progress import ReportPrinter
 from tests.conftest import make_job, make_plan
 
 
-def _render(*, vmaf_enabled: bool = False, **plan_kw: object) -> str:
+def _render(**plan_kw: object) -> str:
     """Render a report and return captured text."""
-    plan = make_plan(vmaf_enabled=vmaf_enabled, **plan_kw)  # type: ignore[arg-type]
+    plan = make_plan(**plan_kw)  # type: ignore[arg-type]
     buf = StringIO()
     console = Console(file=buf, force_terminal=False, width=120)
     ReportPrinter().print_report(plan, console)
@@ -136,167 +136,7 @@ class TestMixedStatuses:
 
 
 # ------------------------------------------------------------------
-# 4. VMAF score threshold labels
-# ------------------------------------------------------------------
-
-
-class TestVmafLabels:
-    def test_excellent_at_95(self) -> None:
-        jobs = [make_job(status=JobStatus.DONE, source_size=1_000_000, output_size=500_000, vmaf_score=95.0)]
-        text = _render(jobs=jobs)
-        assert "VMAF 95.0 (excellent)" in text
-
-    def test_excellent_above_95(self) -> None:
-        jobs = [make_job(status=JobStatus.DONE, source_size=1_000_000, output_size=500_000, vmaf_score=98.7)]
-        text = _render(jobs=jobs)
-        assert "VMAF 98.7 (excellent)" in text
-
-    def test_good_at_85(self) -> None:
-        jobs = [make_job(status=JobStatus.DONE, source_size=1_000_000, output_size=500_000, vmaf_score=85.0)]
-        text = _render(jobs=jobs)
-        assert "VMAF 85.0 (good)" in text
-
-    def test_good_at_94(self) -> None:
-        jobs = [make_job(status=JobStatus.DONE, source_size=1_000_000, output_size=500_000, vmaf_score=94.9)]
-        text = _render(jobs=jobs)
-        assert "VMAF 94.9 (good)" in text
-
-    def test_fair_at_70(self) -> None:
-        jobs = [make_job(status=JobStatus.DONE, source_size=1_000_000, output_size=500_000, vmaf_score=70.0)]
-        text = _render(jobs=jobs)
-        assert "VMAF 70.0 (fair)" in text
-
-    def test_fair_at_84(self) -> None:
-        jobs = [make_job(status=JobStatus.DONE, source_size=1_000_000, output_size=500_000, vmaf_score=84.9)]
-        text = _render(jobs=jobs)
-        assert "VMAF 84.9 (fair)" in text
-
-    def test_poor_below_70(self) -> None:
-        jobs = [make_job(status=JobStatus.DONE, source_size=1_000_000, output_size=500_000, vmaf_score=69.9)]
-        text = _render(jobs=jobs)
-        assert "VMAF 69.9 (poor)" in text
-
-    def test_poor_at_zero(self) -> None:
-        jobs = [make_job(status=JobStatus.DONE, source_size=1_000_000, output_size=500_000, vmaf_score=0.0)]
-        text = _render(jobs=jobs)
-        assert "VMAF 0.0 (poor)" in text
-
-
-# ------------------------------------------------------------------
-# 5. SSIMULACRA2 / Butteraugli / CVVDP scores and labels
-# ------------------------------------------------------------------
-
-
-class TestSsimulacra2Labels:
-    def test_excellent_at_90(self) -> None:
-        jobs = [make_job(status=JobStatus.DONE, source_size=1_000_000, output_size=500_000, ssimulacra2_score=90.0)]
-        text = _render(jobs=jobs)
-        assert "SSIMU2 90.00 (excellent)" in text
-
-    def test_good_at_80(self) -> None:
-        jobs = [make_job(status=JobStatus.DONE, source_size=1_000_000, output_size=500_000, ssimulacra2_score=88.4)]
-        text = _render(jobs=jobs)
-        assert "SSIMU2 88.40 (good)" in text
-
-    def test_fair_at_70(self) -> None:
-        jobs = [make_job(status=JobStatus.DONE, source_size=1_000_000, output_size=500_000, ssimulacra2_score=70.0)]
-        text = _render(jobs=jobs)
-        assert "SSIMU2 70.00 (fair)" in text
-
-    def test_poor_below_70(self) -> None:
-        jobs = [make_job(status=JobStatus.DONE, source_size=1_000_000, output_size=500_000, ssimulacra2_score=55.5)]
-        text = _render(jobs=jobs)
-        assert "SSIMU2 55.50 (poor)" in text
-
-    def test_poor_negative(self) -> None:
-        """SSIMULACRA2 can be negative on very poor encodes."""
-        jobs = [make_job(status=JobStatus.DONE, source_size=1_000_000, output_size=500_000, ssimulacra2_score=-18.1)]
-        text = _render(jobs=jobs)
-        assert "SSIMU2 -18.10 (poor)" in text
-
-
-class TestButteraugliCvvdpDisplay:
-    def test_butteraugli_value_shown(self) -> None:
-        jobs = [make_job(status=JobStatus.DONE, source_size=1_000_000, output_size=500_000, butteraugli_score=1.73)]
-        text = _render(jobs=jobs)
-        assert "Butteraugli 1.73" in text
-
-    def test_cvvdp_value_shown(self) -> None:
-        jobs = [make_job(status=JobStatus.DONE, source_size=1_000_000, output_size=500_000, cvvdp_score=9.12)]
-        text = _render(jobs=jobs)
-        assert "CVVDP 9.12" in text
-
-
-# ------------------------------------------------------------------
-# 6. Average metric calculation
-# ------------------------------------------------------------------
-
-
-class TestAverages:
-    def test_average_vmaf_shown_when_vmaf_enabled(self) -> None:
-        jobs = [
-            make_job(job_id="j1", status=JobStatus.DONE, source_size=1_000_000, output_size=500_000, vmaf_score=90.0),
-            make_job(job_id="j2", status=JobStatus.DONE, source_size=1_000_000, output_size=500_000, vmaf_score=80.0),
-        ]
-        text = _render(vmaf_enabled=True, jobs=jobs)
-        assert "Average:" in text
-        assert "VMAF 85.00 (n=2)" in text
-
-    def test_all_metric_averages_shown(self) -> None:
-        jobs = [
-            make_job(
-                job_id="j1", status=JobStatus.DONE, source_size=1_000_000, output_size=500_000,
-                vmaf_score=90.0, ssimulacra2_score=88.0, butteraugli_score=1.5, cvvdp_score=9.0,
-            ),
-            make_job(
-                job_id="j2", status=JobStatus.DONE, source_size=1_000_000, output_size=500_000,
-                vmaf_score=80.0, ssimulacra2_score=86.0, butteraugli_score=2.5, cvvdp_score=8.0,
-            ),
-        ]
-        text = _render(vmaf_enabled=True, jobs=jobs)
-        assert "VMAF 85.00 (n=2)" in text
-        assert "SSIMU2 87.00 (n=2)" in text
-        assert "Butteraugli 2.00 (n=2)" in text
-        assert "CVVDP 8.50 (n=2)" in text
-
-    def test_no_average_when_vmaf_disabled(self) -> None:
-        jobs = [
-            make_job(status=JobStatus.DONE, source_size=1_000_000, output_size=500_000, vmaf_score=90.0),
-        ]
-        text = _render(vmaf_enabled=False, jobs=jobs)
-        assert "Average:" not in text
-
-    def test_no_average_when_no_scores(self) -> None:
-        jobs = [
-            make_job(status=JobStatus.DONE, source_size=1_000_000, output_size=500_000, vmaf_score=None),
-        ]
-        text = _render(vmaf_enabled=True, jobs=jobs)
-        assert "Average:" not in text
-
-    def test_average_excludes_none_scores(self) -> None:
-        jobs = [
-            make_job(job_id="j1", status=JobStatus.DONE, source_size=1_000_000, output_size=500_000, vmaf_score=90.0),
-            make_job(job_id="j2", status=JobStatus.DONE, source_size=1_000_000, output_size=500_000, vmaf_score=None),
-        ]
-        text = _render(vmaf_enabled=True, jobs=jobs)
-        assert "VMAF 90.00 (n=1)" in text
-
-    def test_only_present_metrics_averaged(self) -> None:
-        """Only metrics some job recorded appear; no separator for absent ones."""
-        jobs = [
-            make_job(
-                job_id="j1", status=JobStatus.DONE, source_size=1_000_000,
-                output_size=500_000, vmaf_score=90.0,
-            ),
-        ]
-        text = _render(vmaf_enabled=True, jobs=jobs)
-        assert "VMAF 90.00 (n=1)" in text
-        # Only VMAF present -> no "  |  " separator to another metric.
-        assert "  |  " not in text
-
-
-# ------------------------------------------------------------------
-# 7. Size savings
+# 4. Size savings
 # ------------------------------------------------------------------
 
 
@@ -343,7 +183,7 @@ class TestSizeSavings:
 
 
 # ------------------------------------------------------------------
-# 8. No done jobs
+# 5. No done jobs
 # ------------------------------------------------------------------
 
 
@@ -377,7 +217,7 @@ class TestNoDoneJobs:
 
 
 # ------------------------------------------------------------------
-# 9. Per-file display
+# 6. Per-file display
 # ------------------------------------------------------------------
 
 
@@ -406,40 +246,3 @@ class TestPerFileDisplay:
         ]
         text = _render(jobs=jobs)
         assert "Fallback.mkv" in text
-
-    def test_all_metrics_on_same_line(self) -> None:
-        jobs = [
-            make_job(
-                status=JobStatus.DONE,
-                source_size=1_000_000,
-                output_size=500_000,
-                vmaf_score=92.5,
-                ssimulacra2_score=87.5,
-                butteraugli_score=1.9,
-                cvvdp_score=9.3,
-            ),
-        ]
-        text = _render(jobs=jobs)
-        # All scores in the per-file section
-        assert "VMAF 92.5 (good)" in text
-        assert "SSIMU2 87.50 (good)" in text
-        assert "Butteraugli 1.90" in text
-        assert "CVVDP 9.30" in text
-
-    def test_no_quality_when_scores_absent(self) -> None:
-        jobs = [
-            make_job(
-                status=JobStatus.DONE,
-                source_size=1_000_000,
-                output_size=500_000,
-                vmaf_score=None,
-                ssimulacra2_score=None,
-                butteraugli_score=None,
-                cvvdp_score=None,
-            ),
-        ]
-        text = _render(jobs=jobs)
-        assert "VMAF" not in text
-        assert "SSIMU2" not in text
-        assert "Butteraugli" not in text
-        assert "CVVDP" not in text

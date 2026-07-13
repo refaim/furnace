@@ -47,7 +47,6 @@ class TestSarOverrides:
             [(movie, tmp_path / "out.mkv")],
             audio_lang_filter=["eng"],
             sub_lang_filter=["eng"],
-            vmaf_enabled=False,
             sar_overrides={movie.main_file},
         )
 
@@ -63,7 +62,6 @@ class TestSarOverrides:
             [(movie, tmp_path / "out.mkv")],
             audio_lang_filter=["eng"],
             sub_lang_filter=["eng"],
-            vmaf_enabled=False,
             sar_overrides=set(),
         )
 
@@ -80,7 +78,6 @@ class TestSarOverrides:
             [(movie, tmp_path / "out.mkv")],
             audio_lang_filter=["eng"],
             sub_lang_filter=["eng"],
-            vmaf_enabled=False,
         )
 
         vp = plan.jobs[0].video_params
@@ -98,7 +95,6 @@ class TestSarOverrides:
             [(movie, tmp_path / "out.mkv")],
             audio_lang_filter=["eng"],
             sub_lang_filter=["eng"],
-            vmaf_enabled=False,
             sar_overrides={movie.main_file},
         )
 

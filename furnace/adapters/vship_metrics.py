@@ -23,9 +23,24 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from furnace.core.models import CropRect, MetricScores
+import numpy as np
+
+from furnace.core.models import METRIC_NAMES, CropRect, MetricPool, MetricScores
 
 logger = logging.getLogger(__name__)
+
+# Worst-case percentile for MetricPool.LOW (the CRF search). 5th percentile =
+# "95% of frames score at least this well"; less noise-prone than the 1st. The
+# exact value is a calibration knob (target-quality Phase 4).
+_LOW_PERCENTILE = 5.0
+
+
+def _pool_scores(scores: list[float], pool: MetricPool) -> float:
+    """Reduce per-frame scores to one value by the chosen pooling."""
+    arr = np.asarray(scores, dtype=np.float64)
+    if pool is MetricPool.LOW:
+        return float(np.percentile(arr, _LOW_PERCENTILE))
+    return float(arr.mean())
 
 # furnace (ffmpeg-style) colour matrix -> VapourSynth resize matrix token. This
 # mirrors core.color.CICP_MATRIX -- the exact set _color_svtav1_params accepts,
@@ -44,6 +59,15 @@ _DEFAULT_MATRIX = "170m"  # SD fallback; unreachable for a validly-encoded sourc
 _PROP_SSIMULACRA2 = "_SSIMULACRA2"
 _PROP_BUTTERAUGLI = "_BUTTERAUGLI_3Norm"  # community-standard 3-norm aggregate
 _PROP_CVVDP = "_CVVDP"
+
+# Metric name (see core ``METRIC_NAMES``) -> (vship node constructor attr,
+# per-frame prop). Canonical order; the CRF search asks for only its driver
+# metric so the unneeded GPU kernels are skipped (a search reads only one metric).
+_METRIC_NODES: dict[str, tuple[str, str]] = {
+    "ssimulacra2": ("SSIMULACRA2", _PROP_SSIMULACRA2),
+    "butteraugli": ("BUTTERAUGLI", _PROP_BUTTERAUGLI),
+    "cvvdp": ("CVVDP", _PROP_CVVDP),
+}
 
 
 class VshipMetricsAdapter:
@@ -72,15 +96,24 @@ class VshipMetricsAdapter:
         matrix: str,
         fps_num: int,
         fps_den: int,
+        pool: MetricPool = MetricPool.MEAN,
+        metrics: frozenset[str] = METRIC_NAMES,
     ) -> MetricScores:
         """Score ``distorted`` against ``reference`` brought to the encoded geometry.
 
-        Fail-soft: any VapourSynth / GPU / plugin error returns an all-None
-        ``MetricScores`` so a metrics failure never fails the encode. The one
-        exception is deliberately *loud*: an interlaced source with no bwdif
-        plugin provisioned cannot be measured correctly, so it raises (outside
-        the fail-soft guard) rather than silently reporting bogus scores.
+        ``pool`` selects mean (readout) or low-percentile (worst-case, CRF search)
+        frame pooling. ``metrics`` selects which perceptual metrics to compute
+        (the others stay None) -- the CRF search asks for only its driver metric so
+        the unneeded GPU kernels are skipped. Fail-soft: any VapourSynth / GPU /
+        plugin error returns an all-None ``MetricScores`` so a metrics failure
+        never fails the encode. Two checks are deliberately *loud* and sit outside
+        the fail-soft guard: an unknown metric name (a caller bug) and an
+        interlaced source with no bwdif plugin provisioned (a real config gap that
+        cannot be measured correctly) both raise rather than degrade silently.
         """
+        unknown = metrics - METRIC_NAMES
+        if unknown:
+            raise ValueError(f"unknown perceptual metric(s): {sorted(unknown)}")
         if deinterlace and self._bwdif is None:
             raise RuntimeError(
                 f"cannot score interlaced source {reference.name}: no bwdif VapourSynth "
@@ -92,6 +125,7 @@ class VshipMetricsAdapter:
                 crop=crop, deinterlace=deinterlace,
                 final_width=final_width, final_height=final_height,
                 matrix=matrix, fps_num=fps_num, fps_den=fps_den,
+                pool=pool, metrics=metrics,
             )
         except Exception:  # noqa: BLE001 -- metrics are best-effort; never fail the encode
             logger.warning(
@@ -112,13 +146,22 @@ class VshipMetricsAdapter:
         matrix: str,
         fps_num: int,
         fps_den: int,
+        pool: MetricPool,
+        metrics: frozenset[str],
     ) -> MetricScores:
         import vapoursynth as vs  # noqa: PLC0415 -- optional heavy dependency, imported lazily
 
         core: Any = vs.core
-        core.std.LoadPlugin(str(self._bestsource))
-        core.std.LoadPlugin(str(self._vship))
-        if deinterlace:
+        # VapourSynth's core is a process-global singleton and a plugin can be
+        # loaded only once per process -- a second LoadPlugin of the same plugin
+        # raises "already loaded". The grain CRF search calls measure() many times
+        # in one run (per window x per probed knob), so load each plugin only when
+        # its namespace isn't already present (the idiomatic hasattr guard).
+        if not hasattr(core, "bs"):
+            core.std.LoadPlugin(str(self._bestsource))
+        if not hasattr(core, "vship"):
+            core.std.LoadPlugin(str(self._vship))
+        if deinterlace and not hasattr(core, "bwdif"):
             core.std.LoadPlugin(str(self._bwdif))
 
         # rff=0: yield coded frames (never apply 2:3 pulldown), so a soft-telecine
@@ -169,23 +212,25 @@ class VshipMetricsAdapter:
         ref_rgb = core.resize.Bicubic(ref, format=vs.RGBS, matrix_in_s=token)
         dist_rgb = core.resize.Bicubic(dist, format=vs.RGBS, matrix_in_s=token)
 
-        s2 = core.vship.SSIMULACRA2(ref_rgb, dist_rgb)
-        ba = core.vship.BUTTERAUGLI(ref_rgb, dist_rgb)
-        cv = core.vship.CVVDP(ref_rgb, dist_rgb)
+        # Build a vship node only for each requested metric (canonical order), so a
+        # single-metric search skips the other GPU kernels entirely.
+        nodes: dict[str, tuple[Any, str]] = {}
+        for name, (ctor, prop) in _METRIC_NODES.items():
+            if name in metrics:
+                nodes[name] = (getattr(core.vship, ctor)(ref_rgb, dist_rgb), prop)
 
-        # One interleaved pass: requesting all three metrics per frame index lets
-        # VapourSynth's frame cache decode each source/OBU frame once (not 3x). A
-        # synchronous get_frame loop (vs clip.frames() prefetch) is chosen to keep
-        # that single-decode dedup; on SD grain sources the preset-4 encode, not
-        # this GPU metric pass, is the throughput bottleneck.
-        total_s2 = total_ba = total_cv = 0.0
+        # One interleaved pass: requesting the wanted metrics per frame index lets
+        # VapourSynth's frame cache decode each source/OBU frame once (not once per
+        # metric). A synchronous get_frame loop (vs clip.frames() prefetch) is
+        # chosen to keep that single-decode dedup; on SD grain sources the preset-4
+        # encode, not this GPU metric pass, is the throughput bottleneck.
+        frames: dict[str, list[float]] = {name: [] for name in nodes}
         for i in range(n):
-            total_s2 += float(s2.get_frame(i).props[_PROP_SSIMULACRA2])
-            total_ba += float(ba.get_frame(i).props[_PROP_BUTTERAUGLI])
-            total_cv += float(cv.get_frame(i).props[_PROP_CVVDP])
+            for name, (node, prop) in nodes.items():
+                frames[name].append(float(node.get_frame(i).props[prop]))
 
         return MetricScores(
-            ssimulacra2=total_s2 / n,
-            butteraugli=total_ba / n,
-            cvvdp=total_cv / n,
+            ssimulacra2=_pool_scores(frames["ssimulacra2"], pool) if "ssimulacra2" in frames else None,
+            butteraugli=_pool_scores(frames["butteraugli"], pool) if "butteraugli" in frames else None,
+            cvvdp=_pool_scores(frames["cvvdp"], pool) if "cvvdp" in frames else None,
         )

@@ -23,6 +23,7 @@ from furnace.core.models import (
     SubtitleAction,
 )
 from furnace.core.progress import ProgressSample
+from furnace.core.target_quality import KnobSearchResult
 from furnace.plan import load_plan, save_plan
 from furnace.services.executor import Executor, _video_intermediate_name
 from tests.conftest import (
@@ -77,7 +78,6 @@ def executor_with_mocks() -> tuple[Executor, SimpleNamespace]:
         prober=mocks.prober,
         video_copier=mocks.video_copier,
     )
-    executor._vmaf_enabled = False  # normally set by run()
     return executor, mocks
 
 
@@ -907,7 +907,6 @@ class TestRunPipelineWithDvRpu:
             prober=mocks.prober,
             dovi_processor=dovi_mock,
         )
-        executor._vmaf_enabled = False
 
         job = _pipeline_job(tmp_path, dv_mode=DvMode.TO_8_1)
         output_path = Path(job.output_file)
@@ -952,7 +951,6 @@ class TestRunPipelineWithDvRpu:
             prober=MagicMock(),
             dovi_processor=dovi_mock,
         )
-        executor._vmaf_enabled = False
         job = _pipeline_job(tmp_path, dv_mode=DvMode.COPY)
         output_path = Path(job.output_file)
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1077,7 +1075,6 @@ class TestRunPipelineShutdown:
             prober=MagicMock(),
             dovi_processor=dovi_mock,
         )
-        executor._vmaf_enabled = False
         executor._shutdown_event.set()
         job = _pipeline_job(tmp_path, dv_mode=DvMode.COPY)
         output_path = Path(job.output_file)
@@ -1097,8 +1094,8 @@ class TestRunPipelineShutdown:
             output_path: Any,
             video_params: Any,
             on_progress: Any = None,
-            vmaf_enabled: bool = False,
             rpu_path: Any = None,
+            cq_override: Any = None,
         ) -> EncodeResult:
             executor._shutdown_event.set()
             return EncodeResult(return_code=0, encoder_settings="test")
@@ -1208,37 +1205,320 @@ class TestRunPipelineTaggerWarning:
         assert output_path.exists()
 
 
-class TestRunPipelineEncodeMetrics:
-    """Verify quality metrics stored on job."""
+def _tq_result(*, knob: int = 27, score: float = 85.0, hit: bool = True) -> KnobSearchResult:
+    return KnobSearchResult(knob=knob, score=score, hit=hit, probes=((knob, score),))
 
-    def test_metrics_stored(
+
+def _fake_clean_writing(input_path: Any, output_path: Any, on_progress: Any = None) -> int:
+    Path(output_path).write_bytes(b"CLEAN")
+    return 0
+
+
+class TestRunPipelineTargetQuality:
+    """The NVEnc path searches the target-quality QVBR before the final encode."""
+
+    def test_search_sets_cq_override_and_drops_final_metrics(
         self,
         executor_with_mocks: tuple[Executor, SimpleNamespace],
         tmp_path: Path,
     ) -> None:
         executor, mocks = executor_with_mocks
-        mocks.encoder.encode.return_value = EncodeResult(
-            return_code=0,
-            encoder_settings="test",
-            vmaf_score=95.5,
-            ssimulacra2_score=88.2,
-            butteraugli_score=1.73,
-            cvvdp_score=9.1,
-        )
-
-        def fake_clean(input_path: Any, output_path: Any, on_progress: Any = None) -> int:
-            Path(output_path).write_bytes(b"CLEAN")
-            return 0
-
-        mocks.cleaner.clean.side_effect = fake_clean
+        svc = MagicMock()
+        svc.search.return_value = _tq_result(knob=27, hit=True)
+        executor._target_quality = svc
+        mocks.cleaner.clean.side_effect = _fake_clean_writing
         job = _pipeline_job(tmp_path)
         output_path = Path(job.output_file)
         output_path.parent.mkdir(parents=True, exist_ok=True)
+
         executor._run_pipeline(job, output_path, tmp_path)
-        assert job.vmaf_score == 95.5
-        assert job.ssimulacra2_score == 88.2
-        assert job.butteraugli_score == 1.73
-        assert job.cvvdp_score == 9.1
+
+        svc.search.assert_called_once()
+        enc_kwargs = mocks.encoder.encode.call_args.kwargs
+        assert enc_kwargs["cq_override"] == 27
+        assert job.chosen_cq == 27
+
+    def test_search_miss_still_encodes_at_closest(
+        self,
+        executor_with_mocks: tuple[Executor, SimpleNamespace],
+        tmp_path: Path,
+    ) -> None:
+        executor, mocks = executor_with_mocks
+        svc = MagicMock()
+        svc.search.return_value = _tq_result(knob=44, score=70.0, hit=False)
+        executor._target_quality = svc
+        mocks.cleaner.clean.side_effect = _fake_clean_writing
+        job = _pipeline_job(tmp_path)
+        output_path = Path(job.output_file)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        executor._run_pipeline(job, output_path, tmp_path)
+
+        enc_kwargs = mocks.encoder.encode.call_args.kwargs
+        assert enc_kwargs["cq_override"] == 44
+        assert job.chosen_cq == 44
+
+    def test_grain_searches_when_service_supports_it(
+        self,
+        executor_with_mocks: tuple[Executor, SimpleNamespace],
+        tmp_path: Path,
+    ) -> None:
+        """A grain job now searches its CRF via the service (SVT path)."""
+        executor, mocks = executor_with_mocks
+        svc = MagicMock()
+        svc.can_search.return_value = True
+        svc.search.return_value = _tq_result(knob=20, hit=True)  # a CRF
+        executor._target_quality = svc
+        mocks.cleaner.clean.side_effect = _fake_clean_writing
+        job = _pipeline_job(tmp_path)
+        job.video_params = make_video_params(grain=True)
+        output_path = Path(job.output_file)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        executor._run_pipeline(job, output_path, tmp_path)
+
+        svc.search.assert_called_once()
+        assert mocks.encoder.encode.call_args.kwargs["cq_override"] == 20
+        assert job.chosen_cq == 20
+
+    def test_grain_skipped_when_service_cannot_search(
+        self,
+        executor_with_mocks: tuple[Executor, SimpleNamespace],
+        tmp_path: Path,
+    ) -> None:
+        """A grain job whose service lacks SVT/metrics deps falls back to the
+        fixed CRF recipe (no search)."""
+        executor, mocks = executor_with_mocks
+        svc = MagicMock()
+        svc.can_search.return_value = False
+        executor._target_quality = svc
+        mocks.cleaner.clean.side_effect = _fake_clean_writing
+        job = _pipeline_job(tmp_path)
+        job.video_params = make_video_params(grain=True)
+        output_path = Path(job.output_file)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        executor._run_pipeline(job, output_path, tmp_path)
+
+        svc.search.assert_not_called()
+        assert mocks.encoder.encode.call_args.kwargs["cq_override"] is None
+        assert job.chosen_cq is None
+
+    def test_search_skipped_without_duration(
+        self,
+        executor_with_mocks: tuple[Executor, SimpleNamespace],
+        tmp_path: Path,
+    ) -> None:
+        executor, mocks = executor_with_mocks
+        svc = MagicMock()
+        executor._target_quality = svc
+        mocks.cleaner.clean.side_effect = _fake_clean_writing
+        job = _pipeline_job(tmp_path, duration_s=0.0)
+        output_path = Path(job.output_file)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        executor._run_pipeline(job, output_path, tmp_path)
+
+        svc.search.assert_not_called()
+        assert mocks.encoder.encode.call_args.kwargs["cq_override"] is None
+
+    def test_search_skipped_without_service(
+        self,
+        executor_with_mocks: tuple[Executor, SimpleNamespace],
+        tmp_path: Path,
+    ) -> None:
+        """No target-quality service configured -> legacy fixed-QVBR encode."""
+        executor, mocks = executor_with_mocks
+        mocks.cleaner.clean.side_effect = _fake_clean_writing
+        job = _pipeline_job(tmp_path)
+        output_path = Path(job.output_file)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        executor._run_pipeline(job, output_path, tmp_path)
+
+        enc_kwargs = mocks.encoder.encode.call_args.kwargs
+        assert enc_kwargs["cq_override"] is None
+
+    def test_reuses_cached_chosen_cq(
+        self,
+        executor_with_mocks: tuple[Executor, SimpleNamespace],
+        tmp_path: Path,
+    ) -> None:
+        """A job already carrying chosen_cq (prior run) reuses it, no re-search."""
+        executor, mocks = executor_with_mocks
+        svc = MagicMock()
+        executor._target_quality = svc
+        mocks.cleaner.clean.side_effect = _fake_clean_writing
+        job = _pipeline_job(tmp_path)
+        job.chosen_cq = 33
+        output_path = Path(job.output_file)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        executor._run_pipeline(job, output_path, tmp_path)
+
+        svc.search.assert_not_called()
+        assert mocks.encoder.encode.call_args.kwargs["cq_override"] == 33
+        assert job.chosen_cq == 33
+
+    def test_search_skipped_duration_progress_warns(
+        self,
+        executor_with_mocks: tuple[Executor, SimpleNamespace],
+        tmp_path: Path,
+    ) -> None:
+        """An unknown duration skips the search LOUDLY through the progress object."""
+        executor, mocks = executor_with_mocks
+        progress = MagicMock()
+        executor._progress = progress
+        svc = MagicMock()
+        executor._target_quality = svc
+        mocks.cleaner.clean.side_effect = _fake_clean_writing
+        job = _pipeline_job(tmp_path, duration_s=0.0)
+        output_path = Path(job.output_file)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        executor._run_pipeline(job, output_path, tmp_path)
+
+        svc.search.assert_not_called()
+        tool_lines = [c.args[0] for c in progress.add_tool_line.call_args_list]
+        assert any("unknown duration" in line.lower() for line in tool_lines)
+
+    def test_chosen_cq_persisted_on_error_path(self, tmp_path: Path) -> None:
+        """A QVBR chosen before a later-step failure is persisted for the re-run."""
+        mocks = SimpleNamespace(
+            encoder=MagicMock(),
+            audio_extractor=MagicMock(),
+            audio_decoder=MagicMock(),
+            aac_encoder=MagicMock(),
+            muxer=MagicMock(),
+            tagger=MagicMock(),
+            cleaner=MagicMock(),
+            prober=MagicMock(),
+        )
+        mocks.encoder.encode.return_value = EncodeResult(return_code=0, encoder_settings="test")
+        mocks.muxer.mux.return_value = 1  # mux fails AFTER the search runs
+        svc = MagicMock()
+        svc.search.return_value = _tq_result(knob=31, hit=True)
+
+        executor = Executor(
+            encoder=mocks.encoder,
+            audio_extractor=mocks.audio_extractor,
+            audio_decoder=mocks.audio_decoder,
+            aac_encoder=mocks.aac_encoder,
+            muxer=mocks.muxer,
+            tagger=mocks.tagger,
+            cleaner=mocks.cleaner,
+            prober=mocks.prober,
+            target_quality=svc,
+        )
+
+        output_dir = tmp_path / "output"
+        output_dir.mkdir()
+        job = make_job(
+            job_id="tq-err-job",
+            output_file=str(output_dir / "movie.mkv"),
+            audio=[], subtitles=[], attachments=[],
+            copy_chapters=False, source_size=0, duration_s=100.0,
+        )
+        plan = make_plan(jobs=[job])
+        plan_path = tmp_path / "plan.json"
+        save_plan(plan, plan_path)
+
+        executor.run(plan, plan_path)
+
+        loaded = load_plan(plan_path)
+        assert loaded.jobs[0].status == JobStatus.ERROR
+        assert loaded.jobs[0].chosen_cq == 31
+
+    def test_search_hit_progress_wiring(
+        self,
+        executor_with_mocks: tuple[Executor, SimpleNamespace],
+        tmp_path: Path,
+    ) -> None:
+        """A hit reports the chosen QVBR through the progress object."""
+        executor, mocks = executor_with_mocks
+        progress = MagicMock()
+        executor._progress = progress
+        svc = MagicMock()
+        svc.search.return_value = _tq_result(knob=30, hit=True)
+        executor._target_quality = svc
+        mocks.cleaner.clean.side_effect = _fake_clean_writing
+        job = _pipeline_job(tmp_path)
+        output_path = Path(job.output_file)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        executor._run_pipeline(job, output_path, tmp_path)
+
+        tool_lines = [c.args[0] for c in progress.add_tool_line.call_args_list]
+        assert any("target-quality qvbr 30" in line.lower() for line in tool_lines)
+
+    def test_search_miss_progress_warns(
+        self,
+        executor_with_mocks: tuple[Executor, SimpleNamespace],
+        tmp_path: Path,
+    ) -> None:
+        """A miss emits a loud warning line through the progress object."""
+        executor, mocks = executor_with_mocks
+        progress = MagicMock()
+        executor._progress = progress
+        svc = MagicMock()
+        svc.search.return_value = _tq_result(knob=44, score=70.0, hit=False)
+        executor._target_quality = svc
+        mocks.cleaner.clean.side_effect = _fake_clean_writing
+        job = _pipeline_job(tmp_path)
+        output_path = Path(job.output_file)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        executor._run_pipeline(job, output_path, tmp_path)
+
+        tool_lines = [c.args[0] for c in progress.add_tool_line.call_args_list]
+        assert any("not hit" in line.lower() for line in tool_lines)
+
+    def test_chosen_cq_persisted_by_run(self, tmp_path: Path) -> None:
+        mocks = SimpleNamespace(
+            encoder=MagicMock(),
+            audio_extractor=MagicMock(),
+            audio_decoder=MagicMock(),
+            aac_encoder=MagicMock(),
+            muxer=MagicMock(),
+            tagger=MagicMock(),
+            cleaner=MagicMock(),
+            prober=MagicMock(),
+        )
+        mocks.encoder.encode.return_value = EncodeResult(return_code=0, encoder_settings="test")
+        mocks.muxer.mux.return_value = 0
+        mocks.tagger.set_encoder_tag.return_value = 0
+        mocks.cleaner.clean.side_effect = _fake_clean_writing
+        svc = MagicMock()
+        svc.search.return_value = _tq_result(knob=29, hit=True)
+
+        executor = Executor(
+            encoder=mocks.encoder,
+            audio_extractor=mocks.audio_extractor,
+            audio_decoder=mocks.audio_decoder,
+            aac_encoder=mocks.aac_encoder,
+            muxer=mocks.muxer,
+            tagger=mocks.tagger,
+            cleaner=mocks.cleaner,
+            prober=mocks.prober,
+            target_quality=svc,
+        )
+
+        output_dir = tmp_path / "output"
+        output_dir.mkdir()
+        job = make_job(
+            job_id="tq-run-job",
+            output_file=str(output_dir / "movie.mkv"),
+            audio=[], subtitles=[], attachments=[],
+            copy_chapters=False, source_size=0, duration_s=100.0,
+        )
+        plan = make_plan(jobs=[job])
+        plan_path = tmp_path / "plan.json"
+        save_plan(plan, plan_path)
+
+        executor.run(plan, plan_path)
+
+        loaded = load_plan(plan_path)
+        assert loaded.jobs[0].chosen_cq == 29
 
 
 class TestRunPipelineChapters:
@@ -1344,7 +1624,6 @@ class TestRunPipelineVideoMeta:
             cleaner=mocks.cleaner,
             prober=mocks.prober,
         )
-        executor._vmaf_enabled = False
 
         hdr = HdrMetadata(content_light="MaxCLL=1000,MaxFALL=400")
         vp = make_video_params(
@@ -1412,7 +1691,6 @@ class TestRunPipelineVideoMeta:
             cleaner=mocks.cleaner,
             prober=mocks.prober,
         )
-        executor._vmaf_enabled = False
 
         vp = make_video_params(fps_num=24000, fps_den=1001)
         job = make_job(
@@ -1469,7 +1747,6 @@ class TestRunPipelineVideoMeta:
             prober=mocks.prober,
             video_copier=mocks.video_copier,
         )
-        executor._vmaf_enabled = False
 
         vp = make_video_params(passthrough=True)
         job = make_job(
@@ -1535,7 +1812,6 @@ class TestRunPipelineProgressWiring:
             prober=mocks.prober,
             progress=progress_mock,
         )
-        executor._vmaf_enabled = False
         audio_instr = make_audio_instruction(
             action=AudioAction.COPY,
             codec_name="aac",
@@ -1602,7 +1878,6 @@ class TestRunPipelineMuxedSizeUpdate:
             prober=mocks.prober,
             progress=progress_mock,
         )
-        executor._vmaf_enabled = False
         job = _pipeline_job(tmp_path)
         output_path = Path(job.output_file)
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1838,7 +2113,6 @@ class TestMkcleanProgressUpdate:
             prober=mocks.prober,
             progress=progress_mock,
         )
-        executor._vmaf_enabled = False
         job = _pipeline_job(tmp_path)
         output_path = Path(job.output_file)
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -2164,8 +2438,8 @@ class TestEncodeOnProgressOutputSize:
             output_path: Any,
             video_params: Any,
             on_progress: Any = None,
-            vmaf_enabled: bool = False,
             rpu_path: Any = None,
+            cq_override: Any = None,
         ) -> EncodeResult:
             if on_progress:
                 # Create a fake video output to test size measurement
@@ -2194,7 +2468,6 @@ class TestEncodeOnProgressOutputSize:
             prober=mocks.prober,
             progress=progress_mock,
         )
-        executor._vmaf_enabled = False
         job = _pipeline_job(tmp_path)
         output_path = Path(job.output_file)
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -2227,8 +2500,8 @@ class TestEncodeOnProgressOSError:
             output_path: Any,
             video_params: Any,
             on_progress: Any = None,
-            vmaf_enabled: bool = False,
             rpu_path: Any = None,
+            cq_override: Any = None,
         ) -> EncodeResult:
             if on_progress:
                 # Don't create video file — test OSError path
@@ -2256,7 +2529,6 @@ class TestEncodeOnProgressOSError:
             prober=mocks.prober,
             progress=progress_mock,
         )
-        executor._vmaf_enabled = False
         job = _pipeline_job(tmp_path)
         output_path = Path(job.output_file)
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -2315,7 +2587,6 @@ class TestAudioSizeTracking:
             prober=mocks.prober,
             progress=progress_mock,
         )
-        executor._vmaf_enabled = False
         audio_instr = make_audio_instruction(
             action=AudioAction.COPY,
             codec_name="aac",
@@ -2480,7 +2751,6 @@ def _make_executor_with_progress() -> tuple[Executor, SimpleNamespace, MagicMock
         prober=mocks.prober,
         progress=progress_mock,
     )
-    executor._vmaf_enabled = False
     return executor, mocks, progress_mock
 
 
@@ -2865,7 +3135,6 @@ class TestDvProgressInPipeline:
             dovi_processor=dovi_mock,
             progress=progress_mock,
         )
-        executor._vmaf_enabled = False
         job = _pipeline_job(tmp_path, dv_mode=DvMode.TO_8_1)
         output_path = Path(job.output_file)
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -2962,7 +3231,6 @@ class TestShutdownBeforeDvWithDvMode:
             dovi_processor=dovi_mock,
             progress=progress_mock,
         )
-        executor._vmaf_enabled = False
 
         sub_instr = make_subtitle_instruction(
             source_file="/src/movie.mkv",
@@ -3012,8 +3280,8 @@ class TestEncodeOnProgressStatOSError:
             output_path: Any,
             video_params: Any,
             on_progress: Any = None,
-            vmaf_enabled: bool = False,
             rpu_path: Any = None,
+            cq_override: Any = None,
         ) -> EncodeResult:
             if on_progress:
                 # Create output then immediately delete to cause OSError on stat
@@ -3049,7 +3317,6 @@ class TestEncodeOnProgressStatOSError:
             prober=mocks.prober,
             progress=progress_mock,
         )
-        executor._vmaf_enabled = False
         job = _pipeline_job(tmp_path)
         output_path = Path(job.output_file)
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -3080,8 +3347,8 @@ class TestEncodeOnProgressNoProgress:
             output_path: Any,
             video_params: Any,
             on_progress: Any = None,
-            vmaf_enabled: bool = False,
             rpu_path: Any = None,
+            cq_override: Any = None,
         ) -> EncodeResult:
             if on_progress:
                 on_progress(ProgressSample(fraction=0.5))
@@ -3285,7 +3552,6 @@ class TestRunPipelinePassthrough:
             dovi_processor=dovi_mock,
             video_copier=copier_mock,
         )
-        executor._vmaf_enabled = False
         # Even with a DV mode set, passthrough must not extract RPU.
         job = _passthrough_job(tmp_path, dv_mode=DvMode.COPY)
         output_path = Path(job.output_file)
@@ -3294,28 +3560,6 @@ class TestRunPipelinePassthrough:
 
         assert not dovi_mock.extract_rpu.called
         copier_mock.copy_video.assert_called_once()
-
-    def test_passthrough_does_not_store_metrics(
-        self,
-        executor_with_mocks: tuple[Executor, SimpleNamespace],
-        tmp_path: Path,
-    ) -> None:
-        executor, mocks = executor_with_mocks
-
-        def fake_clean(input_path: Any, output_path: Any, on_progress: Any = None) -> int:
-            Path(output_path).write_bytes(b"CLEAN")
-            return 0
-
-        mocks.cleaner.clean.side_effect = fake_clean
-        job = _passthrough_job(tmp_path)
-        output_path = Path(job.output_file)
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        executor._run_pipeline(job, output_path, tmp_path)
-
-        assert job.vmaf_score is None
-        assert job.ssimulacra2_score is None
-        assert job.butteraugli_score is None
-        assert job.cvvdp_score is None
 
     def test_passthrough_forwards_hdr_video_meta_to_mux(
         self,
@@ -3378,7 +3622,6 @@ class TestRunPipelinePassthrough:
             prober=MagicMock(),
             video_copier=None,
         )
-        executor._vmaf_enabled = False
         job = _passthrough_job(tmp_path)
         output_path = Path(job.output_file)
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -3438,7 +3681,6 @@ class TestRunPipelinePassthrough:
             video_copier=copier_mock,
             progress=progress_mock,
         )
-        executor._vmaf_enabled = False
         job = _passthrough_job(tmp_path)
         output_path = Path(job.output_file)
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -3536,7 +3778,6 @@ def _grain_executor(
         video_copier=mocks.video_copier,
         grain_encoder=grain_encoder,
     )
-    executor._vmaf_enabled = False
     return executor, mocks
 
 

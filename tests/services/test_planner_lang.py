@@ -211,7 +211,6 @@ class TestSubtitleAutoSelectFallback:
             [(movie, tmp_path / "out.mkv")],
             audio_lang_filter=["eng"],
             sub_lang_filter=["eng"],
-            vmaf_enabled=False,
         )
 
         sub_calls = [c for c in selector.call_args_list if c[0][2] == TrackType.SUBTITLE]
@@ -236,7 +235,6 @@ class TestSubtitleAutoSelectFallback:
             [(movie, tmp_path / "out.mkv")],
             audio_lang_filter=["eng"],
             sub_lang_filter=["eng"],
-            vmaf_enabled=False,
         )
 
         assert len(plan.jobs) == 1
@@ -273,7 +271,6 @@ class TestUndResolverIntegration:
             [(movie, tmp_path / "out.mkv")],
             audio_lang_filter=["eng"],
             sub_lang_filter=["eng"],
-            vmaf_enabled=False,
         )
 
         assert len(plan.jobs) == 1
@@ -310,7 +307,6 @@ class TestUndResolverIntegration:
             [(movie, tmp_path / "out.mkv")],
             audio_lang_filter=["eng"],
             sub_lang_filter=["eng"],
-            vmaf_enabled=False,
         )
 
         assert len(plan.jobs) == 1
@@ -343,7 +339,6 @@ class TestUndResolverIntegration:
             [(movie, tmp_path / "out.mkv")],
             audio_lang_filter=["eng"],
             sub_lang_filter=["eng"],
-            vmaf_enabled=False,
         )
 
         # Single lang auto-assigns, so callback should NOT be called

@@ -7,7 +7,7 @@ Batch video transcoder for home archival. Scans your movie collection, lets you 
 - **Plan, review, then run** — choose tracks and preview in a TUI, save a JSON plan you can inspect or edit before hours of encoding
 - **Resumable** — failed jobs retry on next run, plan updated atomically after each job
 - **Live progress on every long step** — up-front analysis runs the batch in parallel; ffmpeg extraction, eac3to, qaac, mkvmerge and the encoder all stream into one unified progress bar; no more silent multi-gigabyte waits
-- **10-bit AV1 output** — always main10; QVBR quality target interpolated by pixel area, no manual tuning across SD/720p/1080p/4K
+- **10-bit AV1 output** — always main10, no manual quality tuning across SD/720p/1080p/4K
 - **Film-grain preservation** — grainy SD film is auto-detected and encoded with SVT-AV1, which keeps the grain in the bitstream (still hardware-decodable), instead of NVENC, which smooths it into waxy faces; confirm or override per file with `G` in the selector
 - **Soft-telecine aware** — detects 2:3 pulldown on NTSC DVDs, encodes the coded film frames and pins the true film rate so playback isn't sped up or desynced
 - **Disc demux** — Blu-ray (BDMV) and DVD (VIDEO_TS) fed straight into the pipeline with playlist/title selection
@@ -16,7 +16,7 @@ Batch video transcoder for home archival. Scans your movie collection, lets you 
 - **HDR10 passthrough** — mastering display, content light level, BT.2020/PQ preserved through encode
 - **Auto deinterlace** — nnedi (neural network); HD interlaced content is always deinterlaced, SD is confirmed with idet before committing
 - **Smart crop** — black bars detected automatically across the timeline
-- **Quality scoring** — optional GPU perceptual metrics per encode (`--metrics`): SSIMULACRA2 + Butteraugli on the NVEnc path (plus VMAF), and SSIMULACRA2 + Butteraugli + CVVDP on the SVT-AV1 grain path via VapourSynth + Vship (interlaced grain sources are deinterlaced with bwdif so they score too)
+- **Target-quality encoding** — always on, no flag: before each encode Furnace probes short windows at several quality settings and interpolation-searches the one that hits a perceptual target — QVBR against CVVDP (HDR) or SSIMULACRA2 (SDR) on the NVEnc path, CRF against worst-case SSIMULACRA2 on the SVT-AV1 grain path — then encodes at it, full speed, with no metrics slowing the final pass. The chosen setting is cached to the plan so re-runs skip the search
 - **mpv preview** — audition audio tracks, check subtitles, or preview video right from the TUI before committing
 - **Per-track downmix** — fold 7.1 or 5.1 into stereo or 5.1 from the track selector, useful when the multichannel mix is a fake upmix or the movie is dialogue-heavy
 - **Satellite files** — external audio and subtitle files next to the video are picked up as extra tracks automatically
@@ -45,13 +45,16 @@ furnace run furnace-plan.json
 - [mpv](https://mpv.io) (track preview)
 - [MakeMKV](https://www.makemkv.com) (DVD demux)
 - [NVEncC](https://github.com/rigaya/NVEnc) (video encoder)
-- [dovi_tool](https://github.com/quietvoid/dovi_tool) (Dolby Vision RPU, optional)
 
-**Optional — VapourSynth plugins for GPU perceptual metrics** (`--metrics` on the SVT-AV1 grain path). VapourSynth itself installs as a furnace dependency; drop these DLLs into one folder (e.g. `C:\Tools\Media\vapoursynth-plugins\`) and point `bestsource` / `vship` / `bwdif` at them in `furnace.toml`:
+**VapourSynth plugins — required for the SVT-AV1 grain path.** The grain path target-quality-searches its CRF by scoring probes with Vship, so these are needed to encode grainy SD film (without them, grain jobs fall back to a fixed CRF with no search). VapourSynth itself installs as a furnace dependency; drop these DLLs into one folder (e.g. `C:\Tools\Media\vapoursynth-plugins\`) and point `bestsource` / `vship` / `bwdif` at them in `furnace.toml`:
 
 - [BestSource](https://github.com/vapoursynth/bestsource/releases) — source filter; `BestSource.dll` from `BestSource-R19.7z`
-- [Vship](https://codeberg.org/Line-fr/Vship/releases) — GPU metric engine (SSIMULACRA2 / Butteraugli / CVVDP); `libvship_NVIDIA.dll` from `libvship_NVIDIA.zip` (NVIDIA/CUDA build)
-- [Bwdif](https://github.com/HolyWu/VapourSynth-Bwdif/releases/tag/r4.1) — single-rate deinterlacer for interlaced grain sources; `Bwdif.dll` from `Bwdif-r4.1-win64.7z`
+- [Vship](https://codeberg.org/Line-fr/Vship/releases) — GPU metric engine (SSIMULACRA2 / CVVDP); `libvship_NVIDIA.dll` from `libvship_NVIDIA.zip` (NVIDIA/CUDA build)
+- [Bwdif](https://github.com/HolyWu/VapourSynth-Bwdif/releases/tag/r4.1) — single-rate deinterlacer; **required for interlaced grain sources** (to deinterlace the metric reference); `Bwdif.dll` from `Bwdif-r4.1-win64.7z`
+
+Optional:
+
+- [dovi_tool](https://github.com/quietvoid/dovi_tool) — Dolby Vision RPU handling; only needed for Dolby Vision sources
 
 ## Install
 
@@ -74,11 +77,6 @@ Plan and encode:
 ```bash
 furnace plan D:\Movies -o E:\Encoded --audio-lang rus,eng --sub-lang rus,eng
 furnace run E:\Encoded\furnace-plan.json
-```
-
-Enable perceptual quality scoring (SSIMULACRA2 / Butteraugli, plus VMAF and CVVDP where available):
-```bash
-furnace plan D:\Movies -o E:\Encoded --audio-lang eng --sub-lang eng --metrics
 ```
 
 Copy eligible video streams verbatim instead of re-encoding (audio still processed, container rebuilt):

@@ -128,7 +128,7 @@ def _sub_step_label(instr: SubtitleInstruction, index: int, total: int) -> str:
     return f"Copy subs{num} ({codec})"
 
 
-def _build_steps(job: Job, *, vmaf_enabled: bool = False) -> list[str]:
+def _build_steps(job: Job) -> list[str]:
     """Build the dynamic step list matching actual pipeline execution order."""
     steps: list[str] = []
 
@@ -142,8 +142,6 @@ def _build_steps(job: Job, *, vmaf_enabled: bool = False) -> list[str]:
 
     # Always present
     steps.extend(["Encode video", "Assemble MKV", "Set metadata", "Optimize index"])
-    if vmaf_enabled:
-        steps.append("VMAF")
     return steps
 
 
@@ -359,14 +357,11 @@ class RunApp(App[None]):
         total_jobs: int,
         shutdown_event: threading.Event,
         executor_fn: Callable[..., None],
-        *,
-        vmaf_enabled: bool = False,
     ) -> None:
         super().__init__()
         self._total_jobs = total_jobs
         self._shutdown_event = shutdown_event
         self._executor_fn = executor_fn
-        self._vmaf_enabled = vmaf_enabled
 
         # State
         self._job: Job | None = None
@@ -484,7 +479,7 @@ class RunApp(App[None]):
         target_w.update(f"{self._target_base_text}\nSize:  ?")
 
         # Steps
-        self._steps = _build_steps(job, vmaf_enabled=self._vmaf_enabled)
+        self._steps = _build_steps(job)
         self._current_step_idx = -1
         self._refresh_steps()
 

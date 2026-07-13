@@ -343,37 +343,6 @@ class TestUpdateJobStatus:
         assert job_raw["status"] == "error"
         assert job_raw["error"] == "ffmpeg died"
 
-    def test_update_with_vmaf_score(self, tmp_path: Path) -> None:
-        """vmaf_score is persisted when provided."""
-        plan = make_plan(jobs=[make_job(job_id="j3")])
-        plan_path = tmp_path / "plan.json"
-        save_plan(plan, plan_path)
-
-        update_job_status(plan_path, "j3", JobStatus.DONE, vmaf_score=95.4)
-
-        raw = json.loads(plan_path.read_text(encoding="utf-8"))
-        assert raw["jobs"][0]["vmaf_score"] == pytest.approx(95.4)
-
-    def test_update_with_perceptual_metrics(self, tmp_path: Path) -> None:
-        """SSIMULACRA2 / Butteraugli / CVVDP are persisted when provided."""
-        plan = make_plan(jobs=[make_job(job_id="j-metrics")])
-        plan_path = tmp_path / "plan.json"
-        save_plan(plan, plan_path)
-
-        update_job_status(
-            plan_path,
-            "j-metrics",
-            JobStatus.DONE,
-            ssimulacra2_score=88.2,
-            butteraugli_score=1.73,
-            cvvdp_score=9.1,
-        )
-
-        raw = json.loads(plan_path.read_text(encoding="utf-8"))["jobs"][0]
-        assert raw["ssimulacra2_score"] == pytest.approx(88.2)
-        assert raw["butteraugli_score"] == pytest.approx(1.73)
-        assert raw["cvvdp_score"] == pytest.approx(9.1)
-
     def test_update_with_output_size(self, tmp_path: Path) -> None:
         """output_size is persisted when provided."""
         plan = make_plan(jobs=[make_job(job_id="j4")])
@@ -384,6 +353,17 @@ class TestUpdateJobStatus:
 
         raw = json.loads(plan_path.read_text(encoding="utf-8"))
         assert raw["jobs"][0]["output_size"] == 500_000_000
+
+    def test_update_with_chosen_cq(self, tmp_path: Path) -> None:
+        """chosen_cq (the target-quality search result) is persisted when provided."""
+        plan = make_plan(jobs=[make_job(job_id="j-cq")])
+        plan_path = tmp_path / "plan.json"
+        save_plan(plan, plan_path)
+
+        update_job_status(plan_path, "j-cq", JobStatus.DONE, chosen_cq=27)
+
+        raw = json.loads(plan_path.read_text(encoding="utf-8"))
+        assert raw["jobs"][0]["chosen_cq"] == 27
 
     def test_update_nonexistent_job_raises(self, tmp_path: Path) -> None:
         """Updating a job ID that doesn't exist -> KeyError."""
@@ -670,6 +650,67 @@ class TestPlanGrainRoundtrip:
 
 
 # ---------------------------------------------------------------------------
+# test_plan_legacy_metric_keys — pre-target-quality plans carry metric scores
+# ---------------------------------------------------------------------------
+
+class TestPlanLegacyMetricKeys:
+    def test_legacy_plan_with_removed_metric_keys_loads(self, tmp_path: Path) -> None:
+        """A real pre-target-quality plan (2.8.0/2.9.0) carries per-job metric
+        scores (vmaf/ssimulacra2/butteraugli/cvvdp) and a plan-level
+        ``vmaf_enabled``. Those fields were removed with the metrics-on-final
+        subsystem; the loader must still round-trip such a plan (it reads keys via
+        ``.get``, never ``Job(**raw)``, so unknown keys are ignored) and default
+        the new ``chosen_cq`` to None."""
+        job_raw = {
+            "id": "legacy-metric-job",
+            "source_files": ["/src/movie.mkv"],
+            "output_file": "/out/movie.mkv",
+            "video_params": {
+                "cq": 25, "crop": None, "deinterlace": False,
+                "color_matrix": "bt709", "color_range": "tv",
+                "color_transfer": "bt709", "color_primaries": "bt709",
+                "hdr": None, "gop": 120, "fps_num": 24, "fps_den": 1,
+                "source_width": 1920, "source_height": 1080,
+                "source_codec": "", "source_bitrate": 0,
+                "sar_num": 1, "sar_den": 1, "dv_mode": None,
+                "passthrough": False, "grain": False,
+            },
+            "audio": [],
+            "subtitles": [],
+            "attachments": [],
+            "copy_chapters": False,
+            "chapters_source": None,
+            "status": "done",
+            "error": None,
+            "source_size": 0,
+            "output_size": 123,
+            # Removed metric-score fields a real old plan still carries:
+            "vmaf_score": 95.4,
+            "ssimulacra2_score": 88.1,
+            "butteraugli_score": 1.7,
+            "cvvdp_score": 9.2,
+            # no 'chosen_cq' key — the new field is absent in a legacy plan.
+        }
+        data = {
+            "version": "2",
+            "furnace_version": "0.1.0",
+            "created_at": "2026-01-01T00:00:00",
+            "source": "/src",
+            "destination": "/out",
+            "vmaf_enabled": True,  # removed plan-level flag, still present here
+            "jobs": [job_raw],
+        }
+        plan_path = tmp_path / "plan.json"
+        plan_path.write_text(json.dumps(data), encoding="utf-8")
+
+        loaded = load_plan(plan_path)
+
+        assert loaded.jobs[0].id == "legacy-metric-job"
+        assert loaded.jobs[0].output_size == 123
+        assert loaded.jobs[0].chosen_cq is None
+
+
+# ---------------------------------------------------------------------------
 # test_mixed_passthrough_encode_plan
 # ---------------------------------------------------------------------------
 
@@ -792,6 +833,69 @@ class TestJobDurationS:
         loaded = load_plan(plan_path)
 
         assert loaded.jobs[0].duration_s == 0.0
+
+
+# ---------------------------------------------------------------------------
+# test_plan_chosen_cq_roundtrip
+# ---------------------------------------------------------------------------
+
+class TestPlanChosenCqRoundtrip:
+    def test_roundtrip_chosen_cq_set(self, tmp_path: Path) -> None:
+        """Job.chosen_cq (target-quality search result) survives save -> load."""
+        job = dataclasses.replace(make_job(job_id="cq-job"), chosen_cq=28)
+        plan = make_plan(jobs=[job])
+        plan_path = tmp_path / "plan.json"
+        save_plan(plan, plan_path)
+        loaded = load_plan(plan_path)
+        assert loaded.jobs[0].chosen_cq == 28
+
+    def test_roundtrip_chosen_cq_none(self, tmp_path: Path) -> None:
+        """A job with no chosen_cq round-trips as None."""
+        plan = make_plan()
+        plan_path = tmp_path / "plan.json"
+        save_plan(plan, plan_path)
+        loaded = load_plan(plan_path)
+        assert loaded.jobs[0].chosen_cq is None
+
+    def test_legacy_plan_without_chosen_cq_key_defaults_none(self, tmp_path: Path) -> None:
+        """A plan JSON produced before chosen_cq existed must load with None."""
+        job_raw = {
+            "id": "legacy-job",
+            "source_files": ["/src/movie.mkv"],
+            "output_file": "/out/movie.mkv",
+            "video_params": {
+                "cq": 25, "crop": None, "deinterlace": False,
+                "color_matrix": "bt709", "color_range": "tv",
+                "color_transfer": "bt709", "color_primaries": "bt709",
+                "hdr": None, "gop": 120, "fps_num": 24, "fps_den": 1,
+                "source_width": 1920, "source_height": 1080,
+                "source_codec": "", "source_bitrate": 0,
+                "sar_num": 1, "sar_den": 1, "dv_mode": None,
+            },
+            "audio": [],
+            "subtitles": [],
+            "attachments": [],
+            "copy_chapters": False,
+            "chapters_source": None,
+            "status": "pending",
+            "error": None,
+            # no chosen_cq key — simulates legacy plan
+        }
+        data = {
+            "version": "2",
+            "furnace_version": "0.1.0",
+            "created_at": "2026-01-01T00:00:00",
+            "source": "/src",
+            "destination": "/out",
+            "vmaf_enabled": False,
+            "jobs": [job_raw],
+        }
+        plan_path = tmp_path / "plan.json"
+        plan_path.write_text(json.dumps(data), encoding="utf-8")
+
+        loaded = load_plan(plan_path)
+
+        assert loaded.jobs[0].chosen_cq is None
 
 
 # ---------------------------------------------------------------------------

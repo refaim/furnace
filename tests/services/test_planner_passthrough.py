@@ -155,7 +155,6 @@ class TestCreatePlanCopyVideo:
             [(movie, tmp_path / "out.mkv")],
             audio_lang_filter=["eng"],
             sub_lang_filter=["eng"],
-            vmaf_enabled=False,
             copy_video=True,
         )
 
@@ -172,7 +171,6 @@ class TestCreatePlanCopyVideo:
             [(movie, tmp_path / "out.mkv")],
             audio_lang_filter=["eng"],
             sub_lang_filter=["eng"],
-            vmaf_enabled=False,
             precomputed_crops={movie.main_file: CropRect(w=3840, h=1600, x=0, y=280)},
             copy_video=True,
         )
@@ -189,7 +187,6 @@ class TestCreatePlanCopyVideo:
             [(movie, tmp_path / "out.mkv")],
             audio_lang_filter=["eng"],
             sub_lang_filter=["eng"],
-            vmaf_enabled=False,
             # interlaced is an encode, so a precomputed crop IS honoured
             precomputed_crops={movie.main_file: CropRect(w=3840, h=1600, x=0, y=280)},
             copy_video=True,
@@ -209,7 +206,6 @@ class TestCreatePlanCopyVideo:
             [(movie, tmp_path / "out.mkv")],
             audio_lang_filter=["eng"],
             sub_lang_filter=["eng"],
-            vmaf_enabled=False,
             copy_video=True,
         )
 
@@ -226,7 +222,6 @@ class TestCreatePlanCopyVideo:
                 [(movie, tmp_path / "out.mkv")],
                 audio_lang_filter=["eng"],
                 sub_lang_filter=["eng"],
-                vmaf_enabled=False,
                 copy_video=True,
             )
 
@@ -238,7 +233,6 @@ class TestCreatePlanCopyVideo:
             [(movie, tmp_path / "out.mkv")],
             audio_lang_filter=["eng"],
             sub_lang_filter=["eng"],
-            vmaf_enabled=False,
         )
 
         assert plan.jobs[0].video_params.passthrough is False

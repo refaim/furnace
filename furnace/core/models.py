@@ -28,6 +28,7 @@ __all__ = [
     "HdrMetadata",
     "Job",
     "JobStatus",
+    "MetricPool",
     "MetricScores",
     "Movie",
     "Plan",
@@ -152,10 +153,20 @@ class CropRect:
 class EncodeResult:
     return_code: int
     encoder_settings: str
-    vmaf_score: float | None = None
-    ssimulacra2_score: float | None = None  # pooled mean (0..100, higher better)
-    butteraugli_score: float | None = None  # pooled 3-norm (>=0, lower better)
-    cvvdp_score: float | None = None  # ColorVideoVDP video score (JOD, higher better)
+
+
+class MetricPool(enum.Enum):
+    """How per-frame perceptual scores are pooled into one value.
+
+    MEAN — the average (a readout of overall quality). LOW — a low percentile
+    (worst-case), for the SVT-AV1 CRF search: CRF is constant between scenes, so
+    the hardest scene, not the average, governs the chosen CRF. LOW targets
+    higher-is-better metrics (SSIMULACRA2, CVVDP); it is not meaningful for
+    Butteraugli (lower-is-better) and that field is unused with LOW.
+    """
+
+    MEAN = "mean"
+    LOW = "low"
 
 
 @dataclass(frozen=True)
@@ -165,6 +176,13 @@ class MetricScores:
     ssimulacra2: float | None = None
     butteraugli: float | None = None
     cvvdp: float | None = None
+
+
+# The perceptual metric names (the higher-is-better-or-not scores in
+# ``MetricScores``). Canonical set, owned by core so the ``PerceptualMetrics``
+# port and its adapter share one source of truth for the "compute all" default
+# and name validation — they cannot drift.
+METRIC_NAMES: frozenset[str] = frozenset({"ssimulacra2", "butteraugli", "cvvdp"})
 
 
 @dataclass(frozen=True)
@@ -331,13 +349,10 @@ class Job:
     chapters_source: str | None  # path to chapters file
     status: JobStatus = JobStatus.PENDING
     error: str | None = None
-    vmaf_score: float | None = None
-    ssimulacra2_score: float | None = None
-    butteraugli_score: float | None = None
-    cvvdp_score: float | None = None
     source_size: int = 0
     output_size: int | None = None  # None until encoding completes
     duration_s: float = 0.0  # source video duration in seconds; 0.0 means unknown
+    chosen_cq: int | None = None  # target-quality search result (QVBR/CRF); None until searched
 
 
 @dataclass
@@ -347,6 +362,5 @@ class Plan:
     created_at: str  # ISO datetime
     source: str  # source path/directory
     destination: str  # output directory
-    vmaf_enabled: bool
     demux_dir: str | None = None  # path to .furnace_demux/ or None
     jobs: list[Job] = field(default_factory=list)

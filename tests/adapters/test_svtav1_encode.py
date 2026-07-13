@@ -1,10 +1,9 @@
-"""Tests for SvtAv1Adapter.encode orchestration: log wiring + metric delegation.
+"""Tests for SvtAv1Adapter.encode orchestration: command run, log wiring, progress.
 
-``encode`` runs a single ffmpeg + libsvtav1 pass, then -- when ``vmaf_enabled``
-and an injected metrics adapter is present -- delegates GPU perceptual scoring
-(SSIMULACRA2 / Butteraugli / CVVDP) to that adapter. The metric adapter owns its
-own fail-soft behaviour, so these tests only verify the delegation contract:
-when it runs, with what geometry, and that its scores land on the result.
+``encode`` runs a single ffmpeg + libsvtav1 pass and returns an EncodeResult
+(return code + ENCODER_SETTINGS tag). These tests verify that contract: the
+encode command is built and run, progress/output callbacks are forwarded, the
+log path is wired, and the ``rpu_path`` argument is accepted but ignored.
 """
 from __future__ import annotations
 
@@ -13,7 +12,7 @@ from typing import Any
 from unittest.mock import patch
 
 from furnace.adapters.svtav1 import SvtAv1Adapter, _build_vf, _geometry_filters
-from furnace.core.models import CropRect, MetricScores, VideoParams
+from furnace.core.models import CropRect, VideoParams
 from furnace.core.progress import ProgressSample
 
 
@@ -68,55 +67,18 @@ class _FakeRunTool:
         return self.calls[0]
 
 
-class _FakeMetrics:
-    """Stand-in VshipMetricsAdapter: records the measure() call, returns scores."""
-
-    def __init__(self, scores: MetricScores | None = None) -> None:
-        self.scores = scores if scores is not None else MetricScores()
-        self.calls: list[dict[str, Any]] = []
-
-    def measure(
-        self,
-        reference: Path,
-        distorted: Path,
-        *,
-        crop: CropRect | None,
-        deinterlace: bool,
-        final_width: int,
-        final_height: int,
-        matrix: str,
-        fps_num: int,
-        fps_den: int,
-    ) -> MetricScores:
-        self.calls.append(
-            {
-                "reference": reference,
-                "distorted": distorted,
-                "crop": crop,
-                "deinterlace": deinterlace,
-                "final_width": final_width,
-                "final_height": final_height,
-                "matrix": matrix,
-                "fps_num": fps_num,
-                "fps_den": fps_den,
-            },
-        )
-        return self.scores
-
-
 def _run(
     adapter: SvtAv1Adapter,
     fake: _FakeRunTool,
     tmp_path: Path,
     *,
-    vmaf_enabled: bool = False,
     rpu_path: Path | None = None,
     on_progress: Any = None,
 ) -> Any:
     with patch("furnace.adapters.svtav1.run_tool", side_effect=fake):
         return adapter.encode(
             tmp_path / "input.mkv", tmp_path / "output.obu", _make_vp(),
-            vmaf_enabled=vmaf_enabled, rpu_path=rpu_path, on_progress=on_progress,
+            rpu_path=rpu_path, on_progress=on_progress,
         )
 
 
@@ -145,16 +107,12 @@ class TestGeometryHelper:
 
 
 class TestEncodeBasics:
-    def test_returns_rc_and_settings_no_metrics(self, tmp_path: Path) -> None:
+    def test_returns_rc_and_settings(self, tmp_path: Path) -> None:
         adapter = SvtAv1Adapter(Path("ffmpeg"))
         fake = _FakeRunTool(encode_rc=0)
         result = _run(adapter, fake, tmp_path)
         assert result.return_code == 0
         assert result.encoder_settings.startswith("av1_svt")
-        assert result.vmaf_score is None
-        assert result.ssimulacra2_score is None
-        assert result.butteraugli_score is None
-        assert result.cvvdp_score is None
 
     def test_returns_rc_from_run_tool(self, tmp_path: Path) -> None:
         adapter = SvtAv1Adapter(Path("ffmpeg"))
@@ -213,70 +171,6 @@ class TestEncodeLogWiring:
         fake = _FakeRunTool()
         _run(adapter, fake, tmp_path)
         assert fake.encode_call["log_path"] is None
-
-
-class TestMetrics:
-    def test_delegates_and_forwards_scores(self, tmp_path: Path) -> None:
-        metrics = _FakeMetrics(MetricScores(ssimulacra2=88.2, butteraugli=1.73, cvvdp=9.1))
-        adapter = SvtAv1Adapter(Path("ffmpeg"), metrics=metrics)
-        fake = _FakeRunTool()
-        result = _run(adapter, fake, tmp_path, vmaf_enabled=True)
-        assert len(metrics.calls) == 1
-        assert result.ssimulacra2_score == 88.2
-        assert result.butteraugli_score == 1.73
-        assert result.cvvdp_score == 9.1
-        # The grain path deliberately records no VMAF.
-        assert result.vmaf_score is None
-
-    def test_measure_receives_encoded_geometry(self, tmp_path: Path) -> None:
-        metrics = _FakeMetrics()
-        adapter = SvtAv1Adapter(Path("ffmpeg"), metrics=metrics)
-        fake = _FakeRunTool()
-        vp = _make_vp(crop=CropRect(w=1910, h=798, x=5, y=141))
-        with patch("furnace.adapters.svtav1.run_tool", side_effect=fake):
-            adapter.encode(tmp_path / "in.mkv", tmp_path / "out.obu", vp, vmaf_enabled=True)
-        call = metrics.calls[0]
-        assert call["reference"] == tmp_path / "in.mkv"
-        assert call["distorted"] == tmp_path / "out.obu"
-        assert call["crop"] == CropRect(w=1910, h=798, x=5, y=141)
-        assert call["deinterlace"] is False
-        assert (call["final_width"], call["final_height"]) == (1904, 792)
-        assert call["matrix"] == "bt709"
-        assert (call["fps_num"], call["fps_den"]) == (24000, 1001)
-
-    def test_measure_receives_deinterlace_flag(self, tmp_path: Path) -> None:
-        metrics = _FakeMetrics()
-        adapter = SvtAv1Adapter(Path("ffmpeg"), metrics=metrics)
-        fake = _FakeRunTool()
-        vp = _make_vp(deinterlace=True)
-        with patch("furnace.adapters.svtav1.run_tool", side_effect=fake):
-            adapter.encode(tmp_path / "in.mkv", tmp_path / "out.obu", vp, vmaf_enabled=True)
-        assert metrics.calls[0]["deinterlace"] is True
-
-    def test_disabled_skips_measure(self, tmp_path: Path) -> None:
-        metrics = _FakeMetrics(MetricScores(ssimulacra2=88.2))
-        adapter = SvtAv1Adapter(Path("ffmpeg"), metrics=metrics)
-        fake = _FakeRunTool()
-        result = _run(adapter, fake, tmp_path, vmaf_enabled=False)
-        assert metrics.calls == []
-        assert result.ssimulacra2_score is None
-
-    def test_no_metrics_adapter_no_scores(self, tmp_path: Path) -> None:
-        adapter = SvtAv1Adapter(Path("ffmpeg"))  # no metrics adapter injected
-        fake = _FakeRunTool()
-        result = _run(adapter, fake, tmp_path, vmaf_enabled=True)
-        assert result.ssimulacra2_score is None
-        assert result.butteraugli_score is None
-        assert result.cvvdp_score is None
-
-    def test_skipped_when_encode_fails(self, tmp_path: Path) -> None:
-        metrics = _FakeMetrics(MetricScores(ssimulacra2=88.2))
-        adapter = SvtAv1Adapter(Path("ffmpeg"), metrics=metrics)
-        fake = _FakeRunTool(encode_rc=3)
-        result = _run(adapter, fake, tmp_path, vmaf_enabled=True)
-        assert result.return_code == 3
-        assert metrics.calls == []
-        assert result.ssimulacra2_score is None
 
 
 class TestRpuIgnored:

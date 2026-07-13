@@ -32,24 +32,7 @@ class TestEncodeResult:
     def test_basic(self) -> None:
         r = EncodeResult(return_code=0, encoder_settings="av1_nvenc / main")
         assert r.return_code == 0
-        assert r.vmaf_score is None
-        assert r.ssimulacra2_score is None
-        assert r.butteraugli_score is None
-        assert r.cvvdp_score is None
-
-    def test_with_metrics(self) -> None:
-        r = EncodeResult(
-            return_code=0,
-            encoder_settings="test",
-            vmaf_score=95.4,
-            ssimulacra2_score=88.2,
-            butteraugli_score=1.73,
-            cvvdp_score=9.1,
-        )
-        assert r.vmaf_score == 95.4
-        assert r.ssimulacra2_score == 88.2
-        assert r.butteraugli_score == 1.73
-        assert r.cvvdp_score == 9.1
+        assert r.encoder_settings == "av1_nvenc / main"
 
     def test_ssim_score_is_gone(self) -> None:
         """The legacy SSIM field was removed in favour of SSIMULACRA2."""
