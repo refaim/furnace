@@ -13,6 +13,7 @@ from furnace.core.models import (
     AudioAction,
     CropRect,
     DownmixMode,
+    DvMode,
     SubtitleAction,
     TrackType,
 )
@@ -287,9 +288,13 @@ class TestSubTargetLabel:
 
 class TestBuildSteps:
     def test_basic_job_steps(self) -> None:
+        """A re-encode job's video phase: Search quality -> Encode -> mux/tag/clean.
+        The 'Search quality' step is what keeps the list 1:1 with the executor's
+        status calls (the target-quality search emits one status)."""
         job = make_job()
         steps = _build_steps(job)
-        assert len(steps) == 6
+        assert len(steps) == 7
+        assert steps[-5] == "Search quality"
         assert steps[-4] == "Encode video"
         assert steps[-3] == "Assemble MKV"
         assert steps[-2] == "Set metadata"
@@ -298,7 +303,36 @@ class TestBuildSteps:
     def test_no_audio_no_subs(self) -> None:
         job = make_job(audio=[], subtitles=[])
         steps = _build_steps(job)
-        assert len(steps) == 4
+        assert steps == ["Search quality", "Encode video", "Assemble MKV",
+                         "Set metadata", "Optimize index"]
+
+    def test_search_quality_precedes_encode(self) -> None:
+        """The search is its own step immediately before the encode."""
+        steps = _build_steps(make_job(audio=[], subtitles=[]))
+        assert steps.index("Search quality") == steps.index("Encode video") - 1
+
+    def test_passthrough_has_no_search_step(self) -> None:
+        """A passthrough copy runs no search -> no 'Search quality' step, so the
+        step list stays 1:1 with the (search-free) passthrough status calls."""
+        vp = make_video_params(passthrough=True)
+        steps = _build_steps(make_job(video_params=vp, audio=[], subtitles=[]))
+        assert "Search quality" not in steps
+        assert steps == ["Encode video", "Assemble MKV", "Set metadata", "Optimize index"]
+
+    def test_dv_reencode_extracts_rpu_step(self) -> None:
+        """A Dolby Vision re-encode extracts the RPU as its own step before the
+        search (the executor emits an 'Extracting DV RPU' status there)."""
+        vp = make_video_params(dv_mode=DvMode.COPY)
+        steps = _build_steps(make_job(video_params=vp, audio=[], subtitles=[]))
+        assert steps == ["Extract DV RPU", "Search quality", "Encode video",
+                         "Assemble MKV", "Set metadata", "Optimize index"]
+
+    def test_passthrough_dv_skips_rpu_and_search(self) -> None:
+        """A passthrough copy of DV content extracts no RPU and runs no search."""
+        vp = make_video_params(passthrough=True, dv_mode=DvMode.COPY)
+        steps = _build_steps(make_job(video_params=vp, audio=[], subtitles=[]))
+        assert "Extract DV RPU" not in steps
+        assert "Search quality" not in steps
 
     def test_multiple_audio_tracks(self) -> None:
         audio = [
@@ -319,7 +353,7 @@ class TestBuildSteps:
         ]
         job = make_job(subtitles=subs)
         steps = _build_steps(job)
-        assert len(steps) == 7
+        assert len(steps) == 8  # 1 audio + 2 subs + Search quality + Encode + mux/tag/clean
         assert "Copy subs 1" in steps[1]
         assert "Recode subs 2" in steps[2]
 

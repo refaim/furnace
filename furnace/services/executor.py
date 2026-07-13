@@ -400,7 +400,14 @@ class Executor:
             enc = self._grain_encoder if (job.video_params.grain and self._grain_encoder is not None) else self._encoder
 
             # Target-quality search: probe the knob (QVBR/CRF) that hits the
-            # domain target, then encode the final at it with NO metrics.
+            # domain target, then encode the final at it with NO metrics. The
+            # "Search quality" status is emitted here unconditionally (every
+            # re-encode has a matching TUI step) even when the search itself is
+            # skipped -- cached/unknown-duration/no-service -- so the step list
+            # stays 1:1 with the status calls; the search's own logging lives in
+            # ``_maybe_search_target_quality``.
+            if self._progress is not None:
+                self._progress.update_status("Searching quality...")
             cq_override = self._maybe_search_target_quality(job, main_source, temp_dir)
 
             logger.info("Encoding video: %s", main_source.name)
@@ -559,7 +566,6 @@ class Executor:
 
         logger.info("Searching target quality (%s) for %s", knob, source.name)
         if self._progress is not None:
-            self._progress.update_status("Searching target quality...")
             self._progress.add_tool_line(f"[furnace] Searching target-quality {knob} (probing)")
 
         result = self._target_quality.search(source, job.video_params, job.duration_s, temp_dir)

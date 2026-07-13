@@ -129,7 +129,14 @@ def _sub_step_label(instr: SubtitleInstruction, index: int, total: int) -> str:
 
 
 def _build_steps(job: Job) -> list[str]:
-    """Build the dynamic step list matching actual pipeline execution order."""
+    """Build the dynamic step list matching actual pipeline execution order.
+
+    The list must stay 1:1 with the executor's ``update_status`` calls -- each
+    call advances exactly one step -- so the video phase's conditional sub-steps
+    are reflected here. A re-encode first extracts the Dolby Vision RPU (if any),
+    then always runs the target-quality search, then encodes; a passthrough copy
+    does neither (its stream is copied verbatim).
+    """
     steps: list[str] = []
 
     # Audio tracks (each processed fully: extract + denorm/decode/encode)
@@ -140,7 +147,13 @@ def _build_steps(job: Job) -> list[str]:
     for i, sub_instr in enumerate(job.subtitles):
         steps.append(_sub_step_label(sub_instr, i, len(job.subtitles)))
 
-    # Always present
+    # Video phase: a re-encode extracts the DV RPU (if any) and searches the
+    # quality knob before encoding; a passthrough copy skips both.
+    vp = job.video_params
+    if not vp.passthrough:
+        if vp.dv_mode is not None:
+            steps.append("Extract DV RPU")
+        steps.append("Search quality")
     steps.extend(["Encode video", "Assemble MKV", "Set metadata", "Optimize index"])
     return steps
 
