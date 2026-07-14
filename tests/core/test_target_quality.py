@@ -528,6 +528,28 @@ class TestResolveTarget:
         assert spec.knob_lo < 23 < spec.knob_hi  # brackets the default CRF
         assert spec.target_lo < 71.0 < spec.target_hi
 
+    def test_grain_samples_ten_windows_and_drops_two(self) -> None:
+        """The grain (CRF) path samples 10 windows and drops the 2 hardest when
+        pooling: CRF is one value for the whole movie, so the search must SEE the
+        common hard scenes (3 windows miss them -> too-high CRF -> мыло), while a
+        couple of freak worst-case scenes must not pin the whole-movie CRF and
+        bloat the file. Calibrated across the DVD collection (2026-07-15)."""
+        spec = resolve_target(make_video_params(grain=True, source_width=720, source_height=576))
+        assert spec.window_count == 10
+        assert spec.pool_drop == 2
+
+    def test_nvenc_samples_three_windows_no_drop(self) -> None:
+        """The NVEnc (QVBR) path is unchanged: 3 windows, mean pooling (pool_drop
+        is unused there, so it is 0)."""
+        for vp in (
+            make_video_params(source_width=1920, source_height=1080),  # HD SDR
+            make_video_params(source_width=720, source_height=576),  # SD SDR
+            make_video_params(color_transfer="smpte2084", color_matrix="bt2020nc"),  # HDR
+        ):
+            spec = resolve_target(vp)
+            assert spec.window_count == 3
+            assert spec.pool_drop == 0
+
     def test_grain_overrides_resolution_bucket(self) -> None:
         """grain wins over the SDR height buckets (grain is always the SVT path)."""
         # A 1080p source flagged grain still gets CRF bounds, not QVBR [16,44].

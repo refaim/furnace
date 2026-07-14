@@ -8,13 +8,15 @@ with no metrics attached.
 Two probe strategies, dispatched on the content domain (``resolve_target`` /
 ``vp.grain``):
 
-- **NVEnc** (non-grain): each window is probed via the inline probe -- NVEncC
+- **NVEnc** (non-grain): 3 windows, each probed via the inline probe -- NVEncC
   encodes at the candidate QVBR and self-measures the metric, returning one
   score per window. Mean-pooled across windows.
-- **SVT-AV1** (grain): each window is encoded at the candidate CRF, then scored
+- **SVT-AV1** (grain): 10 windows, each encoded at the candidate CRF, then scored
   against the source window by the VapourSynth+Vship metrics adapter with
-  worst-case (low-percentile) frame pooling. Min-pooled across windows (the
-  worst window governs the chosen CRF).
+  worst-case (low-percentile) frame pooling. Pooled across windows by dropping
+  the 2 hardest and targeting the worst of the rest -- the search must see the
+  common hard scenes, but a couple of freak scenes must not pin the whole-movie
+  CRF and bloat the file (calibrated across the grain collection).
 
 The windows are extracted once and reused across every probed knob. All the
 numeric policy (domain -> metric/target/bounds, window layout, the search) lives
@@ -31,7 +33,6 @@ from furnace.core.models import MetricPool, VideoParams
 from furnace.core.ports import Encoder, InlineQualityProbe, PerceptualMetrics, WindowExtractor
 from furnace.core.quality import final_output_dimensions
 from furnace.core.target_quality import (
-    PROBE_WINDOW_COUNT,
     PROBE_WINDOW_SECONDS,
     KnobSearchResult,
     probe_windows,
@@ -92,11 +93,11 @@ class TargetQualityService:
         """
         spec = resolve_target(vp)
         offsets = probe_windows(
-            duration_s, count=PROBE_WINDOW_COUNT, window_s=PROBE_WINDOW_SECONDS
+            duration_s, count=spec.window_count, window_s=PROBE_WINDOW_SECONDS
         )
         windows = self._prepare_windows(source, vp, offsets, duration_s, work_dir)
         probe_fn = (
-            self._grain_probe_fn(vp, spec.metric, windows, work_dir)
+            self._grain_probe_fn(vp, spec.metric, windows, work_dir, spec.pool_drop)
             if vp.grain
             else self._inline_probe_fn(vp, spec.metric, windows, work_dir)
         )
@@ -152,12 +153,13 @@ class TargetQualityService:
     ) -> Callable[[int], float]:
         """NVEnc strategy: mean of the inline-measured metric across the windows.
 
-        Mean pooling relies on QVBR being scene-adaptive (it holds per-scene
-        quality within one pass). KNOWN LIMITATION (deferred to calibration): the
-        windows are evenly spaced, not chosen for difficulty, so the hardest
-        scene can fall between windows and go unmeasured (the design's
-        dark-window bias is a Phase-4 item). A failed probe does not silently
-        skew the mean -- the inline probe raises and aborts the search.
+        Mean pooling over evenly-spaced windows is a deliberate choice here (not
+        the grain path's difficulty-aware sampling): QVBR is scene-adaptive, so it
+        holds per-scene quality within one pass, and the mean over a representative
+        spread generalises. The grain path can't rely on that -- CRF is one value
+        for the whole movie -- so it samples more windows and pools worst-case.
+        A failed probe does not silently skew the mean -- the inline probe raises
+        and aborts the search.
         """
 
         def probe_fn(knob: int) -> float:
@@ -181,14 +183,20 @@ class TargetQualityService:
         metric: str,
         windows: list[Path],
         work_dir: Path,
+        pool_drop: int,
     ) -> Callable[[int], float]:
         """SVT strategy: encode each window at the candidate CRF, score it against
-        the source window with worst-case (low-percentile) pooling of the driver
-        ``metric``, and MIN the per-window worst-cases -- the worst window governs
-        the chosen CRF (mean would let a bright reel's high p5 mask a dark reel's
-        low p5 and pick too-high a CRF). Only ``metric`` is computed on the GPU
-        (the other Vship kernels are skipped). A failed encode or an unavailable
-        score aborts the search loudly rather than skewing the result.
+        the source window with worst-case (low-percentile) frame pooling of the
+        driver ``metric``, then pool ACROSS windows by dropping the ``pool_drop``
+        hardest and targeting the worst of the rest. CRF is one value for the whole
+        movie, so the pool leans worst-case (mean would let a bright reel's high p5
+        mask a dark reel's low p5 and pick too-high a CRF -> мыло), but a couple of
+        freak worst-case scenes must not pin the whole-movie CRF and bloat the file,
+        so the very hardest ``pool_drop`` windows are dropped (calibrated across the
+        grain collection). The drop is clamped so at least one window always
+        governs. Only ``metric`` is computed on the GPU (the other Vship kernels are
+        skipped). A failed encode or an unavailable score aborts the search loudly
+        rather than skewing the result.
         """
         if self._grain_encoder is None or self._metrics is None:
             raise RuntimeError(
@@ -225,6 +233,10 @@ class TargetQualityService:
                 if score is None:
                     raise RuntimeError(f"grain probe could not be scored at crf={knob}")
                 scores.append(float(score))
-            return min(scores)
+            # Drop the pool_drop hardest windows (lowest scores) and target the
+            # worst of the rest; clamp so a short (few-window) source still has one
+            # governing window.
+            keep_from = min(pool_drop, len(scores) - 1)
+            return sorted(scores)[keep_from]
 
         return probe_fn

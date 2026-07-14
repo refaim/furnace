@@ -234,25 +234,48 @@ class TestGrainSearch:
         result = svc.search(Path("grain.mkv"), _grain_vp(), duration_s=7200.0, work_dir=tmp_path)
         assert 28 <= result.knob <= 32
 
-    def test_worst_case_min_pooled_across_windows(self, tmp_path: Path) -> None:
-        """The per-window worst-cases are MIN-pooled (the worst window governs the
-        CRF), not averaged: a bright reel's high p5 must not mask a dark reel's low
-        p5, which would pick too-high a CRF."""
+    def test_grain_extracts_ten_windows(self, tmp_path: Path) -> None:
+        """A long grain source yields TEN evenly-spaced windows (vs three for the
+        NVEnc path): CRF is one value for the whole movie, so the search must see
+        the common hard scenes -- three windows miss them and it rails to too-high
+        a CRF (мыло)."""
+        svc, _enc, _metrics = _grain_service()
+        svc.search(Path("grain.mkv"), _grain_vp(), duration_s=7200.0, work_dir=tmp_path)
+        # The extractor is not exposed by _grain_service; assert via the probe's
+        # per-window OBU indices instead: windows 0..9 are each encoded.
+        indices = {_win_from_obu(c.args[1]) for c in _metrics.measure.call_args_list}
+        assert indices == set(range(10))
+
+    def test_grain_drops_two_hardest_windows(self, tmp_path: Path) -> None:
+        """Across-window pooling drops the 2 HARDEST windows and targets the worst
+        of the rest (calibrated: a couple of freak scenes would otherwise pin the
+        whole-movie CRF and bloat the file). Not a strict min (which the 2 hardest
+        would govern) and not a mean."""
         extractor = _FakeExtractor()
         grain_enc = MagicMock()
         grain_enc.encode.return_value = EncodeResult(return_code=0, encoder_settings="svt")
         metrics = MagicMock()
-        # score = (100 - crf) - 10*window_index -> window 2 is always the worst.
+        # score = (100 - crf) - window_index -> higher index = harder (lower p5).
         metrics.measure.side_effect = lambda reference, distorted, **kw: MetricScores(
-            ssimulacra2=(100.0 - _crf_from_obu(distorted)) - 10.0 * _win_from_obu(distorted)
+            ssimulacra2=(100.0 - _crf_from_obu(distorted)) - _win_from_obu(distorted)
         )
         svc = TargetQualityService(
             extractor, MagicMock(), grain_encoder=grain_enc, metrics=metrics
         )
         result = svc.search(Path("grain.mkv"), _grain_vp(), duration_s=7200.0, work_dir=tmp_path)
-        # First probe: midpoint of [14,34] = 24. Windows -> 76, 66, 56.
-        # min pooling records 56.0 (mean pooling would record 66.0).
-        assert result.probes[0][1] == pytest.approx(56.0)
+        # First probe: midpoint of [14,34] = 24. Windows 0..9 -> 76, 75, ..., 67.
+        # Drop the 2 hardest (67, 68) -> worst of the rest = 69 (min pooling would
+        # record 67; mean would record 71.5).
+        assert result.probes[0][1] == pytest.approx(69.0)
+
+    def test_grain_full_pass_clamps_the_drop(self, tmp_path: Path) -> None:
+        """A short grain source is a single full-pass window: dropping the 2
+        hardest is clamped so at least one window governs (no empty pool)."""
+        svc, _enc, metrics = _grain_service()
+        result = svc.search(Path("grain.mkv"), _grain_vp(), duration_s=40.0, work_dir=tmp_path)
+        # One window only; its own score governs (score = 100 - crf).
+        assert all(_win_from_obu(c.args[1]) == 0 for c in metrics.measure.call_args_list)
+        assert result.probes[0][1] == pytest.approx(100.0 - result.probes[0][0])
 
     def test_encode_failure_raises(self, tmp_path: Path) -> None:
         svc, _enc, _metrics = _grain_service(enc_rc=1)

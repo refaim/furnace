@@ -343,13 +343,16 @@ _QVBR_LO = 16
 _QVBR_HI = 44
 _MAX_PROBES = 4
 
-# SVT-AV1 grain path: CRF knob (0-63, load-bearing default 23), driven by the
-# worst-case (low-percentile) SSIMULACRA2 since CRF is constant between scenes.
-# Bounds bracket the default; target is a worst-case SSIMULACRA2 (lower than a
-# mean target -- worst-case pooling AND grain's stochastic irreproducibility both
-# pull it down). Calibrated 2026-07-14: HD grain (1080p) and SD grain (DVD) both
-# landed at a "last-transparent" p5 of ~70-71, so one target serves both -- no
-# resolution split needed (unlike the SDR non-grain HD/SD split).
+# SVT-AV1 grain path: CRF knob (0-63, load-bearing default 23). SSIMULACRA2 is
+# pooled worst-case WITHIN a window (low-percentile p5 frames) since CRF is
+# constant between scenes; ACROSS windows the service drops the 2 hardest and
+# targets the next (see _GRAIN_POOL_DROP) so a couple of freak scenes don't pin
+# the whole-movie CRF. The target sits below a mean target (worst-case frame
+# pooling AND grain's stochastic irreproducibility both pull it down). Bounds
+# bracket the default 23. Calibrated across the whole SD-DVD + BD grain collection
+# (2026-07-15): a p5 of ~71 = last-transparent (below it detail mushes), and the
+# governing whole-movie CRF (3rd-hardest of 10 windows) landed 20-28 per title --
+# one target serves HD and SD (no resolution split, unlike the SDR non-grain path).
 _CRF_LO = 14
 _CRF_HI = 34
 _GRAIN_TARGET = 71.0
@@ -358,17 +361,30 @@ _GRAIN_TARGET = 71.0
 # whole (short) source instead of windowing it.
 _FULL_PASS_FRACTION = 0.85
 
-# Probe-window layout used by the target-quality service: how many windows and
-# how long each. Public so the service and its tests share one source of truth.
-PROBE_WINDOW_COUNT = 3
+# Probe-window layout. The window LENGTH is shared; the window COUNT and the
+# cross-window pooling are per-path policy carried on the TargetSpec (see
+# resolve_target). Public so the service and its tests share one source of truth.
 PROBE_WINDOW_SECONDS = 18.0
+
+# Grain (SVT-AV1 CRF) samples 10 windows and drops the 2 hardest when pooling;
+# NVEnc (QVBR) samples 3 and mean-pools (no drop). CRF is one value for the whole
+# movie, so the search must SEE the common hard scenes -- 3 evenly-spaced windows
+# miss them and the search rails to too-high a CRF (мыло) -- while a couple of
+# freak worst-case scenes must not pin the whole-movie CRF and bloat the file.
+# Calibrated across the SD-DVD + BD grain collection (2026-07-15).
+_GRAIN_WINDOW_COUNT = 10
+_GRAIN_POOL_DROP = 2
+_NVENC_WINDOW_COUNT = 3
 
 
 @dataclass(frozen=True, slots=True)
 class TargetSpec:
     """Resolved target-quality plan for one job: which perceptual ``metric`` to
     drive, the acceptable ``[target_lo, target_hi]`` score band, the knob search
-    bounds ``[knob_lo, knob_hi]``, and the probe budget ``max_probes``."""
+    bounds ``[knob_lo, knob_hi]``, the probe budget ``max_probes``, how many probe
+    windows to sample (``window_count``), and how many of the hardest windows to
+    drop when pooling across them (``pool_drop`` -- grain only; NVEnc mean-pools
+    and leaves it 0)."""
 
     metric: str
     target_lo: float
@@ -376,6 +392,8 @@ class TargetSpec:
     knob_lo: int
     knob_hi: int
     max_probes: int
+    window_count: int
+    pool_drop: int
 
 
 def resolve_target(vp: VideoParams) -> TargetSpec:
@@ -401,7 +419,10 @@ def resolve_target(vp: VideoParams) -> TargetSpec:
                 f"(transfer {vp.color_transfer!r}): SSIMULACRA2 does not score PQ/HLG "
                 f"correctly; HDR belongs on the NVEnc/CVVDP path"
             )
-        return _spec("ssimulacra2", _GRAIN_TARGET, _CRF_LO, _CRF_HI)
+        return _spec(
+            "ssimulacra2", _GRAIN_TARGET, _CRF_LO, _CRF_HI,
+            window_count=_GRAIN_WINDOW_COUNT, pool_drop=_GRAIN_POOL_DROP,
+        )
 
     _, final_h = final_output_dimensions(vp)
     if vp.color_transfer in _HDR_TRANSFERS:
@@ -410,10 +431,21 @@ def resolve_target(vp: VideoParams) -> TargetSpec:
         metric, centre = "ssimulacra2", _SD_SDR_TARGET
     else:
         metric, centre = "ssimulacra2", _HD_SDR_TARGET
-    return _spec(metric, centre, _QVBR_LO, _QVBR_HI)
+    return _spec(
+        metric, centre, _QVBR_LO, _QVBR_HI,
+        window_count=_NVENC_WINDOW_COUNT, pool_drop=0,
+    )
 
 
-def _spec(metric: str, centre: float, knob_lo: int, knob_hi: int) -> TargetSpec:
+def _spec(
+    metric: str,
+    centre: float,
+    knob_lo: int,
+    knob_hi: int,
+    *,
+    window_count: int,
+    pool_drop: int,
+) -> TargetSpec:
     tol = centre * _TARGET_TOLERANCE
     return TargetSpec(
         metric=metric,
@@ -422,6 +454,8 @@ def _spec(metric: str, centre: float, knob_lo: int, knob_hi: int) -> TargetSpec:
         knob_lo=knob_lo,
         knob_hi=knob_hi,
         max_probes=_MAX_PROBES,
+        window_count=window_count,
+        pool_drop=pool_drop,
     )
 
 
