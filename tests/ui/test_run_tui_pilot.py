@@ -131,8 +131,16 @@ def test_runapp_progress_flow_and_finish() -> None:
         app = _make_runapp()
         async with app.run_test() as pilot:
             await pilot.pause()
+            # Before a job starts, setting the quality is a no-op (no job yet).
+            app._do_set_chosen_quality(99)
             app._do_start_job(job, 0)
             await pilot.pause()
+
+            # The target-quality search fills the knob into the Target block.
+            app._do_set_chosen_quality(28)
+            await pilot.pause()
+            target0 = app.query_one("#target", TargetWidget)
+            assert "28" in str(target0.content)
 
             # Advance step
             app._do_update_status("Encoding...")
@@ -237,6 +245,7 @@ def test_runapp_public_api_methods_before_mount() -> None:
     app.add_tool_line("line")
     app.finish_job(job)
     app.update_output_size(42)
+    app.set_chosen_quality(28)
     app.stop()
 
 

@@ -238,9 +238,21 @@ def _build_target_text(job: Job) -> str:
     lines: list[str] = []
 
     vp = job.video_params
-    final_w, final_h = final_output_dimensions(vp)
-    res = f"{final_w}x{final_h}"
-    lines.append(f"Video: AV1 {res} CQ{vp.cq}")
+    if vp.passthrough:
+        # Verbatim copy: the output keeps the source codec and dimensions, no
+        # re-encode and no quality knob.
+        codec = vp.source_codec.upper() or "?"
+        lines.append(f"Video: {codec} {vp.source_width}x{vp.source_height} (copy)")
+    else:
+        final_w, final_h = final_output_dimensions(vp)
+        # The quality knob is searched per title at run time (target-quality), so
+        # show its TYPE -- CRF for the SVT-AV1 grain path, QVBR for NVEnc -- and
+        # the searched value once known, or "target" until the search fills it in.
+        # (``vp.cq`` is the legacy fixed anchor the search overrides, so it is not
+        # shown.)
+        knob = "CRF" if vp.grain else "QVBR"
+        value = str(job.chosen_cq) if job.chosen_cq is not None else "target"
+        lines.append(f"Video: AV1 {final_w}x{final_h} {knob} {value}")
 
     for i, audio_instr in enumerate(job.audio):
         prefix = "Audio:" if i == 0 else "      "
@@ -463,6 +475,10 @@ class RunApp(App[None]):
         """Update current output size in the Target block."""
         self._safe_call(self._do_update_output_size, size_bytes)
 
+    def set_chosen_quality(self, cq: int) -> None:
+        """The target-quality search picked the knob — show it in the Target block."""
+        self._safe_call(self._do_set_chosen_quality, cq)
+
     def stop(self) -> None:
         """All jobs done — exit app."""
         self._safe_call(self.exit)
@@ -488,8 +504,7 @@ class RunApp(App[None]):
 
         self._target_base_text = _build_target_text(job)
         self._output_size = 0
-        target_w = self.query_one("#target", TargetWidget)
-        target_w.update(f"{self._target_base_text}\nSize:  ?")
+        self._render_target()
 
         # Steps
         self._steps = _build_steps(job)
@@ -527,8 +542,21 @@ class RunApp(App[None]):
 
     def _do_update_output_size(self, size_bytes: int) -> None:
         self._output_size = size_bytes
+        self._render_target()
+
+    def _do_set_chosen_quality(self, cq: int) -> None:
+        """Fill the searched quality knob into the Target block (rebuilds the base
+        text and re-renders with the current size)."""
+        if self._job is None:
+            return
+        self._job.chosen_cq = cq
+        self._target_base_text = _build_target_text(self._job)
+        self._render_target()
+
+    def _render_target(self) -> None:
+        """Re-render the Target block: base text plus the current output size."""
+        size_str = fmt_size(self._output_size) if self._output_size > 0 else "..."
         target_w = self.query_one("#target", TargetWidget)
-        size_str = fmt_size(size_bytes) if size_bytes > 0 else "..."
         target_w.update(f"{self._target_base_text}\nSize:  {size_str}")
 
     def _do_finish_job(self, job: Job) -> None:

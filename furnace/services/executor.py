@@ -409,6 +409,8 @@ class Executor:
             if self._progress is not None:
                 self._progress.update_status("Searching quality...")
             cq_override = self._maybe_search_target_quality(job, main_source, temp_dir)
+            if self._progress is not None and cq_override is not None:
+                self._progress.set_chosen_quality(cq_override)
 
             logger.info("Encoding video: %s", main_source.name)
             if self._progress is not None:

@@ -442,13 +442,42 @@ class TestBuildSourceText:
 
 class TestBuildTargetText:
     def test_basic_target(self) -> None:
+        """A re-encode with no searched knob yet shows the knob TYPE + 'target'
+        (the target-quality search fills the number in at run time; the legacy
+        fixed ``cq`` anchor is no longer shown since the search overrides it)."""
         vp = make_video_params(source_width=1920, source_height=1080, cq=25)
         job = make_job(video_params=vp)
         text = _build_target_text(job)
         assert "AV1" in text
         assert "HEVC" not in text
         assert "1920x1080" in text
-        assert "CQ25" in text
+        assert "QVBR target" in text
+        assert "CQ25" not in text
+        assert "CQ" not in text
+
+    def test_target_shows_searched_qvbr(self) -> None:
+        """Once the search picks the knob, NVEnc jobs show 'QVBR N'."""
+        vp = make_video_params(source_width=1920, source_height=1080)
+        assert "QVBR 24" in _build_target_text(make_job(video_params=vp, chosen_cq=24))
+
+    def test_grain_target_shows_crf(self) -> None:
+        """A grain (SVT-AV1) job's knob is CRF, not QVBR: 'target' until searched,
+        then the searched value."""
+        vp = make_video_params(grain=True, source_width=720, source_height=576)
+        assert "CRF target" in _build_target_text(make_job(video_params=vp))
+        assert "CRF 30" in _build_target_text(make_job(video_params=vp, chosen_cq=30))
+
+    def test_passthrough_target_shows_copy(self) -> None:
+        """A passthrough copy shows the source codec + dims + (copy), not an AV1
+        knob (nothing is re-encoded)."""
+        vp = make_video_params(
+            passthrough=True, source_codec="hevc",
+            source_width=1920, source_height=1080,
+        )
+        text = _build_target_text(make_job(video_params=vp, audio=[], subtitles=[]))
+        assert text.startswith("Video: HEVC 1920x1080 (copy)")
+        assert "QVBR" not in text
+        assert "AV1" not in text
 
     def test_crop_changes_resolution(self) -> None:
         crop = CropRect(w=1920, h=800, x=0, y=140)
