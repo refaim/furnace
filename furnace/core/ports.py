@@ -214,7 +214,8 @@ class VideoCopier(Protocol):
 
 @runtime_checkable
 class WindowExtractor(Protocol):
-    """Extract a short lossless video window for target-quality probing.
+    """Read the source for target-quality probing: extract a probe window, and
+    report per-window source bitrate for grain hard-scene selection.
     Implemented by FFmpegAdapter."""
 
     def extract_window(
@@ -228,6 +229,13 @@ class WindowExtractor(Protocol):
         """Stream-copy ``frames`` video frames from ``start_s`` into ``output_path``
         (an MKV). ``-ss`` before ``-i`` (keyframe seek), ``-frames:v`` count,
         ``-c:v copy``. Returns the exit code."""
+        ...
+
+    def window_bitrates(self, source: Path, window_s: float) -> list[tuple[float, float]]:
+        """Per-window source bitrate proxy for grain hard-scene selection: read the
+        video packet sizes once (no decode) and bin them into consecutive
+        non-overlapping ``window_s`` windows. Returns ``(window_start_s, kbytes)``
+        per populated window in time order; empty if the packets can't be read."""
         ...
 
 

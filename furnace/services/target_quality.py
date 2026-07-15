@@ -11,12 +11,13 @@ Two probe strategies, dispatched on the content domain (``resolve_target`` /
 - **NVEnc** (non-grain): 3 windows, each probed via the inline probe -- NVEncC
   encodes at the candidate QVBR and self-measures the metric, returning one
   score per window. Mean-pooled across windows.
-- **SVT-AV1** (grain): 10 windows, each encoded at the candidate CRF, then scored
-  against the source window by the VapourSynth+Vship metrics adapter with
-  worst-case (low-percentile) frame pooling. Pooled across windows by dropping
-  the 2 hardest and targeting the worst of the rest -- the search must see the
-  common hard scenes, but a couple of freak scenes must not pin the whole-movie
-  CRF and bloat the file (calibrated across the grain collection).
+- **SVT-AV1** (grain): 10 windows selected by the source's rate-control regime --
+  the hardest windows by bitrate on a VBR source (which marks its hard scenes with
+  bits), or evenly-spaced on a CBR source (flat bitrate; hard scenes are common) --
+  each encoded at the candidate CRF, scored against the source window by the
+  VapourSynth+Vship metrics adapter with worst-case (low-percentile) frame pooling,
+  and MIN-pooled across windows so the hardest sampled scene governs the one
+  whole-movie CRF.
 
 The windows are extracted once and reused across every probed knob. All the
 numeric policy (domain -> metric/target/bounds, window layout, the search) lives
@@ -35,9 +36,13 @@ from furnace.core.quality import final_output_dimensions
 from furnace.core.target_quality import (
     PROBE_WINDOW_SECONDS,
     KnobSearchResult,
+    TargetSpec,
+    interior_windows,
     probe_windows,
     resolve_target,
     search_knob,
+    select_hard_windows,
+    source_is_variable_bitrate,
 )
 
 
@@ -92,12 +97,15 @@ class TargetQualityService:
         Raises if a window cannot be extracted or a probe cannot be scored.
         """
         spec = resolve_target(vp)
-        offsets = probe_windows(
-            duration_s, count=spec.window_count, window_s=PROBE_WINDOW_SECONDS
-        )
+        if vp.grain:
+            offsets = self._grain_window_offsets(source, spec, duration_s)
+        else:
+            offsets = probe_windows(
+                duration_s, count=spec.window_count, window_s=PROBE_WINDOW_SECONDS
+            )
         windows = self._prepare_windows(source, vp, offsets, duration_s, work_dir)
         probe_fn = (
-            self._grain_probe_fn(vp, spec.metric, windows, work_dir, spec.pool_drop)
+            self._grain_probe_fn(vp, spec.metric, windows, work_dir)
             if vp.grain
             else self._inline_probe_fn(vp, spec.metric, windows, work_dir)
         )
@@ -109,6 +117,34 @@ class TargetQualityService:
             hi=spec.knob_hi,
             max_probes=spec.max_probes,
         )
+
+    def _grain_window_offsets(
+        self, source: Path, spec: TargetSpec, duration_s: float
+    ) -> list[float] | None:
+        """Pick the grain probe-window offsets by source rate-control regime.
+
+        A short source returns ``None`` (full-pass, handled by ``_prepare_windows``).
+        Otherwise read the per-window source bitrate over the interior of the
+        timeline: on a VBR source the encoder concentrated bits on the hard scenes,
+        so the highest-bitrate windows ARE the hard scenes -- sample those; on a
+        CBR/flat source the bitrate says nothing about difficulty (it can point at
+        the easy scenes), but hard scenes are common there, so fall back to the
+        evenly-spaced layout. If the source bitrate can't be read at all, fall back
+        to even sampling too.
+        """
+        even = probe_windows(duration_s, count=spec.window_count, window_s=PROBE_WINDOW_SECONDS)
+        if even is None:
+            return None
+        candidates = interior_windows(
+            self._extractor.window_bitrates(source, PROBE_WINDOW_SECONDS),
+            duration_s=duration_s,
+            window_s=PROBE_WINDOW_SECONDS,
+        )
+        if not candidates:
+            return even
+        if source_is_variable_bitrate([kbytes for _, kbytes in candidates]):
+            return select_hard_windows(candidates, count=spec.window_count)
+        return even
 
     def _prepare_windows(
         self,
@@ -183,20 +219,17 @@ class TargetQualityService:
         metric: str,
         windows: list[Path],
         work_dir: Path,
-        pool_drop: int,
     ) -> Callable[[int], float]:
         """SVT strategy: encode each window at the candidate CRF, score it against
         the source window with worst-case (low-percentile) frame pooling of the
-        driver ``metric``, then pool ACROSS windows by dropping the ``pool_drop``
-        hardest and targeting the worst of the rest. CRF is one value for the whole
-        movie, so the pool leans worst-case (mean would let a bright reel's high p5
-        mask a dark reel's low p5 and pick too-high a CRF -> мыло), but a couple of
-        freak worst-case scenes must not pin the whole-movie CRF and bloat the file,
-        so the very hardest ``pool_drop`` windows are dropped (calibrated across the
-        grain collection). The drop is clamped so at least one window always
-        governs. Only ``metric`` is computed on the GPU (the other Vship kernels are
-        skipped). A failed encode or an unavailable score aborts the search loudly
-        rather than skewing the result.
+        driver ``metric``, and MIN the per-window worst-cases -- the hardest sampled
+        scene governs the chosen CRF. CRF is one value for the whole movie, so it
+        must satisfy the hardest scene (mean would let an easy window mask a hard one
+        and pick too-high a CRF -> мыло); the window SELECTION already targets the
+        hard scenes (see :meth:`_grain_window_offsets`), so the min protects them.
+        Only ``metric`` is computed on the GPU (the other Vship kernels are skipped).
+        A failed encode or an unavailable score aborts the search loudly rather than
+        skewing the result.
         """
         if self._grain_encoder is None or self._metrics is None:
             raise RuntimeError(
@@ -233,10 +266,6 @@ class TargetQualityService:
                 if score is None:
                     raise RuntimeError(f"grain probe could not be scored at crf={knob}")
                 scores.append(float(score))
-            # Drop the pool_drop hardest windows (lowest scores) and target the
-            # worst of the rest; clamp so a short (few-window) source still has one
-            # governing window.
-            keep_from = min(pool_drop, len(scores) - 1)
-            return sorted(scores)[keep_from]
+            return min(scores)
 
         return probe_fn

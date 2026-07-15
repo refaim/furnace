@@ -697,6 +697,46 @@ class FFmpegAdapter:
         rc, _out = run_tool(cmd, on_output=self._on_output, log_path=log_path)
         return rc
 
+    def window_bitrates(self, source: Path, window_s: float) -> list[tuple[float, float]]:
+        """Per-window source bitrate proxy for grain hard-scene selection.
+
+        Reads the video packet sizes once (``ffprobe ... -show_entries
+        packet=pts_time,size``, no decode) and bins them into consecutive
+        non-overlapping ``window_s`` windows. Returns ``(window_start_s, kbytes)``
+        per populated window in time order. Empty if the packets can't be read (a
+        broken source -> the caller falls back to even sampling).
+        """
+        cmd = [
+            str(self._ffprobe),
+            "-v", "error",
+            "-select_streams", "v:0",
+            "-show_entries", "packet=pts_time,size",
+            "-of", "csv=p=0",
+            str(source),
+        ]
+        logger.debug("window_bitrates cmd: %s", cmd)
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", check=False,
+        )
+        if result.returncode != 0:
+            logger.warning("window_bitrates ffprobe failed (rc=%d)", result.returncode)
+            return []
+        totals: dict[int, int] = {}
+        for line in result.stdout.splitlines():
+            pts_str, sep, size_str = line.partition(",")
+            if not sep:
+                continue
+            try:
+                pts = float(pts_str)
+                size = int(size_str)
+            except ValueError:
+                continue
+            if pts < 0.0:
+                continue
+            bin_idx = int(pts / window_s)
+            totals[bin_idx] = totals.get(bin_idx, 0) + size
+        return [(b * window_s, totals[b] / 1024.0) for b in sorted(totals)]
+
     # ------------------------------------------------------------------
     # AudioExtractor
     # ------------------------------------------------------------------

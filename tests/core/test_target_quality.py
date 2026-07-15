@@ -8,6 +8,7 @@ import pytest
 from furnace.core.target_quality import (
     KnobSearchResult,
     TargetSpec,
+    interior_windows,
     linear_interpolate,
     natural_cubic_spline,
     pchip_interpolate,
@@ -15,6 +16,8 @@ from furnace.core.target_quality import (
     probe_windows,
     resolve_target,
     search_knob,
+    select_hard_windows,
+    source_is_variable_bitrate,
 )
 from tests.conftest import make_video_params
 
@@ -528,27 +531,22 @@ class TestResolveTarget:
         assert spec.knob_lo < 23 < spec.knob_hi  # brackets the default CRF
         assert spec.target_lo < 71.0 < spec.target_hi
 
-    def test_grain_samples_ten_windows_and_drops_two(self) -> None:
-        """The grain (CRF) path samples 10 windows and drops the 2 hardest when
-        pooling: CRF is one value for the whole movie, so the search must SEE the
-        common hard scenes (3 windows miss them -> too-high CRF -> мыло), while a
-        couple of freak worst-case scenes must not pin the whole-movie CRF and
-        bloat the file. Calibrated across the DVD collection (2026-07-15)."""
+    def test_grain_samples_ten_windows(self) -> None:
+        """The grain (CRF) path samples 10 windows: CRF is one value for the whole
+        movie, so the search must SEE the hard scenes -- 3 windows miss them and the
+        search rails to too-high a CRF (мыло)."""
         spec = resolve_target(make_video_params(grain=True, source_width=720, source_height=576))
         assert spec.window_count == 10
-        assert spec.pool_drop == 2
 
-    def test_nvenc_samples_three_windows_no_drop(self) -> None:
-        """The NVEnc (QVBR) path is unchanged: 3 windows, mean pooling (pool_drop
-        is unused there, so it is 0)."""
+    def test_nvenc_samples_three_windows(self) -> None:
+        """The NVEnc (QVBR) path samples 3 windows (mean pooling; QVBR is
+        scene-adaptive)."""
         for vp in (
             make_video_params(source_width=1920, source_height=1080),  # HD SDR
             make_video_params(source_width=720, source_height=576),  # SD SDR
             make_video_params(color_transfer="smpte2084", color_matrix="bt2020nc"),  # HDR
         ):
-            spec = resolve_target(vp)
-            assert spec.window_count == 3
-            assert spec.pool_drop == 0
+            assert resolve_target(vp).window_count == 3
 
     def test_grain_overrides_resolution_bucket(self) -> None:
         """grain wins over the SDR height buckets (grain is always the SVT path)."""
@@ -614,3 +612,102 @@ class TestProbeWindows:
     def test_invalid_duration_raises(self) -> None:
         with pytest.raises(ValueError, match="duration"):
             probe_windows(0.0, count=3, window_s=18.0)
+
+
+# ---------------------------------------------------------------------------
+# source_is_variable_bitrate — VBR (guide by bitrate) vs CBR/flat (even sampling)
+# ---------------------------------------------------------------------------
+
+
+class TestSourceIsVariableBitrate:
+    def test_vbr_spread_is_variable(self) -> None:
+        """A wide spread of per-window bitrates (VBR) is above the threshold."""
+        assert source_is_variable_bitrate([1.6, 2.8, 3.5, 5.0, 5.2, 2.1, 4.4]) is True
+
+    def test_flat_is_not_variable(self) -> None:
+        """A nearly-flat distribution (CBR) is below the threshold."""
+        assert source_is_variable_bitrate([3.6, 3.7, 3.7, 3.8, 3.7, 3.7]) is False
+
+    def test_fewer_than_two_is_not_variable(self) -> None:
+        """Too few samples to judge -> False (caller falls back to even sampling)."""
+        assert source_is_variable_bitrate([]) is False
+        assert source_is_variable_bitrate([4.0]) is False
+
+    def test_zero_mean_is_not_variable(self) -> None:
+        """A degenerate all-zero list -> False (no division by zero)."""
+        assert source_is_variable_bitrate([0.0, 0.0, 0.0]) is False
+
+    def test_threshold_is_the_boundary(self) -> None:
+        """CoV exactly at the threshold counts as variable (>=), just below does not.
+        [1-d, 1+d] has mean 1 and population stdev d, so CoV == d."""
+        assert source_is_variable_bitrate([0.9, 1.1], threshold=0.1) is True
+        assert source_is_variable_bitrate([0.95, 1.05], threshold=0.1) is False
+
+
+# ---------------------------------------------------------------------------
+# interior_windows — drop the leading/trailing edge (intros/credits)
+# ---------------------------------------------------------------------------
+
+
+class TestInteriorWindows:
+    def test_drops_leading_and_trailing_edges(self) -> None:
+        """Windows in the first/last edge_skip fraction are dropped; interior kept.
+        duration 1000, window 10, edge 0.06 -> keep [60, 930]."""
+        scored = [
+            (10.0, 5.0),    # leading edge (< 60) -> drop
+            (60.0, 1.0),    # exactly lo -> keep
+            (500.0, 9.0),   # interior -> keep
+            (930.0, 2.0),   # exactly hi (1000*0.94 - 10) -> keep
+            (950.0, 8.0),   # trailing edge (> 930) -> drop
+        ]
+        assert interior_windows(scored, duration_s=1000.0, window_s=10.0, edge_skip=0.06) == [
+            (60.0, 1.0), (500.0, 9.0), (930.0, 2.0),
+        ]
+
+    def test_preserves_order(self) -> None:
+        """Kept windows retain input order (not re-sorted); default edge_skip used."""
+        scored = [(500.0, 9.0), (100.0, 1.0), (300.0, 5.0)]
+        assert interior_windows(scored, duration_s=1000.0, window_s=10.0) == scored
+
+    def test_empty_input(self) -> None:
+        assert interior_windows([], duration_s=1000.0, window_s=10.0) == []
+
+
+# ---------------------------------------------------------------------------
+# select_hard_windows — top-N by value with a minimum spacing (NMS)
+# ---------------------------------------------------------------------------
+
+
+class TestSelectHardWindows:
+    def test_picks_highest_value_windows(self) -> None:
+        """The top ``count`` by value, returned in ascending time order."""
+        scored = [(0.0, 1.0), (100.0, 5.0), (200.0, 3.0), (300.0, 9.0), (400.0, 2.0)]
+        assert select_hard_windows(scored, count=2, min_gap_s=10.0) == [100.0, 300.0]
+
+    def test_min_gap_skips_neighbours(self) -> None:
+        """A high-value window too close to an already-picked one is skipped for the
+        next spread-out candidate (so the picks can't cluster in one sequence)."""
+        # 300 is highest; 305 is 2nd but within the 50s gap of 300 -> next pick is 100.
+        scored = [(100.0, 5.0), (300.0, 9.0), (305.0, 8.0)]
+        assert select_hard_windows(scored, count=2, min_gap_s=50.0) == [100.0, 300.0]
+
+    def test_fewer_candidates_than_count(self) -> None:
+        """Returns all it can when the candidates run out before ``count``."""
+        assert select_hard_windows([(0.0, 1.0), (100.0, 2.0)], count=5, min_gap_s=10.0) == [
+            0.0, 100.0
+        ]
+
+    def test_default_gap_applies(self) -> None:
+        """The default min_gap (90s) is used when the argument is omitted."""
+        # 0 and 50 are within 90s: only the higher (50) is kept, plus a far one (200).
+        assert select_hard_windows([(0.0, 1.0), (50.0, 9.0), (200.0, 5.0)], count=3) == [
+            50.0, 200.0
+        ]
+
+    def test_invalid_count_raises(self) -> None:
+        with pytest.raises(ValueError, match="count"):
+            select_hard_windows([(0.0, 1.0)], count=0, min_gap_s=10.0)
+
+    def test_negative_gap_raises(self) -> None:
+        with pytest.raises(ValueError, match="gap"):
+            select_hard_windows([(0.0, 1.0)], count=1, min_gap_s=-1.0)

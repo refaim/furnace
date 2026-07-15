@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -101,6 +102,36 @@ class TestExtractWindow:
                 Path("movie.mkv"), Path("window.mkv"), start_s=10.0, frames=48
             )
         assert captured_kwargs["log_path"] is None
+
+
+class TestWindowBitrates:
+    def _run(self, returncode: int, stdout: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(args=[], returncode=returncode, stdout=stdout, stderr="")
+
+    def test_bins_packets_into_windows(self) -> None:
+        # ffprobe CSV is "pts_time,size" per video packet; window_s=10 -> bins at 0/10/20.
+        # packets: bin0 {0.0,5.0}, bin1 {12.0}, bin2 {25.0,28.0}.
+        stdout = "0.0,1024\n5.0,1024\n12.0,2048\n25.0,512\n28.0,512"
+        adapter = _adapter()
+        with patch("furnace.adapters.ffmpeg.subprocess.run", return_value=self._run(0, stdout)):
+            result = adapter.window_bitrates(Path("m.mkv"), 10.0)
+        # bin0 = 2048B = 2.0KB, bin1 = 2048B = 2.0KB, bin2 = 1024B = 1.0KB.
+        assert result == [(0.0, 2.0), (10.0, 2.0), (20.0, 1.0)]
+
+    def test_skips_unparseable_and_negative_pts(self) -> None:
+        # Lines, in order: unparseable pts, unparseable size, negative pts, a line
+        # with no comma, then the one real packet (-> bin 0).
+        stdout = "N/A,1024\n1.0,notanint\n-1.0,1024\nnocomma\n5.0,2048"
+        adapter = _adapter()
+        with patch("furnace.adapters.ffmpeg.subprocess.run", return_value=self._run(0, stdout)):
+            result = adapter.window_bitrates(Path("m.mkv"), 10.0)
+        assert result == [(0.0, 2.0)]
+
+    def test_nonzero_returncode_returns_empty(self) -> None:
+        adapter = _adapter()
+        with patch("furnace.adapters.ffmpeg.subprocess.run", return_value=self._run(1, "")):
+            result = adapter.window_bitrates(Path("m.mkv"), 10.0)
+        assert result == []
 
 
 class TestWindowExtractorProtocol:

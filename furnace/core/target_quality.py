@@ -345,14 +345,14 @@ _MAX_PROBES = 4
 
 # SVT-AV1 grain path: CRF knob (0-63, load-bearing default 23). SSIMULACRA2 is
 # pooled worst-case WITHIN a window (low-percentile p5 frames) since CRF is
-# constant between scenes; ACROSS windows the service drops the 2 hardest and
-# targets the next (see _GRAIN_POOL_DROP) so a couple of freak scenes don't pin
-# the whole-movie CRF. The target sits below a mean target (worst-case frame
-# pooling AND grain's stochastic irreproducibility both pull it down). Bounds
-# bracket the default 23. Calibrated across the whole SD-DVD + BD grain collection
-# (2026-07-15): a p5 of ~71 = last-transparent (below it detail mushes), and the
-# governing whole-movie CRF (3rd-hardest of 10 windows) landed 20-28 per title --
-# one target serves HD and SD (no resolution split, unlike the SDR non-grain path).
+# constant between scenes; ACROSS windows the service takes the MIN (the hardest
+# sampled scene governs, because the window selection already targets the hard
+# scenes). The target sits below a mean target (worst-case frame pooling AND
+# grain's stochastic irreproducibility both pull it down). Bounds bracket the
+# default 23. Calibrated across the whole SD-DVD + BD grain collection (2026-07-15):
+# a p5 of ~71 = last-transparent (below it detail mushes), and the governing
+# whole-movie CRF landed 20-28 per title -- one target serves HD and SD (no
+# resolution split, unlike the SDR non-grain path).
 _CRF_LO = 14
 _CRF_HI = 34
 _GRAIN_TARGET = 71.0
@@ -361,30 +361,43 @@ _GRAIN_TARGET = 71.0
 # whole (short) source instead of windowing it.
 _FULL_PASS_FRACTION = 0.85
 
-# Probe-window layout. The window LENGTH is shared; the window COUNT and the
-# cross-window pooling are per-path policy carried on the TargetSpec (see
-# resolve_target). Public so the service and its tests share one source of truth.
+# Probe-window layout. The window LENGTH is shared; the window COUNT is per-path
+# policy carried on the TargetSpec (see resolve_target). Public so the service and
+# its tests share one source of truth.
 PROBE_WINDOW_SECONDS = 18.0
 
-# Grain (SVT-AV1 CRF) samples 10 windows and drops the 2 hardest when pooling;
-# NVEnc (QVBR) samples 3 and mean-pools (no drop). CRF is one value for the whole
-# movie, so the search must SEE the common hard scenes -- 3 evenly-spaced windows
-# miss them and the search rails to too-high a CRF (мыло) -- while a couple of
-# freak worst-case scenes must not pin the whole-movie CRF and bloat the file.
-# Calibrated across the SD-DVD + BD grain collection (2026-07-15).
+# Grain (SVT-AV1 CRF) samples 10 windows; NVEnc (QVBR) samples 3. CRF is one value
+# for the whole movie, so the grain search must SEE the hard scenes -- 3 windows
+# miss them and the search rails to too-high a CRF (мыло). Grain pools worst-case
+# (min) across windows; NVEnc mean-pools (QVBR is scene-adaptive).
 _GRAIN_WINDOW_COUNT = 10
-_GRAIN_POOL_DROP = 2
 _NVENC_WINDOW_COUNT = 3
+
+# Grain window SELECTION is regime-dependent (see the service). Measured across the
+# collection: on a VBR source the encoder spent bits on the hard scenes, so the
+# highest-bitrate windows ARE the hard scenes -- sample those. On a CBR source the
+# bitrate is flat and says nothing about difficulty (it even points at the easy
+# scenes), but hard scenes are common there, so evenly-spaced sampling catches them.
+# The regime is read from the coefficient of variation (stdev/mean) of the per-window
+# source bitrate: the collection splits cleanly (CBR ~0.01-0.02, VBR ~0.11-0.25).
+_VBR_COV_THRESHOLD = 0.05
+# Minimum spacing between selected hard windows, so the top-N by bitrate can't all
+# cluster in one intense sequence and miss other hard scenes elsewhere.
+_HARD_WINDOW_MIN_GAP_S = 90.0
+# A coefficient of variation needs at least two windows.
+_MIN_COV_SAMPLES = 2
+# Ignore the leading/trailing fraction of the timeline (intros, credits) when reading
+# source complexity for grain window selection, so a static logo or credit roll is
+# neither read as difficulty nor picked as a hard window.
+_EDGE_SKIP_FRACTION = 0.06
 
 
 @dataclass(frozen=True, slots=True)
 class TargetSpec:
     """Resolved target-quality plan for one job: which perceptual ``metric`` to
     drive, the acceptable ``[target_lo, target_hi]`` score band, the knob search
-    bounds ``[knob_lo, knob_hi]``, the probe budget ``max_probes``, how many probe
-    windows to sample (``window_count``), and how many of the hardest windows to
-    drop when pooling across them (``pool_drop`` -- grain only; NVEnc mean-pools
-    and leaves it 0)."""
+    bounds ``[knob_lo, knob_hi]``, the probe budget ``max_probes``, and how many
+    probe windows to sample (``window_count``)."""
 
     metric: str
     target_lo: float
@@ -393,7 +406,6 @@ class TargetSpec:
     knob_hi: int
     max_probes: int
     window_count: int
-    pool_drop: int
 
 
 def resolve_target(vp: VideoParams) -> TargetSpec:
@@ -421,7 +433,7 @@ def resolve_target(vp: VideoParams) -> TargetSpec:
             )
         return _spec(
             "ssimulacra2", _GRAIN_TARGET, _CRF_LO, _CRF_HI,
-            window_count=_GRAIN_WINDOW_COUNT, pool_drop=_GRAIN_POOL_DROP,
+            window_count=_GRAIN_WINDOW_COUNT,
         )
 
     _, final_h = final_output_dimensions(vp)
@@ -433,7 +445,7 @@ def resolve_target(vp: VideoParams) -> TargetSpec:
         metric, centre = "ssimulacra2", _HD_SDR_TARGET
     return _spec(
         metric, centre, _QVBR_LO, _QVBR_HI,
-        window_count=_NVENC_WINDOW_COUNT, pool_drop=0,
+        window_count=_NVENC_WINDOW_COUNT,
     )
 
 
@@ -444,7 +456,6 @@ def _spec(
     knob_hi: int,
     *,
     window_count: int,
-    pool_drop: int,
 ) -> TargetSpec:
     tol = centre * _TARGET_TOLERANCE
     return TargetSpec(
@@ -455,7 +466,6 @@ def _spec(
         knob_hi=knob_hi,
         max_probes=_MAX_PROBES,
         window_count=window_count,
-        pool_drop=pool_drop,
     )
 
 
@@ -480,3 +490,70 @@ def probe_windows(duration_s: float, *, count: int, window_s: float) -> list[flo
         return None
     gap = (duration_s - total) / (count + 1)
     return [gap * (k + 1) + window_s * k for k in range(count)]
+
+
+def source_is_variable_bitrate(
+    bitrates: list[float], *, threshold: float = _VBR_COV_THRESHOLD
+) -> bool:
+    """Whether the per-window source bitrate varies enough to guide hard-scene
+    selection.
+
+    True (VBR): the source encoder concentrated bits on the hard scenes, so the
+    highest-bitrate windows ARE the hard scenes -- select by bitrate. False (CBR /
+    flat, or fewer than two samples): the bitrate says nothing about difficulty (it
+    can even point at the easy scenes), so the caller falls back to even sampling.
+
+    The signal is the coefficient of variation (population stdev / mean) of
+    ``bitrates``; the grain collection splits cleanly around ``threshold``
+    (CBR ~0.01-0.02, VBR ~0.11-0.25).
+    """
+    n = len(bitrates)
+    if n < _MIN_COV_SAMPLES:
+        return False
+    mean = sum(bitrates) / n
+    if mean <= 0.0:
+        return False
+    variance = sum((b - mean) ** 2 for b in bitrates) / n
+    return math.sqrt(variance) / mean >= threshold
+
+
+def interior_windows(
+    scored: list[tuple[float, float]],
+    *,
+    duration_s: float,
+    window_s: float,
+    edge_skip: float = _EDGE_SKIP_FRACTION,
+) -> list[tuple[float, float]]:
+    """Keep only the candidate windows in the interior of the timeline, dropping the
+    leading and trailing ``edge_skip`` fraction (intros, credits) -- so a static logo
+    or credit roll is neither read as difficulty nor picked as a hard window.
+    ``scored`` is ``(start_s, value)`` per candidate; the filtered order is preserved.
+    """
+    lo = duration_s * edge_skip
+    hi = duration_s * (1 - edge_skip) - window_s
+    return [(start, value) for start, value in scored if lo <= start <= hi]
+
+
+def select_hard_windows(
+    scored: list[tuple[float, float]], *, count: int, min_gap_s: float = _HARD_WINDOW_MIN_GAP_S
+) -> list[float]:
+    """Pick up to ``count`` window start offsets, greedily taking the highest-value
+    (highest source bitrate = hardest) candidates while keeping every pick at least
+    ``min_gap_s`` from the ones already chosen -- so the hardest windows can't all
+    cluster in one intense sequence and miss hard scenes elsewhere.
+
+    ``scored`` is ``(start_s, value)`` per candidate window (value = source bytes /
+    bitrate). Returns the chosen offsets in ascending time order. Ties keep input
+    order (a stable sort), so the result is deterministic for a given candidate list.
+    """
+    if count < 1:
+        raise ValueError(f"hard window count must be >= 1, got {count}")
+    if min_gap_s < 0.0:
+        raise ValueError(f"min gap must be non-negative, got {min_gap_s}")
+    chosen: list[float] = []
+    for start, _value in sorted(scored, key=lambda sv: -sv[1]):
+        if all(abs(start - c) >= min_gap_s for c in chosen):
+            chosen.append(start)
+            if len(chosen) == count:
+                break
+    return sorted(chosen)
