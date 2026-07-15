@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from textual.app import App, ComposeResult
 
@@ -247,6 +247,47 @@ def test_runapp_public_api_methods_before_mount() -> None:
     app.update_output_size(42)
     app.set_chosen_quality(28)
     app.stop()
+
+
+def test_runapp_tool_output_respects_mute() -> None:
+    """``tool_output`` is the muteable raw-subprocess sink: while muted it drops
+    the line (so per-probe ffmpeg/nvencc chatter never reaches the log); when
+    unmuted it schedules the line onto the output log. ``add_tool_line`` (furnace
+    narration) is a separate, never-muted channel."""
+    app = _make_runapp()
+    app._safe_call = MagicMock()  # type: ignore[method-assign]
+
+    app.tool_output("before")  # not muted -> scheduled
+    app.mute_tool_output()
+    app.tool_output("during")  # muted -> dropped
+    app.unmute_tool_output()
+    app.tool_output("after")  # unmuted -> scheduled
+
+    scheduled = [c.args[1] for c in app._safe_call.call_args_list]
+    assert scheduled == ["before", "after"]
+
+
+def test_runapp_add_tool_line_is_never_muted() -> None:
+    """Furnace narration (``add_tool_line``) stays visible even while the raw
+    ``tool_output`` channel is muted -- that is how the search narrates itself."""
+    app = _make_runapp()
+    app._safe_call = MagicMock()  # type: ignore[method-assign]
+
+    app.mute_tool_output()
+    app.add_tool_line("[furnace] narration")
+
+    scheduled = [c.args[1] for c in app._safe_call.call_args_list]
+    assert scheduled == ["[furnace] narration"]
+
+
+def test_runapp_tool_output_methods_before_mount() -> None:
+    """The raw-output channel methods must not raise before the app is mounted."""
+    app = _make_runapp()
+    app.tool_output("line")
+    app.mute_tool_output()
+    app.tool_output("dropped")
+    app.unmute_tool_output()
+    app.tool_output("line2")
 
 
 def test_runapp_action_quit_app_sets_shutdown_and_exits() -> None:

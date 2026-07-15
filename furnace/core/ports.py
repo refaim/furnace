@@ -167,28 +167,26 @@ class PerceptualMetrics(Protocol):
         reference: Path,
         distorted: Path,
         *,
-        crop: CropRect | None,
-        deinterlace: bool,
-        final_width: int,
-        final_height: int,
         matrix: str,
         fps_num: int,
         fps_den: int,
         pool: MetricPool = MetricPool.MEAN,
         metrics: frozenset[str] = METRIC_NAMES,
     ) -> MetricScores:
-        """Score ``distorted`` against ``reference`` brought to the encoded geometry.
+        """Score ``distorted`` against ``reference``, both already at the same geometry.
 
-        ``deinterlace`` mirrors the encoder's single-rate bwdif pass: when set,
-        the reference is deinterlaced before crop/scale so it lines up with the
-        (already-deinterlaced) encoded output. ``pool`` selects mean (readout) or
-        low-percentile (worst-case, for the CRF search) frame pooling. ``metrics``
-        selects which perceptual metrics to compute (the CRF search asks for only
-        its driver metric); the unrequested fields come back None.
+        A pure comparator: it does NOT crop/scale/deinterlace. The caller brings
+        the reference to the encoded geometry upstream (via
+        ``WindowExtractor.build_reference``, which reuses the encode's own ffmpeg
+        filtergraph), so a crop can't phase-shift the reference against the
+        encode. ``pool`` selects mean (readout) or low-percentile (worst-case, for
+        the CRF search) frame pooling. ``metrics`` selects which perceptual metrics
+        to compute (the CRF search asks for only its driver metric); the
+        unrequested fields come back None.
 
-        Fail-soft: any failure returns an all-None ``MetricScores``. Two checks are
-        loud (outside the guard): an unknown metric name, and an interlaced source
-        with no deinterlacer provisioned -- both raise rather than mis-score."""
+        Fail-soft: any failure returns an all-None ``MetricScores``. One check is
+        loud (outside the guard): an unknown metric name raises rather than
+        mis-score."""
         ...
 
 
@@ -214,8 +212,9 @@ class VideoCopier(Protocol):
 
 @runtime_checkable
 class WindowExtractor(Protocol):
-    """Read the source for target-quality probing: extract a probe window, and
-    report per-window source bitrate for grain hard-scene selection.
+    """Read the source for target-quality probing: extract a probe window, build
+    a geometry-matched lossless reference for the grain metric, and report
+    per-window source bitrate for grain hard-scene selection.
     Implemented by FFmpegAdapter."""
 
     def extract_window(
@@ -229,6 +228,24 @@ class WindowExtractor(Protocol):
         """Stream-copy ``frames`` video frames from ``start_s`` into ``output_path``
         (an MKV). ``-ss`` before ``-i`` (keyframe seek), ``-frames:v`` count,
         ``-c:v copy``. Returns the exit code."""
+        ...
+
+    def build_reference(
+        self,
+        input_path: Path,
+        output_path: Path,
+        video_params: VideoParams,
+    ) -> int:
+        """Materialise a lossless reference at the encoded geometry for the grain
+        perceptual metric.
+
+        Applies the SAME geometry filtergraph the SVT-AV1 encode uses
+        (deinterlace -> crop -> scale -> 10-bit -> square SAR) but writes it
+        losslessly (FFV1), so the reference differs from the encoded OBU only by
+        AV1's lossy compression -- same resampler, same crop, same deinterlace.
+        The perceptual metric then compares two already-geometry-matched clips,
+        so a crop can't phase-shift the reference against the encode. Returns the
+        exit code."""
         ...
 
     def window_bitrates(self, source: Path, window_s: float) -> list[tuple[float, float]]:

@@ -140,6 +140,14 @@ class TestSvtAv1RecipeFlags:
         assert "-hide_banner" in cmd
         assert "-y" in cmd
 
+    def test_maps_first_video_stream(self) -> None:
+        # Pin the first video stream so a multi-video-stream source (cover art)
+        # can't diverge from the metric reference (build_reference and
+        # extract_window pin 0:v:0 the same way). -map follows the input.
+        cmd = _cmd(_make_vp())
+        assert _contains_subseq(cmd, ["-map", "0:v:0"])
+        assert cmd.index("-map") > cmd.index("-i")
+
     def test_libsvtav1_params_value_is_exact_recipe(self) -> None:
         """The tuned recipe string is pinned verbatim — no drift allowed."""
         assert _SVT_PARAMS == (

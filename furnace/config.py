@@ -25,11 +25,6 @@ class ToolPaths:
     # path simply records no SSIMULACRA2/Butteraugli/CVVDP scores.
     bestsource: Path | None = None
     vship: Path | None = None
-    # bwdif VapourSynth plugin: deinterlaces the metric reference so an
-    # interlaced grain source can be scored. Optional: absent -> interlaced
-    # grain jobs measure loud-fail (see VshipMetricsAdapter); progressive grain
-    # is unaffected.
-    bwdif: Path | None = None
 
 
 def load_config(config_path: Path | None = None) -> ToolPaths:
@@ -121,5 +116,4 @@ def load_config(config_path: Path | None = None) -> ToolPaths:
         dovi_tool=optional_tool("dovi_tool"),
         bestsource=optional_tool("bestsource"),
         vship=optional_tool("vship"),
-        bwdif=optional_tool("bwdif"),
     )

@@ -13,9 +13,10 @@ import numpy as np
 
 from furnace.core.audio_profile import AudioMetrics
 from furnace.core.detect import aggregate_crop
-from furnace.core.models import CropRect
+from furnace.core.models import CropRect, VideoParams
 from furnace.core.progress import ProgressSample
 
+from ._geometry import build_vf
 from ._subprocess import OutputCallback, run_tool
 
 logger = logging.getLogger(__name__)
@@ -694,6 +695,49 @@ class FFmpegAdapter:
             "-y", str(output_path),
         ]
         log_path = self._log_dir / "ffmpeg_extract_window.log" if self._log_dir else None
+        rc, _out = run_tool(cmd, on_output=self._on_output, log_path=log_path)
+        return rc
+
+    def build_reference(
+        self,
+        input_path: Path,
+        output_path: Path,
+        video_params: VideoParams,
+    ) -> int:
+        """Materialise a LOSSLESS reference at the encoded geometry for the grain
+        perceptual metric.
+
+        Runs the SAME geometry filtergraph the SVT-AV1 encode uses
+        (:func:`furnace.adapters._geometry.build_vf`: deinterlace -> crop ->
+        scale -> 10-bit -> square SAR) but writes FFV1 (mathematically lossless)
+        instead of libsvtav1, and pins the coded frame rate exactly as the encode
+        does. The result therefore differs from the encoded AV1 OBU ONLY by AV1's
+        lossy compression -- same resampler, same crop offsets, same deinterlace
+        parity -- so the metric compares like-for-like and a crop can't
+        phase-shift the reference against the encode (which would otherwise
+        collapse SSIMULACRA2 and rail the CRF search). The colour description is
+        stamped (matching the encode) so the reference and the OBU carry the same
+        range/primaries/transfer: the metric passes the matrix to the RGBS
+        conversion explicitly, but the range is read from the clip's frame props,
+        so the two must agree here. Returns the ffmpeg exit code.
+        """
+        cmd = [
+            str(self._ffmpeg),
+            "-hide_banner",
+            "-loglevel", "error",
+            "-i", str(input_path),
+            "-map", "0:v:0",
+            "-vf", build_vf(video_params),
+            "-c:v", "ffv1",
+            "-color_range", video_params.color_range,
+            "-color_primaries", video_params.color_primaries,
+            "-color_trc", video_params.color_transfer,
+            "-colorspace", video_params.color_matrix,
+            "-r", f"{video_params.fps_num}/{video_params.fps_den}",
+            "-an", "-sn",
+            "-y", str(output_path),
+        ]
+        log_path = self._log_dir / "ffmpeg_build_reference.log" if self._log_dir else None
         rc, _out = run_tool(cmd, on_output=self._on_output, log_path=log_path)
         return rc
 

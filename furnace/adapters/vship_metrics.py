@@ -2,19 +2,20 @@
 
 The SVT-AV1 grain path cannot compute these with ffmpeg (no such avfilter exists)
 and the standalone FFVship binary cannot apply geometry transforms. So Vship is
-driven as a VapourSynth plugin, in process: BestSource opens the reference (the
-original source) and the encoded AV1 OBU, the reference is brought to the encoded
-geometry with bundled deinterlace/crop/scale nodes, both are converted to RGBS,
-and ``clip.vship.<METRIC>`` scores them frame-on-demand on the GPU -- no lossless
-intermediate is ever written to disk.
+driven as a VapourSynth plugin, in process: BestSource opens the reference and the
+encoded AV1 OBU, both are converted to RGBS, and ``clip.vship.<METRIC>`` scores
+them frame-on-demand on the GPU -- no lossless intermediate is written here.
 
-The reference must reproduce exactly the geometry ``svtav1._geometry_filters``
-applies, in the same order: deinterlace (single-rate bwdif) -> crop -> scale. The
-encoded output was already deinterlaced by the encoder's ffmpeg
-``bwdif=send_frame``; here the *reference* is deinterlaced to match, with the
-field parity read from BestSource's ``_FieldBased`` (mirroring ffmpeg's
-``parity=auto``). An interlaced source with no bwdif plugin provisioned is a real
-config gap, not a soft-degradation, so it raises loudly (see ``measure``).
+This adapter is a PURE COMPARATOR: it assumes ``reference`` and ``distorted`` are
+ALREADY at the same geometry. The grain path guarantees that upstream by building
+the reference through the encode's own ffmpeg geometry filtergraph
+(:meth:`furnace.adapters.ffmpeg.FFmpegAdapter.build_reference` -> the shared
+:func:`furnace.adapters._geometry.build_vf`), so the reference differs from the
+OBU only by AV1's lossy compression -- same deinterlace, same crop, same
+resampler. Re-doing crop/scale here in VapourSynth (as an earlier version did)
+phase-shifted a Spline36 reference against the ffmpeg-spline encode whenever a
+crop forced a 2-D anamorphic scale, collapsing SSIMULACRA2 and railing the CRF
+search; comparing two already-matched clips removes that failure mode entirely.
 """
 
 from __future__ import annotations
@@ -25,7 +26,7 @@ from typing import Any
 
 import numpy as np
 
-from furnace.core.models import METRIC_NAMES, CropRect, MetricPool, MetricScores
+from furnace.core.models import METRIC_NAMES, MetricPool, MetricScores
 
 logger = logging.getLogger(__name__)
 
@@ -75,55 +76,43 @@ class VshipMetricsAdapter:
 
     ``bestsource_dll`` and ``vship_dll`` are the VapourSynth plugin binaries;
     they are loaded per call so a missing/incompatible plugin degrades to
-    all-None scores instead of crashing the encode. ``bwdif_dll`` is only needed
-    for interlaced sources; when absent, an interlaced measure raises loudly.
+    all-None scores instead of crashing the encode. No deinterlace/crop/scale is
+    done here -- the reference is handed in already at the encoded geometry (see
+    the module docstring), so the adapter only opens both clips and scores them.
     """
 
-    def __init__(self, bestsource_dll: Path, vship_dll: Path, bwdif_dll: Path | None = None) -> None:
+    def __init__(self, bestsource_dll: Path, vship_dll: Path) -> None:
         self._bestsource = bestsource_dll
         self._vship = vship_dll
-        self._bwdif = bwdif_dll
 
     def measure(
         self,
         reference: Path,
         distorted: Path,
         *,
-        crop: CropRect | None,
-        deinterlace: bool,
-        final_width: int,
-        final_height: int,
         matrix: str,
         fps_num: int,
         fps_den: int,
         pool: MetricPool = MetricPool.MEAN,
         metrics: frozenset[str] = METRIC_NAMES,
     ) -> MetricScores:
-        """Score ``distorted`` against ``reference`` brought to the encoded geometry.
+        """Score ``distorted`` against ``reference`` (both already at the same geometry).
 
         ``pool`` selects mean (readout) or low-percentile (worst-case, CRF search)
         frame pooling. ``metrics`` selects which perceptual metrics to compute
         (the others stay None) -- the CRF search asks for only its driver metric so
         the unneeded GPU kernels are skipped. Fail-soft: any VapourSynth / GPU /
         plugin error returns an all-None ``MetricScores`` so a metrics failure
-        never fails the encode. Two checks are deliberately *loud* and sit outside
-        the fail-soft guard: an unknown metric name (a caller bug) and an
-        interlaced source with no bwdif plugin provisioned (a real config gap that
-        cannot be measured correctly) both raise rather than degrade silently.
+        never fails the encode. One check is deliberately *loud* and sits outside
+        the fail-soft guard: an unknown metric name is a caller bug and raises
+        rather than degrading silently.
         """
         unknown = metrics - METRIC_NAMES
         if unknown:
             raise ValueError(f"unknown perceptual metric(s): {sorted(unknown)}")
-        if deinterlace and self._bwdif is None:
-            raise RuntimeError(
-                f"cannot score interlaced source {reference.name}: no bwdif VapourSynth "
-                "plugin is provisioned (set [tools].bwdif in furnace.toml)"
-            )
         try:
             return self._measure(
                 reference, distorted,
-                crop=crop, deinterlace=deinterlace,
-                final_width=final_width, final_height=final_height,
                 matrix=matrix, fps_num=fps_num, fps_den=fps_den,
                 pool=pool, metrics=metrics,
             )
@@ -139,10 +128,6 @@ class VshipMetricsAdapter:
         reference: Path,
         distorted: Path,
         *,
-        crop: CropRect | None,
-        deinterlace: bool,
-        final_width: int,
-        final_height: int,
         matrix: str,
         fps_num: int,
         fps_den: int,
@@ -161,41 +146,14 @@ class VshipMetricsAdapter:
             core.std.LoadPlugin(str(self._bestsource))
         if not hasattr(core, "vship"):
             core.std.LoadPlugin(str(self._vship))
-        if deinterlace and not hasattr(core, "bwdif"):
-            core.std.LoadPlugin(str(self._bwdif))
 
         # rff=0: yield coded frames (never apply 2:3 pulldown), so a soft-telecine
-        # source lines up 1:1 with the coded-rate OBU without decimation.
+        # source lines up 1:1 with the coded-rate OBU without decimation. Both the
+        # reference (built with ffmpeg -r at the coded rate) and the OBU are read
+        # at that rate; no crop/scale/deinterlace is applied here -- the reference
+        # already carries the encoded geometry.
         ref = core.bs.VideoSource(str(reference), rff=0)
         dist = core.bs.VideoSource(str(distorted), rff=0)
-
-        # Deinterlace the reference first (single-rate, before any spatial op) so
-        # it matches the encoder's ffmpeg ``bwdif=send_frame``. field=0/1 select
-        # the kept field for single-rate output; pick the parity ffmpeg's
-        # parity=auto would, from BestSource's _FieldBased (1=BFF -> keep bottom,
-        # 2=TFF/0=unknown -> keep top, ffmpeg's top-field-first default). We read
-        # the field order once (frame 0) and apply it to the whole clip; ffmpeg
-        # re-derives it per frame, so a source with genuinely mixed per-frame
-        # field order (very rare) could diverge -- acceptable vs full fail-soft.
-        if deinterlace:
-            field_based = ref.get_frame(0).props.get("_FieldBased", 0)
-            field = 0 if field_based == 1 else 1
-            ref = core.bwdif.Bwdif(ref, field=field)
-
-        # Bring the reference to the encoded geometry: crop, then a single rescale
-        # to the final encoded size (mirrors svtav1._geometry_filters ordering).
-        # Note: the encode scales with ffmpeg spline vs VS Spline36 here -- both
-        # are high-quality splines but not bit-identical, a small accepted bias.
-        if crop is not None:
-            ref = core.std.Crop(
-                ref,
-                left=crop.x,
-                top=crop.y,
-                right=ref.width - crop.x - crop.w,
-                bottom=ref.height - crop.y - crop.h,
-            )
-        if (ref.width, ref.height) != (final_width, final_height):
-            ref = core.resize.Spline36(ref, width=final_width, height=final_height)
 
         # Frame-exact index pairing: trim both to the shorter length so vship
         # compares frame i against frame i.

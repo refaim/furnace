@@ -46,11 +46,12 @@ furnace run furnace-plan.json
 - [MakeMKV](https://www.makemkv.com) (DVD demux)
 - [NVEncC](https://github.com/rigaya/NVEnc) (video encoder)
 
-**VapourSynth plugins — required for the SVT-AV1 grain path.** The grain path target-quality-searches its CRF by scoring probes with Vship, so these are needed to encode grainy SD film (without them, grain jobs fall back to a fixed CRF with no search). VapourSynth itself installs as a furnace dependency; drop these DLLs into one folder (e.g. `C:\Tools\Media\vapoursynth-plugins\`) and point `bestsource` / `vship` / `bwdif` at them in `furnace.toml`:
+**VapourSynth plugins — required for the SVT-AV1 grain path.** The grain path target-quality-searches its CRF by scoring probes with Vship, so these are needed to encode grainy SD film (without them, grain jobs fall back to a fixed CRF with no search). VapourSynth itself installs as a furnace dependency; drop these DLLs into one folder (e.g. `C:\Tools\Media\vapoursynth-plugins\`) and point `bestsource` / `vship` at them in `furnace.toml`:
 
 - [BestSource](https://github.com/vapoursynth/bestsource/releases) — source filter; `BestSource.dll` from `BestSource-R19.7z`
 - [Vship](https://codeberg.org/Line-fr/Vship/releases) — GPU metric engine (SSIMULACRA2 / CVVDP); `libvship_NVIDIA.dll` from `libvship_NVIDIA.zip` (NVIDIA/CUDA build)
-- [Bwdif](https://github.com/HolyWu/VapourSynth-Bwdif/releases/tag/r4.1) — single-rate deinterlacer; **required for interlaced grain sources** (to deinterlace the metric reference); `Bwdif.dll` from `Bwdif-r4.1-win64.7z`
+
+The metric reference is deinterlaced/cropped/scaled through the encode's own ffmpeg filtergraph (so it lines up pixel-for-pixel with the encode), which means interlaced grain sources need no separate deinterlace plugin here.
 
 Optional:
 

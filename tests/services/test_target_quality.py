@@ -11,18 +11,27 @@ import pytest
 
 from furnace.core.models import EncodeResult, MetricPool, MetricScores, VideoParams
 from furnace.core.target_quality import KnobSearchResult, probe_windows
-from furnace.services.target_quality import TargetQualityService
+from furnace.services.target_quality import TargetQualityService, _SearchNarrator, _windows
 from tests.conftest import make_video_params
 
 
 class _FakeExtractor:
-    """Records extract_window calls and returns a fixed return code. ``bitrates``
-    is what ``window_bitrates`` reports (empty by default -> even sampling)."""
+    """Records extract_window / build_reference calls and returns fixed return
+    codes. ``bitrates`` is what ``window_bitrates`` reports (empty by default ->
+    even sampling); ``ref_rc`` is the return code of ``build_reference``."""
 
-    def __init__(self, rc: int = 0, bitrates: list[tuple[float, float]] | None = None) -> None:
+    def __init__(
+        self,
+        rc: int = 0,
+        bitrates: list[tuple[float, float]] | None = None,
+        *,
+        ref_rc: int = 0,
+    ) -> None:
         self.rc = rc
+        self.ref_rc = ref_rc
         self.bitrates = bitrates if bitrates is not None else []
         self.calls: list[dict[str, object]] = []
+        self.reference_calls: list[dict[str, object]] = []
 
     def extract_window(
         self,
@@ -36,6 +45,17 @@ class _FakeExtractor:
             {"input": input_path, "output": output_path, "start_s": start_s, "frames": frames}
         )
         return self.rc
+
+    def build_reference(
+        self,
+        input_path: Path,
+        output_path: Path,
+        video_params: object,
+    ) -> int:
+        self.reference_calls.append(
+            {"input": input_path, "output": output_path, "video_params": video_params}
+        )
+        return self.ref_rc
 
     def window_bitrates(self, source: Path, window_s: float) -> list[tuple[float, float]]:  # noqa: ARG002
         return self.bitrates
@@ -320,6 +340,40 @@ class TestGrainSearch:
         assert all(_win_from_obu(c.args[1]) == 0 for c in metrics.measure.call_args_list)
         assert result.probes[0][1] == pytest.approx(100.0 - result.probes[0][0])
 
+    def test_reference_built_once_per_window(self, tmp_path: Path) -> None:
+        """The geometry-matched reference is identical across every probed CRF, so
+        it is built ONCE per window (10), not once per (window, knob) -- and each
+        measure scores against that window's own prebuilt reference."""
+        extractor = _FakeExtractor()
+        grain_enc = MagicMock()
+        grain_enc.encode.return_value = EncodeResult(return_code=0, encoder_settings="svt")
+        metrics = MagicMock()
+        metrics.measure.side_effect = lambda reference, distorted, **kw: MetricScores(
+            ssimulacra2=100.0 - _crf_from_obu(distorted)
+        )
+        svc = TargetQualityService(extractor, MagicMock(), grain_encoder=grain_enc, metrics=metrics)
+        svc.search(Path("grain.mkv"), _grain_vp(), duration_s=7200.0, work_dir=tmp_path)
+        # One reference per window, reused across the several knob probes.
+        assert len(extractor.reference_calls) == 10
+        assert len(metrics.measure.call_args_list) > 10  # multiple knobs x 10 windows
+        assert {c["output"] for c in extractor.reference_calls} == {
+            tmp_path / f"tq_ref_w{j}.mkv" for j in range(10)
+        }
+        # Each probe scores the encode against its window's prebuilt reference.
+        for c in metrics.measure.call_args_list:
+            win = _win_from_obu(c.args[1])
+            assert c.args[0] == tmp_path / f"tq_ref_w{win}.mkv"
+
+    def test_reference_build_failure_raises(self, tmp_path: Path) -> None:
+        extractor = _FakeExtractor(ref_rc=1)
+        grain_enc = MagicMock()
+        grain_enc.encode.return_value = EncodeResult(return_code=0, encoder_settings="svt")
+        svc = TargetQualityService(
+            extractor, MagicMock(), grain_encoder=grain_enc, metrics=MagicMock()
+        )
+        with pytest.raises(RuntimeError, match="reference build failed"):
+            svc.search(Path("grain.mkv"), _grain_vp(), duration_s=7200.0, work_dir=tmp_path)
+
     def test_encode_failure_raises(self, tmp_path: Path) -> None:
         svc, _enc, _metrics = _grain_service(enc_rc=1)
         with pytest.raises(RuntimeError, match="grain probe encode failed"):
@@ -336,3 +390,82 @@ class TestGrainSearch:
         svc = TargetQualityService(_FakeExtractor(), MagicMock())
         with pytest.raises(RuntimeError, match="requires an SVT encoder"):
             svc.search(Path("grain.mkv"), _grain_vp(), duration_s=7200.0, work_dir=tmp_path)
+
+
+# ---------------------------------------------------------------------------
+# Search narration: meaningful TUI lines while raw ffmpeg/nvencc output is muted
+# ---------------------------------------------------------------------------
+
+
+class TestWindowsHelper:
+    def test_singular(self) -> None:
+        assert _windows(1) == "1 window"
+
+    def test_plural(self) -> None:
+        assert _windows(3) == "3 windows"
+
+
+class TestSearchNarrator:
+    def test_opening_reports_plan(self) -> None:
+        events: list[str] = []
+        narrator = _SearchNarrator(
+            emit=events.append, label="QVBR", metric="SSIMULACRA2",
+            window_count=3, pool_word="mean",
+        )
+        narrator.opening(81.0)
+        assert events == ["Probing QVBR -> SSIMULACRA2 ~81.0 (3 windows, mean-pooled)"]
+
+    def test_window_reports_per_window_score(self) -> None:
+        events: list[str] = []
+        narrator = _SearchNarrator(
+            emit=events.append, label="CRF", metric="SSIMULACRA2",
+            window_count=10, pool_word="worst-case",
+        )
+        narrator.window(24, 3, 69.14)
+        assert events == ["CRF 24: window 3/10 = 69.1"]
+
+    def test_result_reports_pooled_score(self) -> None:
+        events: list[str] = []
+        narrator = _SearchNarrator(
+            emit=events.append, label="CRF", metric="SSIMULACRA2",
+            window_count=10, pool_word="worst-case",
+        )
+        narrator.result(24, 67.0)
+        assert events == ["CRF 24 -> SSIMULACRA2 67.0"]
+
+
+class TestSearchNarrationWiring:
+    def test_nvenc_search_narrates_opening_windows_and_result(self, tmp_path: Path) -> None:
+        """The NVEnc path narrates an opening plan line, one line per probed
+        window (mean-pooled) and a pooled result per knob."""
+        service, _extractor, _probe = _service(score_fn=lambda q: 120.0 - q)
+        vp = make_video_params(source_width=1920, source_height=1080)
+        events: list[str] = []
+        service.search(
+            Path("m.mkv"), vp, duration_s=7200.0, work_dir=tmp_path, on_event=events.append,
+        )
+        # First probe is the midpoint of [16, 44] = 30 -> score 90 for every window.
+        assert "Probing QVBR -> SSIMULACRA2 ~81.0 (3 windows, mean-pooled)" in events
+        assert "QVBR 30: window 1/3 = 90.0" in events
+        assert "QVBR 30: window 3/3 = 90.0" in events
+        assert "QVBR 30 -> SSIMULACRA2 90.0" in events
+
+    def test_grain_search_narrates_worst_case_pooling(self, tmp_path: Path) -> None:
+        """The grain path narrates worst-case pooling across ten windows."""
+        svc, _enc, _metrics = _grain_service()
+        events: list[str] = []
+        svc.search(
+            Path("grain.mkv"), _grain_vp(), duration_s=7200.0, work_dir=tmp_path,
+            on_event=events.append,
+        )
+        # First probe: midpoint of [14, 34] = 24 -> score 76 for every window.
+        assert "Probing CRF -> SSIMULACRA2 ~71.0 (10 windows, worst-case-pooled)" in events
+        assert "CRF 24: window 10/10 = 76.0" in events
+        assert "CRF 24 -> SSIMULACRA2 76.0" in events
+
+    def test_search_without_on_event_is_silent_and_succeeds(self, tmp_path: Path) -> None:
+        """Omitting ``on_event`` routes narration to a no-op sink (default path)."""
+        service, _extractor, _probe = _service()
+        vp = make_video_params(source_width=1920, source_height=1080)
+        result = service.search(Path("m.mkv"), vp, duration_s=7200.0, work_dir=tmp_path)
+        assert isinstance(result, KnobSearchResult)

@@ -397,6 +397,10 @@ class RunApp(App[None]):
         self._start_time = 0.0
         self._target_base_text = ""
         self._output_size = 0
+        # Raw adapter output is muted during the target-quality search so the
+        # per-probe ffmpeg/nvencc chatter stays out of the log (the search
+        # narrates itself through add_tool_line, which is never muted).
+        self._tool_output_muted = False
 
     # ------------------------------------------------------------------
     # Compose
@@ -464,8 +468,27 @@ class RunApp(App[None]):
         self._safe_call(self._do_update_status, message)
 
     def add_tool_line(self, line: str) -> None:
-        """Append one line of tool output."""
+        """Append one furnace-narration line. Never muted — the search narrates
+        itself through here while the raw ``tool_output`` channel is silenced."""
         self._safe_call(self._do_add_tool_line, line)
+
+    def tool_output(self, line: str) -> None:
+        """Raw subprocess output sink for the adapters (ffmpeg/nvencc/eac3to/...).
+
+        Muted during the target-quality search so the per-probe encoder chatter
+        never floods the log; furnace's own narration uses ``add_tool_line`` and
+        stays visible throughout."""
+        if self._tool_output_muted:
+            return
+        self._safe_call(self._do_add_tool_line, line)
+
+    def mute_tool_output(self) -> None:
+        """Drop raw adapter output (called around the quality search)."""
+        self._tool_output_muted = True
+
+    def unmute_tool_output(self) -> None:
+        """Restore raw adapter output after the quality search."""
+        self._tool_output_muted = False
 
     def finish_job(self, job: Job) -> None:
         """Job completed — mark all steps done."""

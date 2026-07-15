@@ -166,8 +166,9 @@ class TestGrainOverrides:
         assert movie.video.grainy is True
 
     def test_interlaced_grain_plans_normally(self, tmp_path: Path) -> None:
-        """Interlaced + grain is supported now that bwdif deinterlaces the metric
-        reference: the job plans with both grain and deinterlace set."""
+        """Interlaced + grain is supported: the metric reference is deinterlaced by
+        the encode's own ffmpeg bwdif, so the job plans with both grain and
+        deinterlace set."""
         movie = _make_movie_grain(tmp_path, grainy=True, interlaced=True)
         planner = PlannerService(previewer=None)
 

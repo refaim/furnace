@@ -1473,6 +1473,75 @@ class TestRunPipelineTargetQuality:
         tool_lines = [c.args[0] for c in progress.add_tool_line.call_args_list]
         assert any("not hit" in line.lower() for line in tool_lines)
 
+    def test_search_mutes_raw_output_and_wires_narration(
+        self,
+        executor_with_mocks: tuple[Executor, SimpleNamespace],
+        tmp_path: Path,
+    ) -> None:
+        """The raw per-probe ffmpeg/nvencc output is muted for the duration of the
+        search (mute before, unmute after) and a narration callback is wired in."""
+        executor, _mocks = executor_with_mocks
+        progress = MagicMock()
+        executor._progress = progress
+        svc = MagicMock()
+        svc.can_search.return_value = True
+        order: list[str] = []
+        progress.mute_tool_output.side_effect = lambda: order.append("mute")
+        progress.unmute_tool_output.side_effect = lambda: order.append("unmute")
+
+        def _search(*_a: Any, **_k: Any) -> KnobSearchResult:
+            order.append("search")
+            return _tq_result(knob=27, hit=True)
+
+        svc.search.side_effect = _search
+        executor._target_quality = svc
+        job = _pipeline_job(tmp_path)
+
+        result = executor._maybe_search_target_quality(job, Path("/src/movie.mkv"), tmp_path)
+
+        assert result == 27
+        assert order == ["mute", "search", "unmute"]
+        assert callable(svc.search.call_args.kwargs["on_event"])
+
+    def test_search_unmutes_even_when_search_raises(
+        self,
+        executor_with_mocks: tuple[Executor, SimpleNamespace],
+        tmp_path: Path,
+    ) -> None:
+        """A probe blowing up mid-search still restores the raw-output channel."""
+        executor, _mocks = executor_with_mocks
+        progress = MagicMock()
+        executor._progress = progress
+        svc = MagicMock()
+        svc.can_search.return_value = True
+        svc.search.side_effect = RuntimeError("probe blew up")
+        executor._target_quality = svc
+        job = _pipeline_job(tmp_path)
+
+        with pytest.raises(RuntimeError, match="probe blew up"):
+            executor._maybe_search_target_quality(job, Path("/src/movie.mkv"), tmp_path)
+        progress.unmute_tool_output.assert_called_once()
+
+    def test_search_narration_routes_to_furnace_channel(
+        self,
+        executor_with_mocks: tuple[Executor, SimpleNamespace],
+    ) -> None:
+        """Narration is prefixed and routed through the never-muted furnace channel."""
+        executor, _mocks = executor_with_mocks
+        progress = MagicMock()
+        executor._progress = progress
+        executor._search_narration("CRF 24 -> SSIMULACRA2 67.0")
+        progress.add_tool_line.assert_called_once_with("[furnace] CRF 24 -> SSIMULACRA2 67.0")
+
+    def test_search_narration_without_progress_is_noop(
+        self,
+        executor_with_mocks: tuple[Executor, SimpleNamespace],
+    ) -> None:
+        """With no progress object the narration sink is a silent no-op."""
+        executor, _mocks = executor_with_mocks
+        executor._progress = None
+        executor._search_narration("ignored")  # must not raise
+
     def test_chosen_cq_persisted_by_run(self, tmp_path: Path) -> None:
         mocks = SimpleNamespace(
             encoder=MagicMock(),

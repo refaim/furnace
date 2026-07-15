@@ -9,12 +9,11 @@ from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
-import typer
 from typer.testing import CliRunner
 
-from furnace.cli import _check_interlaced_grain_metrics_ready, _setup_logging, app
+from furnace.cli import _setup_logging, app
 from furnace.core.models import AnalysisOutcome, AnalyzeStatus, JobStatus, TrackType
-from tests.conftest import make_job, make_movie, make_plan, make_track, make_video_params
+from tests.conftest import make_job, make_movie, make_plan, make_track
 
 runner = CliRunner()
 
@@ -134,7 +133,6 @@ def _make_tool_paths(tmp_path: Path) -> MagicMock:
     cfg.dovi_tool = None
     cfg.bestsource = None
     cfg.vship = None
-    cfg.bwdif = None
     return cfg
 
 
@@ -1196,26 +1194,16 @@ class TestRunExecutorClosure:
         return mock_vship, mock_svt
 
     def test_executor_fn_wires_vship_metrics(self, tmp_path: Path) -> None:
-        """bestsource+vship configured (bwdif absent) -> VshipMetricsAdapter built
-        with bwdif=None (for the grain target-quality search)."""
+        """bestsource+vship configured -> VshipMetricsAdapter built for the grain
+        target-quality search (the reference geometry is handled by ffmpeg, so no
+        deinterlace plugin is threaded in)."""
         cfg = _make_tool_paths(tmp_path)
         cfg.bestsource = tmp_path / "BestSource.dll"
         cfg.vship = tmp_path / "libvship.dll"
 
         mock_vship, _ = self._run_executor_fn(tmp_path, cfg)
 
-        mock_vship.assert_called_once_with(cfg.bestsource, cfg.vship, None)
-
-    def test_executor_fn_wires_bwdif_into_vship_metrics(self, tmp_path: Path) -> None:
-        """bwdif configured alongside bestsource+vship -> threaded into the adapter."""
-        cfg = _make_tool_paths(tmp_path)
-        cfg.bestsource = tmp_path / "BestSource.dll"
-        cfg.vship = tmp_path / "libvship.dll"
-        cfg.bwdif = tmp_path / "Bwdif.dll"
-
-        mock_vship, _ = self._run_executor_fn(tmp_path, cfg)
-
-        mock_vship.assert_called_once_with(cfg.bestsource, cfg.vship, cfg.bwdif)
+        mock_vship.assert_called_once_with(cfg.bestsource, cfg.vship)
 
     def test_executor_fn_with_dovi_tool(self, tmp_path: Path) -> None:
         """When dovi_tool is set, DoviToolAdapter is created."""
@@ -4016,75 +4004,3 @@ class TestPlanPlainFilesGrain:
         pipeline_results = mock_pipeline_cls.return_value.run.call_args.args[0]
         assert list(pipeline_results) == []
         mock_planner_cls.return_value.create_plan.assert_called_once()
-
-
-class TestInterlacedGrainMetricsPreflight:
-    """`_check_interlaced_grain_metrics_ready` fails fast (before any encode) when
-    an interlaced grain job would be scored but no bwdif plugin is configured.
-
-    Grain jobs always target-quality-search when bestsource+vship are configured,
-    so the check gates on those tool paths, NOT on the (retired-for-NVEnc)
-    ``--metrics`` flag."""
-
-    @staticmethod
-    def _cfg(tmp_path: Path, *, bestsource: Path | None, vship: Path | None, bwdif: Path | None) -> Any:
-        cfg = _make_tool_paths(tmp_path)
-        cfg.bestsource = bestsource
-        cfg.vship = vship
-        cfg.bwdif = bwdif
-        return cfg
-
-    @staticmethod
-    def _metrics_cfg(tmp_path: Path, *, bwdif: Path | None) -> Any:
-        return TestInterlacedGrainMetricsPreflight._cfg(
-            tmp_path, bestsource=tmp_path / "bs.dll", vship=tmp_path / "vs.dll", bwdif=bwdif,
-        )
-
-    @staticmethod
-    def _plan(*, grain: bool = True, deinterlace: bool = True,
-              status: JobStatus = JobStatus.PENDING) -> Any:
-        vp = make_video_params(grain=grain, deinterlace=deinterlace)
-        return make_plan(
-            jobs=[make_job(job_id="j1", status=status, video_params=vp)],
-        )
-
-    def test_raises_when_bwdif_missing(self, tmp_path: Path) -> None:
-        cfg = self._metrics_cfg(tmp_path, bwdif=None)
-        plan = self._plan()
-        with pytest.raises(typer.Exit) as exc:
-            _check_interlaced_grain_metrics_ready(plan, cfg)
-        assert exc.value.exit_code == 1
-
-    def test_ok_when_bwdif_present(self, tmp_path: Path) -> None:
-        cfg = self._metrics_cfg(tmp_path, bwdif=tmp_path / "bwdif.dll")
-        _check_interlaced_grain_metrics_ready(self._plan(), cfg)
-
-    def test_raises_even_when_offender_is_pending(self, tmp_path: Path) -> None:
-        # The grain search runs (and needs bwdif) whenever vship is configured,
-        # so a pending interlaced grain job is still a fail-fast offender.
-        cfg = self._metrics_cfg(tmp_path, bwdif=None)
-        with pytest.raises(typer.Exit) as exc:
-            _check_interlaced_grain_metrics_ready(self._plan(), cfg)
-        assert exc.value.exit_code == 1
-
-    def test_ok_when_vship_not_configured(self, tmp_path: Path) -> None:
-        # No vship adapter -> grain falls back to fixed CRF (no search, no measure) -> no bwdif need.
-        cfg = self._cfg(tmp_path, bestsource=None, vship=None, bwdif=None)
-        _check_interlaced_grain_metrics_ready(self._plan(), cfg)
-
-    def test_ok_when_no_interlaced_grain_offender(self, tmp_path: Path) -> None:
-        # Mixed plan, no offender: a DONE interlaced-grain job (not pending), a
-        # progressive grain job (deinterlace False), and a non-grain interlaced
-        # job (grain False) all fall outside the offender filter.
-        cfg = self._metrics_cfg(tmp_path, bwdif=None)
-        plan = make_plan(
-            jobs=[
-                make_job(job_id="done", status=JobStatus.DONE,
-                         video_params=make_video_params(grain=True, deinterlace=True)),
-                make_job(job_id="prog", status=JobStatus.PENDING,
-                         video_params=make_video_params(grain=True, deinterlace=False)),
-                make_job(job_id="nvenc", status=JobStatus.PENDING,
-                         video_params=make_video_params(grain=False, deinterlace=True)),
-            ],
-        )
-        _check_interlaced_grain_metrics_ready(plan, cfg)

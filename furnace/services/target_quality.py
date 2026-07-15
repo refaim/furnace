@@ -28,11 +28,11 @@ injected adapters.
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 
 from furnace.core.models import MetricPool, VideoParams
 from furnace.core.ports import Encoder, InlineQualityProbe, PerceptualMetrics, WindowExtractor
-from furnace.core.quality import final_output_dimensions
 from furnace.core.target_quality import (
     PROBE_WINDOW_SECONDS,
     KnobSearchResult,
@@ -44,6 +44,47 @@ from furnace.core.target_quality import (
     select_hard_windows,
     source_is_variable_bitrate,
 )
+
+
+def _noop(_message: str) -> None:
+    """Silent narration sink used when the caller passes no ``on_event``."""
+
+
+def _windows(n: int) -> str:
+    """Human count: ``1 window`` / ``3 windows``."""
+    return f"{n} window" if n == 1 else f"{n} windows"
+
+
+@dataclass(frozen=True, slots=True)
+class _SearchNarrator:
+    """Formats target-quality search progress into TUI log lines.
+
+    Carries the per-search context -- the knob ``label`` (CRF/QVBR), the driver
+    ``metric``, the ``window_count`` and the across-window ``pool_word`` -- so the
+    probe loop can narrate each finished window and each probed knob with a terse
+    call. ``emit`` is the sink; the caller routes it to a channel that stays
+    visible while the raw per-probe ffmpeg/nvencc output is muted."""
+
+    emit: Callable[[str], None]
+    label: str
+    metric: str
+    window_count: int
+    pool_word: str
+
+    def opening(self, centre: float) -> None:
+        """One line describing the search plan, before the first probe."""
+        self.emit(
+            f"Probing {self.label} -> {self.metric} ~{centre:.1f} "
+            f"({_windows(self.window_count)}, {self.pool_word}-pooled)"
+        )
+
+    def window(self, knob: int, index: int, score: float) -> None:
+        """Liveness line as each probe window finishes (``index`` is 1-based)."""
+        self.emit(f"{self.label} {knob}: window {index}/{self.window_count} = {score:.1f}")
+
+    def result(self, knob: int, pooled: float) -> None:
+        """The pooled score that governs the knob, once all windows are in."""
+        self.emit(f"{self.label} {knob} -> {self.metric} {pooled:.1f}")
 
 
 class TargetQualityService:
@@ -72,12 +113,9 @@ class TargetQualityService:
 
         The NVEnc path is always available; the grain path needs both an SVT
         encoder and a metrics adapter (a grain job falls back to the fixed CRF
-        recipe when they aren't configured).
-
-        This gate does not check for a bwdif plugin on an interlaced grain source
-        (the metrics adapter needs one to score it): the cli's
-        ``_check_interlaced_grain_metrics_ready`` preflight already refuses to
-        start ``run`` in that configuration, so it never reaches a probe here.
+        recipe when they aren't configured). Interlaced grain needs no extra
+        deinterlace plugin: the metric reference is deinterlaced by the encode's
+        own ffmpeg bwdif when it is built (see ``WindowExtractor.build_reference``).
         """
         if not vp.grain:
             return True
@@ -89,12 +127,19 @@ class TargetQualityService:
         vp: VideoParams,
         duration_s: float,
         work_dir: Path,
+        *,
+        on_event: Callable[[str], None] | None = None,
     ) -> KnobSearchResult:
         """Search the quality knob that hits ``vp``'s content-domain target.
 
         Extracts the probe windows once into ``work_dir`` (or, for a short
         source, probes the whole thing), then interpolation-searches the knob.
         Raises if a window cannot be extracted or a probe cannot be scored.
+
+        ``on_event`` receives short human-readable progress lines (the search
+        plan, each finished probe window, each probed knob's pooled score) so the
+        run TUI can show what the search is doing while the raw per-probe encoder
+        output is muted. Omitted -> a silent no-op sink.
         """
         spec = resolve_target(vp)
         if vp.grain:
@@ -104,10 +149,18 @@ class TargetQualityService:
                 duration_s, count=spec.window_count, window_s=PROBE_WINDOW_SECONDS
             )
         windows = self._prepare_windows(source, vp, offsets, duration_s, work_dir)
+        narrator = _SearchNarrator(
+            emit=on_event or _noop,
+            label="CRF" if vp.grain else "QVBR",
+            metric=spec.metric.upper(),
+            window_count=len(windows),
+            pool_word="worst-case" if vp.grain else "mean",
+        )
+        narrator.opening((spec.target_lo + spec.target_hi) / 2.0)
         probe_fn = (
-            self._grain_probe_fn(vp, spec.metric, windows, work_dir)
+            self._grain_probe_fn(vp, spec.metric, windows, work_dir, narrator)
             if vp.grain
-            else self._inline_probe_fn(vp, spec.metric, windows, work_dir)
+            else self._inline_probe_fn(vp, spec.metric, windows, work_dir, narrator)
         )
         return search_knob(
             probe_fn,
@@ -186,6 +239,7 @@ class TargetQualityService:
         metric: str,
         windows: list[Path],
         work_dir: Path,
+        narrator: _SearchNarrator,
     ) -> Callable[[int], float]:
         """NVEnc strategy: mean of the inline-measured metric across the windows.
 
@@ -195,21 +249,25 @@ class TargetQualityService:
         spread generalises. The grain path can't rely on that -- CRF is one value
         for the whole movie -- so it samples more windows and pools worst-case.
         A failed probe does not silently skew the mean -- the inline probe raises
-        and aborts the search.
+        and aborts the search. ``narrator`` reports each finished window and the
+        mean per knob to the run TUI.
         """
 
         def probe_fn(knob: int) -> float:
-            scores = [
-                self._inline_probe.probe(
+            scores: list[float] = []
+            for j, window in enumerate(windows):
+                score = self._inline_probe.probe(
                     window,
                     work_dir / f"tq_probe_q{knob}_w{j}.obu",
                     vp,
                     qvbr=knob,
                     metric=metric,
                 )
-                for j, window in enumerate(windows)
-            ]
-            return sum(scores) / len(scores)
+                scores.append(score)
+                narrator.window(knob, j + 1, score)
+            pooled = sum(scores) / len(scores)
+            narrator.result(knob, pooled)
+            return pooled
 
         return probe_fn
 
@@ -219,17 +277,26 @@ class TargetQualityService:
         metric: str,
         windows: list[Path],
         work_dir: Path,
+        narrator: _SearchNarrator,
     ) -> Callable[[int], float]:
         """SVT strategy: encode each window at the candidate CRF, score it against
-        the source window with worst-case (low-percentile) frame pooling of the
-        driver ``metric``, and MIN the per-window worst-cases -- the hardest sampled
-        scene governs the chosen CRF. CRF is one value for the whole movie, so it
-        must satisfy the hardest scene (mean would let an easy window mask a hard one
-        and pick too-high a CRF -> мыло); the window SELECTION already targets the
-        hard scenes (see :meth:`_grain_window_offsets`), so the min protects them.
-        Only ``metric`` is computed on the GPU (the other Vship kernels are skipped).
-        A failed encode or an unavailable score aborts the search loudly rather than
-        skewing the result.
+        a geometry-matched reference with worst-case (low-percentile) frame pooling
+        of the driver ``metric``, and MIN the per-window worst-cases -- the hardest
+        sampled scene governs the chosen CRF. CRF is one value for the whole movie,
+        so it must satisfy the hardest scene (mean would let an easy window mask a
+        hard one and pick too-high a CRF -> мыло); the window SELECTION already
+        targets the hard scenes (see :meth:`_grain_window_offsets`), so the min
+        protects them. Only ``metric`` is computed on the GPU (the other Vship
+        kernels are skipped). A failed encode or an unavailable score aborts the
+        search loudly rather than skewing the result. ``narrator`` reports each
+        finished window and the min per knob to the run TUI.
+
+        The metric reference is built ONCE per window, up front (it is identical
+        across every probed CRF), through the encode's OWN ffmpeg geometry
+        filtergraph (``build_reference``): deinterlace/crop/scale applied by the
+        same tool that encodes, so a crop can't phase-shift the reference against
+        the encode -- the failure mode that used to collapse SSIMULACRA2 and rail
+        the CRF search at its floor.
         """
         if self._grain_encoder is None or self._metrics is None:
             raise RuntimeError(
@@ -238,7 +305,16 @@ class TargetQualityService:
         grain_encoder = self._grain_encoder
         metrics = self._metrics
         wanted = frozenset({metric})
-        final_w, final_h = final_output_dimensions(vp)
+
+        references: list[Path] = []
+        for j, window in enumerate(windows):
+            reference = work_dir / f"tq_ref_w{j}.mkv"
+            rc = self._extractor.build_reference(window, reference, vp)
+            if rc != 0:
+                raise RuntimeError(
+                    f"grain probe reference build failed (rc={rc}) for window {j}"
+                )
+            references.append(reference)
 
         def probe_fn(knob: int) -> float:
             scores: list[float] = []
@@ -250,12 +326,8 @@ class TargetQualityService:
                         f"grain probe encode failed (rc={result.return_code}) at crf={knob}"
                     )
                 measured = metrics.measure(
-                    window,
+                    references[j],
                     obu,
-                    crop=vp.crop,
-                    deinterlace=vp.deinterlace,
-                    final_width=final_w,
-                    final_height=final_h,
                     matrix=vp.color_matrix,
                     fps_num=vp.fps_num,
                     fps_den=vp.fps_den,
@@ -266,6 +338,9 @@ class TargetQualityService:
                 if score is None:
                     raise RuntimeError(f"grain probe could not be scored at crf={knob}")
                 scores.append(float(score))
-            return min(scores)
+                narrator.window(knob, j + 1, float(score))
+            pooled = min(scores)
+            narrator.result(knob, pooled)
+            return pooled
 
         return probe_fn

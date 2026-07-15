@@ -567,10 +567,25 @@ class Executor:
             return None
 
         logger.info("Searching target quality (%s) for %s", knob, source.name)
-        if self._progress is not None:
-            self._progress.add_tool_line(f"[furnace] Searching target-quality {knob} (probing)")
 
-        result = self._target_quality.search(source, job.video_params, job.duration_s, temp_dir)
+        # Mute the raw per-probe ffmpeg/nvencc output for the duration of the
+        # search -- dozens of tiny probe encodes would otherwise flood the log --
+        # and let the search narrate its own progress through the (never-muted)
+        # furnace channel instead. The unmute is in a finally so a probe blowing
+        # up mid-search still restores the raw-output channel for the encode.
+        if self._progress is not None:
+            self._progress.mute_tool_output()
+        try:
+            result = self._target_quality.search(
+                source,
+                job.video_params,
+                job.duration_s,
+                temp_dir,
+                on_event=self._search_narration,
+            )
+        finally:
+            if self._progress is not None:
+                self._progress.unmute_tool_output()
         job.chosen_cq = result.knob
         if result.hit:
             logger.info("Target quality: %s %d (score %.3f)", knob, result.knob, result.score)
@@ -589,6 +604,16 @@ class Executor:
                     f"(score {result.score:.3f})"
                 )
         return result.knob
+
+    def _search_narration(self, message: str) -> None:
+        """Sink for the target-quality search's progress lines.
+
+        Routed through ``add_tool_line`` (the run TUI's never-muted furnace
+        channel) so the search stays legible while ``_maybe_search_target_quality``
+        mutes the raw per-probe ffmpeg/nvencc output. A no-op when there is no
+        progress object (headless/tests)."""
+        if self._progress is not None:
+            self._progress.add_tool_line(f"[furnace] {message}")
 
     def _process_audio_track(self, instr: AudioInstruction, temp_dir: Path, job: Job) -> Path:
         """Returns path to processed audio file.

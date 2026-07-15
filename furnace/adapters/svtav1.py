@@ -20,8 +20,8 @@ from pathlib import Path
 from furnace.core.color import CICP_MATRIX, CICP_PRIMARIES, CICP_TRANSFER
 from furnace.core.models import EncodeResult, VideoParams
 from furnace.core.progress import ProgressSample
-from furnace.core.quality import final_output_dimensions
 
+from ._geometry import build_vf
 from ._subprocess import OutputCallback, run_tool
 from .ffmpeg import _make_ffmpeg_progress_handler
 
@@ -72,50 +72,6 @@ def _color_svtav1_params(vp: VideoParams) -> str:
             f"(primaries={vp.color_primaries!r} transfer={vp.color_transfer!r} "
             f"matrix={vp.color_matrix!r} range={vp.color_range!r})"
         ) from exc
-
-
-def _geometry_filters(vp: VideoParams) -> list[str]:
-    """Shared crop/scale/deinterlace prefix for the SVT-AV1 encode filtergraph.
-
-    Order matters: deinterlace on fields first, then crop, then a single
-    high-quality rescale (only when the final encoded size differs from the
-    pre-resize size). This is the *geometry* only -- it deliberately omits the
-    fixed 10-bit / square-SAR tail, which :func:`_build_vf` appends. The
-    perceptual-metrics reference reproduces this same deinterlace->crop->scale
-    geometry in VapourSynth (see :mod:`furnace.adapters.vship_metrics`), so the
-    reference lines up frame-for-frame with this (already-deinterlaced) encode.
-    """
-    parts: list[str] = []
-
-    # Deinterlace first -- must run on interlaced fields before any spatial op.
-    # send_frame = SINGLE-RATE (one output frame per input frame), matching
-    # NVEncC's nnedi. bwdif's default (send_field) is double-rate: 2 frames per
-    # frame, which would desync against the single-rate --default-duration the
-    # executor pins at mux time (video would play at half speed).
-    if vp.deinterlace:
-        parts.append("bwdif=send_frame")
-
-    if vp.crop is not None:
-        parts.append(f"crop={vp.crop.w}:{vp.crop.h}:{vp.crop.x}:{vp.crop.y}")
-
-    # Single source of truth for the encoded size (crop -> SAR -> mod-8).
-    final_w, final_h = final_output_dimensions(vp)
-    pre_w = vp.crop.w if vp.crop is not None else vp.source_width
-    pre_h = vp.crop.h if vp.crop is not None else vp.source_height
-    if (final_w, final_h) != (pre_w, pre_h):
-        parts.append(f"scale={final_w}:{final_h}:flags=spline")
-
-    return parts
-
-
-def _build_vf(vp: VideoParams) -> str:
-    """Build the ffmpeg ``-vf`` filtergraph string (comma-joined).
-
-    The geometry prefix (:func:`_geometry_filters`) followed by the fixed
-    10-bit / square-SAR tail that every SVT-AV1 encode needs.
-    """
-    parts = [*_geometry_filters(vp), "format=yuv420p10le", "setsar=1"]
-    return ",".join(parts)
 
 
 class SvtAv1Adapter:
@@ -186,11 +142,17 @@ class SvtAv1Adapter:
         native content the input already decodes at that rate, so it is a
         harmless no-op (no dup/drop). ``cq_override`` (the target-quality search
         result) replaces the default CRF for this encode.
+
+        ``-map 0:v:0`` pins the first video stream so a multi-video-stream source
+        (e.g. cover art) can't pick a different stream than the metric reference
+        does -- ``build_reference`` and ``extract_window`` pin it the same way, so
+        all three stay on the same frames.
         """
         effective_crf = str(cq_override) if cq_override is not None else _SVT_CRF
         return [
             self._ffmpeg, "-hide_banner", "-i", input_path,
-            "-vf", _build_vf(vp),
+            "-map", "0:v:0",
+            "-vf", build_vf(vp),
             "-c:v", "libsvtav1", "-preset", _SVT_PRESET, "-crf", effective_crf,
             "-g", str(vp.gop),
             "-svtav1-params", f"{_SVT_PARAMS}:{_color_svtav1_params(vp)}",

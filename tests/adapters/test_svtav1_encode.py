@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
-from furnace.adapters.svtav1 import SvtAv1Adapter, _build_vf, _geometry_filters
+from furnace.adapters.svtav1 import SvtAv1Adapter
 from furnace.core.models import CropRect, VideoParams
 from furnace.core.progress import ProgressSample
 
@@ -80,30 +80,6 @@ def _run(
             tmp_path / "input.mkv", tmp_path / "output.obu", _make_vp(),
             rpu_path=rpu_path, on_progress=on_progress,
         )
-
-
-class TestGeometryHelper:
-    """`_geometry_filters` is the shared crop+scale+bwdif source; `_build_vf`
-    appends the fixed 10-bit / square-SAR tail without changing that prefix."""
-
-    def test_build_vf_unchanged_plain(self) -> None:
-        assert _build_vf(_make_vp()) == "format=yuv420p10le,setsar=1"
-
-    def test_build_vf_appends_tail_to_geometry(self) -> None:
-        vp = _make_vp(deinterlace=True, crop=CropRect(w=1920, h=800, x=0, y=140))
-        assert _build_vf(vp) == ",".join(
-            [*_geometry_filters(vp), "format=yuv420p10le", "setsar=1"],
-        )
-
-    def test_geometry_excludes_format_and_setsar(self) -> None:
-        vp = _make_vp(crop=CropRect(w=1910, h=798, x=5, y=141))
-        geom = _geometry_filters(vp)
-        assert geom == ["crop=1910:798:5:141", "scale=1904:792:flags=spline"]
-        assert "format=yuv420p10le" not in geom
-        assert "setsar=1" not in geom
-
-    def test_geometry_empty_for_plain(self) -> None:
-        assert _geometry_filters(_make_vp()) == []
 
 
 class TestEncodeBasics:

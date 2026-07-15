@@ -22,10 +22,9 @@ dovi_tool   = "C:\\Tools\\dovi_tool.exe"  # optional, needed for Dolby Vision co
 # Optional — VapourSynth plugin DLLs for the SVT-AV1 grain path's GPU perceptual
 # metrics (SSIMULACRA2 / Butteraugli / CVVDP). Absent -> grain encodes record no
 # perceptual scores. BestSource is the source filter; libvship is the metric
-# engine (use the NVIDIA/CUDA build). bwdif deinterlaces the metric reference so
-# interlaced grain sources can be scored (needed only for interlaced content;
-# without it an interlaced grain encode fails loudly at measure time).
-# VapourSynth itself is a furnace dependency.
+# engine (use the NVIDIA/CUDA build). The metric reference is built through the
+# encode's own ffmpeg geometry (crop/scale/deinterlace), so no deinterlace plugin
+# is needed here -- interlaced grain sources score fine. VapourSynth itself is a
+# furnace dependency.
 # bestsource  = "C:\\Tools\\vapoursynth-plugins\\BestSource.dll"
 # vship       = "C:\\Tools\\vapoursynth-plugins\\libvship_NVIDIA.dll"
-# bwdif       = "C:\\Tools\\vapoursynth-plugins\\Bwdif.dll"
