@@ -34,6 +34,9 @@ def _stub_prober() -> MagicMock:
         "chapters": [],
     }
     p.detect_crop.return_value = None
+    # SDR sources are grain-probed at any resolution now, so this 1080p stub needs
+    # a verdict; a clean (sub-threshold) flicker keeps the smoke plan non-grain.
+    p.sample_grain.return_value = [0.2, 0.2, 0.2, 0.2, 0.2]
     return p
 
 

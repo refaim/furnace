@@ -32,6 +32,9 @@ class TestCicpTransfer:
             ("smpte170m", 6),  # the real SD/BT.601 curve
             ("smpte240m", 7),
             ("linear", 8),
+            # SDR BT.2020 — reaches the AV1 encoder via the HD/UHD grain path.
+            ("bt2020-10", 14),
+            ("bt2020-12", 15),
             ("smpte2084", 16),  # HDR10 / PQ
             ("arib-std-b67", 18),  # HLG
         ],

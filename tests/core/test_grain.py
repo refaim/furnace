@@ -1,26 +1,53 @@
-"""SD grain detection: probe gating and the static-block flicker verdict.
+"""Grain detection: probe gating and the static-block flicker verdict.
 
-Grain probing is confined to SD sources (HD/UHD already pass the user's blind
-test on the QVBR profile). The classifier turns per-window static-block flicker
-into a boolean GRAINY verdict; a failed probe (no samples) fails soft to GRAINY
-because wrongly-on merely spends bytes while wrongly-off smears faces into wax.
+Grain probing covers SDR sources at ANY resolution — grainy HD/UHD film needs the
+grain-aware path too — and skips HDR, which the grain path cannot score. The
+classifier turns per-window static-block flicker into a boolean GRAINY verdict; a
+failed probe (no samples) fails soft to GRAINY because wrongly-on merely spends
+bytes while wrongly-off smears faces into wax.
 """
 
 from __future__ import annotations
 
-from furnace.core.detect import classify_grain, needs_grain_probe
+from furnace.core.detect import classify_grain, is_hdr_transfer, needs_grain_probe
 from tests.conftest import make_video_info, make_video_params
 
 
-class TestNeedsGrainProbe:
-    def test_sd_height_probed(self) -> None:
-        assert needs_grain_probe(480) is True
-        assert needs_grain_probe(576) is True
+class TestIsHdrTransfer:
+    """One source of truth for "is this HDR?", shared by the grain probe gate, the
+    planner's grain routing and the target-quality domain split — so they cannot
+    drift apart and re-open the grain+HDR hole."""
 
-    def test_hd_and_above_never_probed(self) -> None:
-        assert needs_grain_probe(720) is False
-        assert needs_grain_probe(1080) is False
-        assert needs_grain_probe(2160) is False
+    def test_pq_and_hlg_are_hdr(self) -> None:
+        assert is_hdr_transfer("smpte2084") is True
+        assert is_hdr_transfer("arib-std-b67") is True
+
+    def test_sdr_curves_are_not_hdr(self) -> None:
+        assert is_hdr_transfer("bt709") is False
+        assert is_hdr_transfer("smpte170m") is False
+        assert is_hdr_transfer("bt2020-10") is False  # SDR BT.2020, not PQ
+
+    def test_untagged_is_not_hdr(self) -> None:
+        assert is_hdr_transfer(None) is False
+
+
+class TestNeedsGrainProbe:
+    def test_sdr_probed_regardless_of_resolution(self) -> None:
+        """Resolution does not gate: SD, HD and UHD SDR all get the probe. NVEnc at
+        the non-grain target over-encodes grainy HD/UHD past a compact source."""
+        assert needs_grain_probe("bt709") is True
+        assert needs_grain_probe("smpte170m") is True
+        assert needs_grain_probe("bt470bg") is True
+
+    def test_untagged_transfer_probed_as_sdr(self) -> None:
+        """An untagged source is assumed SDR (the common case) → probed."""
+        assert needs_grain_probe(None) is True
+
+    def test_hdr_never_probed(self) -> None:
+        """The grain path scores with SSIMULACRA2, which does not score PQ/HLG
+        correctly, so HDR stays on the NVEnc/CVVDP path regardless of grain."""
+        assert needs_grain_probe("smpte2084") is False
+        assert needs_grain_probe("arib-std-b67") is False
 
 
 class TestClassifyGrain:

@@ -1840,10 +1840,13 @@ class TestRunDiscDemuxInteractive:
         demuxer.demux.return_value = [demuxed_mkv]
 
         ffmpeg, mpv = self._adapters()
-        # HD single file: probed for the SD grain gate, stays non-SD, no screen.
+        # Single HDR file: offers no grain toggle (the grain path cannot score PQ),
+        # so with one file and no DVD there is nothing to select -> no screen.
         ffmpeg.probe.return_value = {
             "format": {"duration": "5400.0", "size": "1000"},
-            "streams": [{"codec_type": "video", "height": 1080}],
+            "streams": [
+                {"codec_type": "video", "height": 2160, "color_transfer": "smpte2084"},
+            ],
         }
 
         demux_dir, paths, sar, _grain = _run_disc_demux_interactive(
@@ -3277,13 +3280,13 @@ class TestScanCommand:
 
 
 # ---------------------------------------------------------------------------
-# _probe_file_infos — height (SD grain gate) is captured
+# _probe_file_infos — height (has-video guard) + transfer (grain gate) are captured
 # ---------------------------------------------------------------------------
 
 
 class TestProbeFileInfosHeight:
-    def test_includes_first_video_stream_height(self, tmp_path: Path) -> None:
-        """_probe_file_infos returns (path, duration, size, height) 4-tuples."""
+    def test_includes_first_video_stream_height_and_transfer(self, tmp_path: Path) -> None:
+        """_probe_file_infos returns (path, duration, size, height, transfer) 5-tuples."""
         from furnace.cli import _probe_file_infos
 
         p = tmp_path / "a.mkv"
@@ -3292,16 +3295,16 @@ class TestProbeFileInfosHeight:
             "format": {"duration": "10.0", "size": "20"},
             "streams": [
                 {"codec_type": "audio"},
-                {"codec_type": "video", "height": 576},
+                {"codec_type": "video", "height": 576, "color_transfer": "bt709"},
             ],
         }
 
         infos = _probe_file_infos([p], ffmpeg)
 
-        assert infos == [(p, 10.0, 20, 576)]
+        assert infos == [(p, 10.0, 20, 576, "bt709")]
 
-    def test_no_video_stream_height_zero(self, tmp_path: Path) -> None:
-        """A file with no video stream falls back to height 0 (treated non-SD)."""
+    def test_no_video_stream_height_zero_transfer_none(self, tmp_path: Path) -> None:
+        """No video stream -> height 0 (excluded from the grain toggle) and no transfer."""
         from furnace.cli import _probe_file_infos
 
         p = tmp_path / "a.mkv"
@@ -3310,7 +3313,22 @@ class TestProbeFileInfosHeight:
 
         infos = _probe_file_infos([p], ffmpeg)
 
-        assert infos == [(p, 0.0, 0, 0)]
+        assert infos == [(p, 0.0, 0, 0, None)]
+
+    def test_untagged_transfer_is_none(self, tmp_path: Path) -> None:
+        """A video stream with no colour_transfer tag reports None (assumed SDR)."""
+        from furnace.cli import _probe_file_infos
+
+        p = tmp_path / "a.mkv"
+        ffmpeg = MagicMock()
+        ffmpeg.probe.return_value = {
+            "format": {"duration": "5.0", "size": "10"},
+            "streams": [{"codec_type": "video", "height": 1080}],
+        }
+
+        infos = _probe_file_infos([p], ffmpeg)
+
+        assert infos == [(p, 5.0, 10, 1080, None)]
 
 
 # ---------------------------------------------------------------------------
@@ -3368,7 +3386,7 @@ class TestDiscDemuxGrain:
         # The screen was seeded with sd_files and a pre-lit grain default.
         screen = screens_built[0]
         assert isinstance(screen, FileSelectorScreen)
-        assert screen._sd_files == {dvd_mkv}
+        assert screen._grain_files == {dvd_mkv}
         assert screen._grain_defaults == {dvd_mkv}
 
     def test_clean_sd_file_not_pre_lit(self, tmp_path: Path) -> None:
@@ -3408,7 +3426,7 @@ class TestDiscDemuxGrain:
         )
 
         assert grain == {dvd_mkv: False}
-        assert screens_built[0]._sd_files == {dvd_mkv}
+        assert screens_built[0]._grain_files == {dvd_mkv}
         assert screens_built[0]._grain_defaults == set()
 
     def test_single_sd_file_triggers_screen(self, tmp_path: Path) -> None:
@@ -3449,8 +3467,10 @@ class TestDiscDemuxGrain:
         assert paths == [mkv]
         assert grain == {mkv: True}
 
-    def test_grain_defaults_never_include_non_sd(self, tmp_path: Path) -> None:
-        """INVARIANT: even a GRAINY HD file is never pre-lit — grain_defaults ⊆ sd_files."""
+    def test_grain_defaults_never_include_hdr(self, tmp_path: Path) -> None:
+        """INVARIANT: a GRAINY HDR file is never pre-lit — grain_defaults ⊆ grain_files,
+        and the grain path cannot score PQ. An HD *SDR* file IS eligible (resolution
+        no longer gates: grainy HD film needs the grain path too)."""
         from furnace.cli import _run_disc_demux_interactive
         from furnace.core.models import DiscSource, DiscTitle, DiscType
         from furnace.ui.tui import FileSelection
@@ -3461,18 +3481,19 @@ class TestDiscDemuxGrain:
         t2 = DiscTitle(number=2, duration_s=200, raw_label="2")
 
         demuxer = MagicMock()
-        hd_mkv = tmp_path / ".furnace_demux" / "bdroot_title_1.mkv"
-        sd_mkv = tmp_path / ".furnace_demux" / "bdroot_title_2.mkv"
-        demuxer.demux.return_value = [hd_mkv, sd_mkv]
+        hdr_mkv = tmp_path / ".furnace_demux" / "bdroot_title_1.mkv"
+        sdr_mkv = tmp_path / ".furnace_demux" / "bdroot_title_2.mkv"
+        demuxer.demux.return_value = [hdr_mkv, sdr_mkv]
 
         ffmpeg = MagicMock()
 
         def _probe(path: Path) -> dict[str, Any]:
-            height = 1080 if path == hd_mkv else 480
-            return {
-                "format": {"duration": "100.0", "size": "1000"},
-                "streams": [{"codec_type": "video", "height": height}],
-            }
+            stream: dict[str, Any] = (
+                {"codec_type": "video", "height": 2160, "color_transfer": "smpte2084"}
+                if path == hdr_mkv
+                else {"codec_type": "video", "height": 1080}  # HD SDR (untagged)
+            )
+            return {"format": {"duration": "100.0", "size": "1000"}, "streams": [stream]}
 
         ffmpeg.probe.side_effect = _probe
         ffmpeg.sample_grain.return_value = [9.0]  # everything reads GRAINY
@@ -3481,7 +3502,9 @@ class TestDiscDemuxGrain:
 
         def file_runner(factory: Callable[[], Any]) -> FileSelection:
             screens_built.append(factory())
-            return FileSelection(selected=[hd_mkv, sd_mkv], sar_override=set(), grain={sd_mkv: True})
+            return FileSelection(
+                selected=[hdr_mkv, sdr_mkv], sar_override=set(), grain={sdr_mkv: True}
+            )
 
         _run_disc_demux_interactive(
             source=tmp_path,
@@ -3495,10 +3518,10 @@ class TestDiscDemuxGrain:
         )
 
         screen = screens_built[0]
-        assert screen._sd_files == {sd_mkv}
-        assert screen._grain_defaults == {sd_mkv}
-        # sample_grain only ran for the SD file, never for the HD one.
-        ffmpeg.sample_grain.assert_called_once_with(sd_mkv, 100.0)
+        assert screen._grain_files == {sdr_mkv}
+        assert screen._grain_defaults == {sdr_mkv}
+        # sample_grain only ran for the SDR file, never for the HDR one.
+        ffmpeg.sample_grain.assert_called_once_with(sdr_mkv, 100.0)
 
     def test_grain_probe_uses_stream_duration(self, tmp_path: Path) -> None:
         """Finding 1: the pre-probe seeks with the video STREAM's duration (not
@@ -3681,10 +3704,15 @@ class TestDiscDemuxGrain:
 
 
 class TestPlanPlainFilesGrain:
-    def _sd_streams(self, height: int) -> dict[str, Any]:
+    def _sd_streams(self, height: int, transfer: str | None = None) -> dict[str, Any]:
+        """Probe dict for one video stream. ``transfer=None`` -> SDR (grain-eligible
+        at any resolution); pass an HDR transfer to make it grain-ineligible."""
+        stream: dict[str, Any] = {"codec_type": "video", "height": height}
+        if transfer is not None:
+            stream["color_transfer"] = transfer
         return {
             "format": {"duration": "100.0", "size": "1000"},
-            "streams": [{"codec_type": "video", "height": height}],
+            "streams": [stream],
         }
 
     def test_sd_source_shows_screen_and_threads_grain(self, tmp_path: Path) -> None:
@@ -3739,8 +3767,10 @@ class TestPlanPlainFilesGrain:
         call_kwargs = mock_planner_cls.return_value.create_plan.call_args.kwargs
         assert call_kwargs["grain_overrides"] == {main_file: True}
 
-    def test_hd_only_source_no_screen_and_grain_none(self, tmp_path: Path) -> None:
-        """A plain HD-only source shows no screen and passes grain_overrides=None."""
+    def test_hdr_only_source_no_screen_and_grain_none(self, tmp_path: Path) -> None:
+        """A plain HDR-only source offers no grain toggle (the grain path cannot
+        score PQ), so no screen opens and grain_overrides stays None. Resolution
+        alone no longer excludes anything — an HD *SDR* source does open it."""
         from furnace.core.models import ScanResult
         from furnace.services.analysis_pipeline import AnalysisBatchResult
 
@@ -3770,7 +3800,9 @@ class TestPlanPlainFilesGrain:
             patch("furnace.cli.save_plan"),
             patch("furnace.cli._run_screen_app") as mock_runner,
         ):
-            mock_ffmpeg_cls.return_value.probe.return_value = self._sd_streams(1080)
+            mock_ffmpeg_cls.return_value.probe.return_value = self._sd_streams(
+                2160, transfer="smpte2084",
+            )
             mock_demuxer_cls.return_value.detect.return_value = []
             mock_scanner_cls.return_value.scan.return_value = [scan_result]
             mock_pipeline_cls.return_value.run.return_value = AnalysisBatchResult(movies=[], crops={})

@@ -368,7 +368,8 @@ class TestAnalyzerProgress:
 
     def test_on_progress_reports_stage_fractions(self, tmp_path: Path) -> None:
         scan_result = make_scan_result(tmp_path)
-        # _h264 has two profileable audio tracks and no idet -> two heavy stages.
+        # _h264 (HD SDR) has two profileable audio tracks and no idet, plus the
+        # grain probe (SDR is probed at any resolution) -> three heavy stages.
         prober = make_prober(probe_data=_h264_probe_data())
         fractions: list[float] = []
 
@@ -377,8 +378,8 @@ class TestAnalyzerProgress:
             outcome = analyzer.analyze(scan_result, on_progress=fractions.append)
 
         assert outcome.status is AnalyzeStatus.DONE
-        # After each of the two audio stages (1/2, 2/2), then a final 1.0.
-        assert fractions == [0.5, 1.0, 1.0]
+        # After grain (1/3) and each of the two audio stages (2/3, 3/3), then a final 1.0.
+        assert fractions == pytest.approx([1 / 3, 2 / 3, 1.0, 1.0])
 
 
 class TestAnalyzerDelay:
@@ -1152,11 +1153,11 @@ class TestSoftTelecinePath:
 
 
 class TestGrainPath:
-    """SD sources are probed for film grain so the encoder can preserve it;
-    the boolean verdict lands on ``VideoInfo.grainy`` as advisory metadata the
-    file selector TUI can override. HD/UHD skip the probe entirely, and any
-    probe error fails soft toward GRAINY (wrongly-on costs bytes, wrongly-off
-    smears real grain into wax)."""
+    """SDR sources at ANY resolution are probed for film grain so the encoder can
+    preserve it; the boolean verdict lands on ``VideoInfo.grainy`` as advisory
+    metadata the file selector TUI can override. HDR skips the probe entirely (the
+    grain path cannot score PQ/HLG), and any probe error fails soft toward GRAINY
+    (wrongly-on costs bytes, wrongly-off smears real grain into wax)."""
 
     def test_grainy_source_flagged(self, tmp_path: Path) -> None:
         """SD source whose flicker median clears the threshold → grainy=True,
@@ -1188,11 +1189,31 @@ class TestGrainPath:
         assert movie is not None
         assert movie.video.grainy is False
 
-    def test_hd_source_never_probed(self, tmp_path: Path) -> None:
-        """HD (1080) is outside the grain-probe domain → sample_grain not called,
-        grainy stays at its False default."""
+    def test_hd_sdr_source_is_probed(self, tmp_path: Path) -> None:
+        """HD SDR is INSIDE the grain-probe domain: grainy HD/UHD film needs the
+        grain path too — NVEnc/QVBR at the non-grain target over-encodes grain and
+        balloons the output past a compact source."""
         scan_result = make_scan_result(tmp_path)
         prober = make_prober(probe_data=_h264_probe_data())
+        prober.sample_grain.return_value = [0.8, 0.9, 0.7, 0.8, 0.8]
+
+        with patch("furnace.services.analyzer.should_skip_file", return_value=(False, "")):
+            outcome = Analyzer(prober=prober).analyze(scan_result)
+
+        assert outcome.status is AnalyzeStatus.DONE
+        movie = outcome.movie
+        assert movie is not None
+        assert movie.video.grainy is True
+        prober.sample_grain.assert_called_once()
+
+    def test_hdr_source_never_probed(self, tmp_path: Path) -> None:
+        """HDR is outside the grain-probe domain: the grain path scores with
+        SSIMULACRA2, which mis-scores PQ/HLG, so HDR stays on NVEnc/CVVDP →
+        sample_grain not called, grainy stays at its False default."""
+        scan_result = make_scan_result(tmp_path)
+        data = _h264_probe_data()
+        data["streams"][0]["color_transfer"] = "smpte2084"
+        prober = make_prober(probe_data=data)
 
         with patch("furnace.services.analyzer.should_skip_file", return_value=(False, "")):
             outcome = Analyzer(prober=prober).analyze(scan_result)

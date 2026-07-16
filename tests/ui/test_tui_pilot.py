@@ -676,7 +676,7 @@ async def test_file_selector_move_up_down_bounds() -> None:
 async def test_file_selector_grain_toggle_on_sd_file() -> None:
     p1 = Path("/demux/sd.mkv")
     files = [(p1, 3600.0, 1_000_000)]
-    app = _HostApp(lambda: FileSelectorScreen(files=files, sd_files={p1}))
+    app = _HostApp(lambda: FileSelectorScreen(files=files, grain_files={p1}))
     async with app.run_test() as pilot:
         await pilot.pause()
         screen = app.screen
@@ -698,7 +698,7 @@ async def test_file_selector_grain_defaults_prelit_and_untouched() -> None:
     p1 = Path("/demux/sd.mkv")
     files = [(p1, 3600.0, 1_000_000)]
     app = _HostApp(
-        lambda: FileSelectorScreen(files=files, sd_files={p1}, grain_defaults={p1})
+        lambda: FileSelectorScreen(files=files, grain_files={p1}, grain_defaults={p1})
     )
     async with app.run_test() as pilot:
         await pilot.pause()
@@ -719,7 +719,7 @@ async def test_file_selector_grain_packing_only_selected_sd() -> None:
     files = [(p1, 3600.0, 1), (p2, 3600.0, 2), (p3, 3600.0, 3)]
     app = _HostApp(
         lambda: FileSelectorScreen(
-            files=files, sd_files={p1, p2}, grain_defaults={p1, p2}
+            files=files, grain_files={p1, p2}, grain_defaults={p1, p2}
         )
     )
     async with app.run_test() as pilot:
@@ -747,8 +747,8 @@ async def test_file_selector_grain_packing_only_selected_sd() -> None:
 async def test_file_selector_grain_hint_shown_and_hidden() -> None:
     p1 = Path("/demux/sd.mkv")
     files = [(p1, 60.0, 100)]
-    # sd_files non-empty -> hint offers G=grain
-    app = _HostApp(lambda: FileSelectorScreen(files=files, sd_files={p1}))
+    # grain_files non-empty -> hint offers G=grain
+    app = _HostApp(lambda: FileSelectorScreen(files=files, grain_files={p1}))
     async with app.run_test() as pilot:
         await pilot.pause()
         hint = app.screen.query_one("#file-hint", Static)

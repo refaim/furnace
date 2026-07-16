@@ -26,6 +26,10 @@ CICP_PRIMARIES: dict[str, int] = {
 }
 
 # TransferCharacteristics (H.273 Table 3)
+# bt2020-10/bt2020-12 are the SDR BT.2020 curves (functionally BT.709's, at 10/12
+# bit). They reach the AV1 encoder now that grainy HD/UHD takes the SVT-AV1 grain
+# path -- SDR BT.2020 is real there, and ``_color_svtav1_params`` raises on any
+# transfer missing from this table.
 CICP_TRANSFER: dict[str, int] = {
     "bt709": 1,
     "bt470m": 4,
@@ -33,6 +37,8 @@ CICP_TRANSFER: dict[str, int] = {
     "smpte170m": 6,
     "smpte240m": 7,
     "linear": 8,
+    "bt2020-10": 14,
+    "bt2020-12": 15,
     "smpte2084": 16,  # HDR10 / PQ
     "arib-std-b67": 18,  # HLG
 }

@@ -13,6 +13,7 @@ from furnace.core.detect import (
     DV_PROFILE_FEL,
     classify_passthrough,
     detect_video_system,
+    is_hdr_transfer,
     resolve_color_metadata,
 )
 from furnace.core.models import (
@@ -507,6 +508,23 @@ class PlannerService:
             grain = grain_overrides[source_file]
         else:
             grain = video.grainy
+
+        # The grain path is SDR-only: its target-quality search scores with
+        # SSIMULACRA2, which does not score PQ/HLG, so ``resolve_target`` refuses
+        # grain+HDR loudly. This is where that invariant is enforced, because this
+        # is the only point where the grain decision and the RESOLVED transfer are
+        # both known: the analyzer's probe gate sees the source's RAW transfer, but
+        # an untagged HDR remux only becomes PQ here (``resolve_color_metadata``
+        # promotes an absent transfer + mastering-display metadata to 'smpte2084'),
+        # and a manual grain override bypasses that gate entirely. Routing HDR to
+        # NVEnc/CVVDP is the correct answer for it, not a degradation — but say so,
+        # since it silently overrides an explicit user toggle.
+        if grain and is_hdr_transfer(resolved.transfer):
+            logger.info(
+                "%s: HDR (%s) — grain path is SDR-only, encoding on the NVEnc/CVVDP path",
+                source_file.name, resolved.transfer,
+            )
+            grain = False
 
         return VideoParams(
             cq=cq,

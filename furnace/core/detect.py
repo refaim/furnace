@@ -248,6 +248,17 @@ def is_dvd_resolution(width: int, height: int) -> bool:
 _HDR_TRANSFERS = frozenset({"smpte2084", "arib-std-b67"})
 
 
+def is_hdr_transfer(color_transfer: str | None) -> bool:
+    """True when the colour transfer is HDR (PQ 'smpte2084' or HLG 'arib-std-b67').
+
+    The single source of truth for "is this HDR?" across the pipeline: the grain
+    probe gate, the planner's grain routing and the target-quality domain split all
+    call this, so they can never disagree about a transfer (a drift between two
+    copies of the set would silently re-open the grain+HDR hole the planner guards).
+    """
+    return color_transfer in _HDR_TRANSFERS
+
+
 def hdr_transfer_for_cropdetect(color_transfer: str | None) -> str | None:
     """Return the transfer string when cropdetect needs HDR tonemapping.
 
@@ -466,15 +477,29 @@ of static-block flicker, denoised controls ~0.22, so 0.5 splits the two
 populations with wide margin on both sides."""
 
 
-def needs_grain_probe(height: int) -> bool:
-    """Gate the (expensive) grain probe to SD sources only.
+def needs_grain_probe(color_transfer: str | None) -> bool:
+    """Gate the grain probe to SDR sources — at ANY resolution.
 
-    True iff the frame is SD (``height < 720``, reusing ``_is_hd``). HD and UHD
-    already passed the user's blind test on the QVBR profile — grain there
-    survives without a dedicated tune — so probing them would only burn time
-    to confirm a decision that never changes.
+    True iff the source is SDR (its transfer is neither PQ nor HLG); an untagged
+    transfer is assumed SDR, the common case. HDR is excluded because the grain
+    path scores its target-quality search with SSIMULACRA2, which does not score
+    PQ/HLG correctly — HDR belongs on the NVEnc/CVVDP path regardless of grain
+    (``core.target_quality.resolve_target`` refuses grain+HDR loudly).
+
+    Resolution deliberately does NOT gate this. It used to (SD only, on the
+    assumption that HD/UHD grain "survives" the QVBR profile without a dedicated
+    tune): that held for perceived quality but ignored SIZE. NVEnc smooths grain,
+    and SSIMULACRA2 reads low on grain, so the non-grain SDR target drives QVBR to
+    its floor on grainy HD/UHD film — ballooning the output past an already-compact
+    source. Grainy HD/UHD therefore needs the same grain-aware treatment as SD.
+
+    This reads the source's RAW transfer, so it only skips *tagged* HDR. An HDR
+    remux with no transfer tag is resolved to PQ later (``resolve_color_metadata``
+    turns an absent transfer + mastering-display metadata into 'smpte2084'), so the
+    binding grain/HDR decision is made by the planner against the RESOLVED transfer;
+    this gate merely avoids paying for a probe whose verdict would be discarded.
     """
-    return not _is_hd(height)
+    return not is_hdr_transfer(color_transfer)
 
 
 def classify_grain(flicker_samples: Sequence[float]) -> bool:

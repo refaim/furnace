@@ -1,7 +1,7 @@
 """SVT-AV1 (libsvtav1 via bundled ffmpeg) video encoder adapter.
 
-Implements the Encoder protocol using ffmpeg + libsvtav1 for grainy SD sources
-that NVENC's psychovisual profile smooths over. Outputs a raw AV1 OBU elementary
+Implements the Encoder protocol using ffmpeg + libsvtav1 for grainy SDR sources
+(any resolution) that NVENC's psychovisual profile smooths over. Outputs a raw AV1 OBU elementary
 stream (``-f obu``) -- mkvmerge handles muxing downstream, matching the NVEncC
 adapter's contract so the executor can swap encoders transparently.
 
@@ -28,7 +28,11 @@ from .ffmpeg import _make_ffmpeg_progress_handler
 logger = logging.getLogger(__name__)
 
 # --- Load-bearing SVT-AV1 recipe (mainline libsvtav1 knobs only) ------------
-# preset 4: slow enough for high fidelity, still tractable for SD grain jobs.
+# preset 4: slow enough for high fidelity, and kept at every resolution. Measured
+# on the target machine: 1080p ~20.6 fps (~3 h/film), 4K ~5.7 fps (~7.8 h/film) --
+# slow but acceptable. A faster preset was rejected deliberately: the search hits
+# the same SSIMULACRA2 target whatever the preset, so a faster one only spends MORE
+# bits for that same quality, defeating the point of shrinking the library.
 # crf 23: constant-quality anchor for grain preservation.
 # svtav1-params: variance boost + quant-matrices + luma/AC biases tuned to keep
 # fine film grain alive. Deliberately excludes fork-only params (psy-rd, spy-rd,
@@ -53,11 +57,12 @@ def _color_svtav1_params(vp: VideoParams) -> str:
     ``color-range`` key is the AV1 ``video_full_range_flag`` (0 studio / 1 full),
     NOT the Matroska range enum.
 
-    ``resolve_color_metadata`` only emits mapped values for the SD grain sources
-    this encoder handles (real DVD MPEG-2 signals bt709/bt470bg/smpte170m), but
-    ``transfer``/``primaries`` pass through source tags unvalidated, so a
-    mistagged input carrying a CICP value furnace has no code point for raises a
-    clear ValueError instead of a cryptic KeyError or a malformed OBU header.
+    This encoder now handles grainy SDR at ANY resolution, so the tag domain is
+    every SDR signal a remux/WEB-DL can carry (bt709/bt470bg/smpte170m plus SDR
+    BT.2020's bt2020-10/bt2020-12), not just DVD MPEG-2. ``transfer``/``primaries``
+    pass through source tags unvalidated, so a mistagged input carrying a CICP value
+    furnace has no code point for raises a clear ValueError instead of a cryptic
+    KeyError or a malformed OBU header.
     """
     try:
         return (

@@ -263,19 +263,25 @@ def _dvd_demuxed_paths(
     return dvd_demuxed
 
 
+# One file-selector row: (path, duration_s, size_bytes, height, color_transfer).
+# ``height`` guards "has a readable video stream"; ``color_transfer`` gates the
+# grain toggle (the grain path is SDR-only, see ``core.detect.needs_grain_probe``).
+_FileInfo = tuple[Path, float, int, int, str | None]
+
+
 def _probe_file_infos(
     demuxed_paths: list[Path], ffmpeg_adapter: FFmpegAdapter
-) -> list[tuple[Path, float, int, int]]:
-    """Probe each file for duration/size/height for the file-selector UI.
+) -> list[_FileInfo]:
+    """Probe each file for duration/size/height/transfer for the file-selector UI.
 
-    Height is read from the first video stream (0 when none is present) and
-    drives the SD grain gate; duration and size feed the on-screen file list.
-    Duration mirrors the analyzer's precedence exactly — the first video
-    stream's ``duration`` first, falling back to ``format.duration`` — so the
-    grain pre-probe seeks the same window as the headless grain verdict and the
-    two agree at the classify boundary.
+    Height and colour transfer are read from the first video stream (0 / None when
+    none is present) and gate the grain toggle; duration and size feed the
+    on-screen file list. Duration mirrors the analyzer's precedence exactly — the
+    first video stream's ``duration`` first, falling back to ``format.duration`` —
+    so the grain pre-probe seeks the same window as the headless grain verdict and
+    the two agree at the classify boundary.
     """
-    file_infos: list[tuple[Path, float, int, int]] = []
+    file_infos: list[_FileInfo] = []
     for mkv_path in demuxed_paths:
         probe_data = ffmpeg_adapter.probe(mkv_path)
         fmt = probe_data.get("format", {})
@@ -284,6 +290,7 @@ def _probe_file_infos(
         video_streams = [s for s in streams if s.get("codec_type") == "video"]
         video_stream = video_streams[0] if video_streams else {}
         height = int(video_stream.get("height", 0))
+        color_transfer = video_stream.get("color_transfer")
         duration_s = 0.0
         if "duration" in video_stream:
             with contextlib.suppress(ValueError, TypeError):
@@ -291,21 +298,27 @@ def _probe_file_infos(
         if duration_s == 0.0 and "duration" in fmt:
             with contextlib.suppress(ValueError, TypeError):
                 duration_s = float(fmt["duration"])
-        file_infos.append((mkv_path, duration_s, size_bytes, height))
+        file_infos.append((mkv_path, duration_s, size_bytes, height, color_transfer))
     return file_infos
 
 
-def _sd_grain_files(file_infos: list[tuple[Path, float, int, int]]) -> set[Path]:
-    """SD files eligible for a grain toggle in the file selector.
+def _grain_toggle_files(file_infos: list[_FileInfo]) -> set[Path]:
+    """Files eligible for a grain toggle in the file selector.
 
-    A height of 0 (unreadable / no video stream) is treated as non-SD so a file
-    whose resolution we could not measure never triggers the fragile grain probe.
+    Eligible = SDR (any resolution — grainy HD/UHD needs the grain path too) with a
+    readable video stream. A height of 0 (unreadable / no video stream) is excluded
+    so a file we could not measure never triggers the fragile grain probe; HDR is
+    excluded by ``needs_grain_probe`` (the grain path cannot score PQ/HLG).
     """
-    return {p for (p, _dur, _size, height) in file_infos if height > 0 and needs_grain_probe(height)}
+    return {
+        p
+        for (p, _dur, _size, height, transfer) in file_infos
+        if height > 0 and needs_grain_probe(transfer)
+    }
 
 
 def _classify_one(path: Path, dur: float, ffmpeg_adapter: FFmpegAdapter) -> bool:
-    """Grain verdict for a single SD file, fail-soft to GRAINY.
+    """Grain verdict for a single grain-eligible file, fail-soft to GRAINY.
 
     Mirrors the analyzer's grain stage: ``sample_grain`` returns ``[]`` (never
     raises) for expected per-window failures, but a catastrophic raise — a
@@ -321,36 +334,36 @@ def _classify_one(path: Path, dur: float, ffmpeg_adapter: FFmpegAdapter) -> bool
 
 
 def _grain_pre_probe(
-    file_infos: list[tuple[Path, float, int, int]],
-    sd_files: set[Path],
+    file_infos: list[_FileInfo],
+    grain_files: set[Path],
     ffmpeg_adapter: FFmpegAdapter,
 ) -> set[Path]:
-    """Seed the file-selector grain default: an SD file whose sampled flicker
+    """Seed the file-selector grain default: an eligible file whose sampled flicker
     classifies GRAINY starts with grain ON.
 
-    Only ``sd_files`` are probed, so the result is always a subset of
-    ``sd_files`` (never seed a default for a non-SD path). Each file is
+    Only ``grain_files`` are probed, so the result is always a subset of
+    ``grain_files`` (never seed a default for an ineligible path). Each file is
     classified independently and fail-soft (see ``_classify_one``), so one
     file's hard probe failure never loses the others.
     """
     grain_defaults: set[Path] = set()
-    for (p, dur, _size, _height) in file_infos:
-        if p in sd_files and _classify_one(p, dur, ffmpeg_adapter):
+    for (p, dur, _size, _height, _transfer) in file_infos:
+        if p in grain_files and _classify_one(p, dur, ffmpeg_adapter):
             grain_defaults.add(p)
     return grain_defaults
 
 
 def _run_file_selector(
     *,
-    file_infos: list[tuple[Path, float, int, int]],
+    file_infos: list[_FileInfo],
     dvd_files: set[Path],
-    sd_files: set[Path],
+    grain_files: set[Path],
     ffmpeg_adapter: FFmpegAdapter,
     mpv_adapter: MpvAdapter,
     reporter: RichPlanReporter | None,
     file_app_runner: Callable[[Callable[[], Screen[FileSelection]]], FileSelection | None],
 ) -> FileSelection | None:
-    """Pre-probe grain for the SD files, then run the file selector.
+    """Pre-probe grain for the eligible files, then run the file selector.
 
     Brackets the interactive screen (and the slow grain pre-probe) with the
     reporter's pause/resume. Returns the ``FileSelection`` or ``None`` if the
@@ -358,19 +371,19 @@ def _run_file_selector(
     """
     if reporter is not None:
         reporter.pause()
-    grain_defaults = _grain_pre_probe(file_infos, sd_files, ffmpeg_adapter)
-    files_for_screen = [(p, dur, size) for (p, dur, size, _height) in file_infos]
+    grain_defaults = _grain_pre_probe(file_infos, grain_files, ffmpeg_adapter)
+    files_for_screen = [(p, dur, size) for (p, dur, size, _height, _transfer) in file_infos]
 
     def _factory(
         _files: list[tuple[Path, float, int]] = files_for_screen,
         _dvd: set[Path] = dvd_files,
-        _sd: set[Path] = sd_files,
+        _eligible: set[Path] = grain_files,
         _grain: set[Path] = grain_defaults,
     ) -> Screen[FileSelection]:
         return FileSelectorScreen(
             files=_files,
             dvd_files=_dvd,
-            sd_files=_sd,
+            grain_files=_eligible,
             grain_defaults=_grain,
             preview_cb=lambda p, a: mpv_adapter.preview_file(p, aspect_override=a),
         )
@@ -428,15 +441,15 @@ def _run_disc_demux_interactive(
     grain_overrides: dict[Path, bool] = {}
 
     file_infos = _probe_file_infos(demuxed_paths, ffmpeg_adapter)
-    sd_files = _sd_grain_files(file_infos)
+    grain_files = _grain_toggle_files(file_infos)
 
     # Show the file selector when a DVD needs a SAR toggle, when there are
-    # multiple files to pick from, or when any SD file offers a grain toggle.
-    if dvd_demuxed or len(demuxed_paths) > 1 or sd_files:
+    # multiple files to pick from, or when any file offers a grain toggle.
+    if dvd_demuxed or len(demuxed_paths) > 1 or grain_files:
         file_selection = _run_file_selector(
             file_infos=file_infos,
             dvd_files=dvd_demuxed,
-            sd_files=sd_files,
+            grain_files=grain_files,
             ffmpeg_adapter=ffmpeg_adapter,
             mpv_adapter=mpv_adapter,
             reporter=reporter,
@@ -611,20 +624,20 @@ def plan(
         scanner = Scanner(prober=ffmpeg_adapter, reporter=reporter)
         scan_results = scanner.scan(source, output, names_map)
 
-        # Plain-files grain flow: with no disc demux, plain SD sources still need
-        # the file selector so the user can confirm/override the grain verdict.
-        # Probe the scanned main files; if any is SD, show the same selector
-        # (no DVDs -> the SAR hint stays hidden). HD-only sources skip it, which
-        # preserves the previous "no screen without discs" behaviour.
+        # Plain-files grain flow: with no disc demux, plain sources still need the
+        # file selector so the user can confirm/override the grain verdict. Probe
+        # the scanned main files; if any is grain-eligible (SDR, any resolution),
+        # show the same selector (no DVDs -> the SAR hint stays hidden). An
+        # HDR-only source offers no grain toggle and skips the screen entirely.
         plain_grain_overrides: dict[Path, bool] = {}
         if not dry_run and scan_results:
             plain_infos = _probe_file_infos([sr.main_file for sr in scan_results], ffmpeg_adapter)
-            plain_sd_files = _sd_grain_files(plain_infos)
-            if plain_sd_files:
+            plain_grain_files = _grain_toggle_files(plain_infos)
+            if plain_grain_files:
                 plain_selection = _run_file_selector(
                     file_infos=plain_infos,
                     dvd_files=set(),
-                    sd_files=plain_sd_files,
+                    grain_files=plain_grain_files,
                     ffmpeg_adapter=ffmpeg_adapter,
                     mpv_adapter=mpv_adapter,
                     reporter=reporter,

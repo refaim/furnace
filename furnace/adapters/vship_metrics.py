@@ -180,7 +180,7 @@ class VshipMetricsAdapter:
         # One interleaved pass: requesting the wanted metrics per frame index lets
         # VapourSynth's frame cache decode each source/OBU frame once (not once per
         # metric). A synchronous get_frame loop (vs clip.frames() prefetch) is
-        # chosen to keep that single-decode dedup; on SD grain sources the preset-4
+        # chosen to keep that single-decode dedup; on grain sources the preset-4
         # encode, not this GPU metric pass, is the throughput bottleneck.
         frames: dict[str, list[float]] = {name: [] for name in nodes}
         for i in range(n):

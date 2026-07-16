@@ -34,7 +34,7 @@ _CHANNELS_STEREO = 2
 _CHANNELS_5_1 = 6
 _CHANNELS_7_1 = 8
 
-# --- Film-grain probe (SD sources) -----------------------------------------
+# --- Film-grain probe (SDR sources, any resolution) ------------------------
 # Five short windows across the timeline; each pipes a handful of luma-only
 # frames and measures how much the calmest 16x16 blocks flicker frame to frame.
 # Real film grain keeps those blocks jittering; a denoised transfer holds them

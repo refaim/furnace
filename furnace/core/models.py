@@ -257,7 +257,7 @@ class VideoInfo:
     bitrate: int = 0  # video stream bitrate in bps
     sar_num: int = 1  # sample aspect ratio numerator
     sar_den: int = 1  # sample aspect ratio denominator
-    grainy: bool = False  # SD grain probe verdict (True = preserve grain in encode)
+    grainy: bool = False  # grain probe verdict, SDR any res (True = preserve grain)
 
 
 @dataclass
@@ -333,7 +333,7 @@ class VideoParams:
     sar_den: int = 1  # sample aspect ratio denominator
     dv_mode: DvMode | None = None  # None=no DV, COPY=as-is, TO_8_1=P7->single-layer (AV1 out=10.1)
     passthrough: bool = False  # True = copy video stream verbatim (no re-encode)
-    grain: bool = False  # True = tune the encode to preserve SD film grain
+    grain: bool = False  # True = tune the encode to preserve film grain (SDR only)
 
 
 @dataclass

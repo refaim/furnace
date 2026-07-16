@@ -21,6 +21,7 @@ import math
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from .detect import is_hdr_transfer
 from .models import VideoParams
 from .quality import final_output_dimensions
 
@@ -300,17 +301,21 @@ def search_knob(
 # them.
 # ---------------------------------------------------------------------------
 
-# HDR transfer functions (PQ / HLG). HDR routes to CVVDP, the only metric that
-# scores PQ correctly (SSIMULACRA2's absolute scale is compressed on PQ).
+# HDR (PQ / HLG) is decided by ``core.detect.is_hdr_transfer`` -- the single
+# source of truth shared with the grain probe gate and the planner's grain
+# routing, so those can never disagree with this domain split. HDR routes to
+# CVVDP, the only metric that scores PQ correctly (SSIMULACRA2's absolute scale is
+# compressed on PQ).
 # CALIBRATE/VERIFY: NVEncC's --vship-cvvdp auto-picks the PQ model on smpte2084
 # (confirmed live); it is UNVERIFIED whether it selects the HLG EOTF on
 # arib-std-b67. HLG is vanishingly rare in a movie archive (remuxes are PQ), but
 # an HLG source scored under a PQ EOTF would bias its chosen QVBR -- verify
 # during calibration if HLG content ever appears.
-_HDR_TRANSFERS: frozenset[str] = frozenset({"smpte2084", "arib-std-b67"})
 
-# Below this final height the source is SD/DVD-class (matches the SD gate used
-# by ``core.detect.needs_grain_probe``). SD DVDs cap lower on SSIMULACRA2.
+# Below this final height the source is SD/DVD-class. Splits the NON-grain SDR
+# target only (SD DVDs cap lower on SSIMULACRA2); the grain path uses one target
+# for every resolution and ``core.detect.needs_grain_probe`` no longer gates on
+# height at all.
 _SD_MAX_HEIGHT = 720
 
 # Calibrated centre targets (2026-07-14, judged on HARD scenes -- max-complexity
@@ -421,11 +426,17 @@ def resolve_target(vp: VideoParams) -> TargetSpec:
 
     Raises ValueError for a grain source on an HDR (PQ/HLG) transfer: grain routes
     to SSIMULACRA2, whose absolute scale is compressed on PQ, so scoring it there
-    would silently mis-target. HDR content belongs on the NVEnc/CVVDP path;
-    grain+HDR is only reachable via a manual grain override and is refused loudly.
+    would silently mis-target. HDR content belongs on the NVEnc/CVVDP path.
+
+    DO NOT DELETE THIS REFUSAL AS UNREACHABLE. The planner already clears ``grain``
+    when the resolved transfer is HDR (``_build_video_params``), so no plan it builds
+    can land here — but that is precisely why this must stay: it is the backstop for
+    a ``VideoParams`` built OUTSIDE the planner, i.e. a hand-edited plan JSON, whose
+    loader (``furnace.plan``) obeys the file rather than re-deciding. The planner
+    coerces; this refuses loudly.
     """
     if vp.grain:
-        if vp.color_transfer in _HDR_TRANSFERS:
+        if is_hdr_transfer(vp.color_transfer):
             raise ValueError(
                 f"grain target-quality is unsupported on HDR sources "
                 f"(transfer {vp.color_transfer!r}): SSIMULACRA2 does not score PQ/HLG "
@@ -437,7 +448,7 @@ def resolve_target(vp: VideoParams) -> TargetSpec:
         )
 
     _, final_h = final_output_dimensions(vp)
-    if vp.color_transfer in _HDR_TRANSFERS:
+    if is_hdr_transfer(vp.color_transfer):
         metric, centre = "cvvdp", _HDR_TARGET
     elif final_h < _SD_MAX_HEIGHT:
         metric, centre = "ssimulacra2", _SD_SDR_TARGET

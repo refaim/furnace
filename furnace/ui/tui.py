@@ -629,8 +629,8 @@ class FileSelection:
 
     selected: list[Path]
     sar_override: set[Path]  # files with SAR override (64:45)
-    # grain decisions for SD files only (path -> on/off); defaults empty for callers
-    # that don't populate it (e.g. mocked returns).
+    # grain decisions for the grain-eligible files (path -> on/off); defaults empty
+    # for callers that don't populate it (e.g. mocked returns).
     grain: dict[Path, bool] = field(default_factory=dict)
 
 
@@ -659,14 +659,14 @@ class FileSelectorScreen(Screen[FileSelection]):
         self,
         files: list[tuple[Path, float, int]],  # (path, duration_s, size_bytes)
         dvd_files: set[Path] | None = None,  # which files are from DVD (SAR toggle available)
-        sd_files: set[Path] | None = None,  # which files may be grain-toggled (SD)
-        grain_defaults: set[Path] | None = None,  # SD files that start with grain ON
+        grain_files: set[Path] | None = None,  # which files may be grain-toggled (SDR, any res)
+        grain_defaults: set[Path] | None = None,  # eligible files that start with grain ON
         preview_cb: Callable[[Path, str | None], None] | None = None,  # (path, aspect_override)
     ) -> None:
         super().__init__()
         self._files = files
         self._dvd_files = dvd_files or set()
-        self._sd_files = sd_files or set()
+        self._grain_files = grain_files or set()
         self._grain_defaults = grain_defaults or set()
         self._preview_cb = preview_cb
         self._selected: list[bool] = [True] * len(files)
@@ -677,11 +677,11 @@ class FileSelectorScreen(Screen[FileSelection]):
     def compose(self) -> ComposeResult:
         yield Header()
         has_dvd = any(f[0] in self._dvd_files for f in self._files)
-        has_sd = any(f[0] in self._sd_files for f in self._files)
+        has_grain = any(f[0] in self._grain_files for f in self._files)
         hint = "Select files  (Space=toggle  P=preview"
         if has_dvd:
             hint += "  S=SAR fix"
-        if has_sd:
+        if has_grain:
             hint += "  G=grain"
         hint += "  D=done)"
         yield Static(hint, id="file-hint")
@@ -736,7 +736,7 @@ class FileSelectorScreen(Screen[FileSelection]):
         if not self._files:
             return
         path = self._files[self._cursor][0]
-        if path not in self._sd_files:
+        if path not in self._grain_files:
             return
         self._grain[self._cursor] = not self._grain[self._cursor]
         self._refresh_item(self._cursor)
@@ -758,7 +758,7 @@ class FileSelectorScreen(Screen[FileSelection]):
         grain = {
             f[0]: g
             for f, sel, g in zip(self._files, self._selected, self._grain, strict=True)
-            if sel and f[0] in self._sd_files
+            if sel and f[0] in self._grain_files
         }
         self.dismiss(FileSelection(selected=selected, sar_override=sar_set, grain=grain))
 

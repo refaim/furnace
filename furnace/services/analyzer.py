@@ -212,7 +212,7 @@ class Analyzer:
         pulldown_will_run = needs_pulldown_probe(
             video_info.codec_name, video_info.fps_num, video_info.fps_den, video_info.height,
         )
-        grain_will_run = needs_grain_probe(video_info.height)
+        grain_will_run = needs_grain_probe(video_info.color_transfer)
         n_profileable = sum(1 for t in audio_tracks if t.channels in _PROFILEABLE_CHANNEL_COUNTS)
         total_stages = (
             (1 if idet_will_run else 0)
@@ -263,10 +263,12 @@ class Analyzer:
             stages_done += 1
             _emit()
 
-        # Grain: SD film sources need the CQP profile or NVENC strips their
-        # grain (waxy faces). Verdict is advisory — the file selector TUI can
-        # override per file. Fail-soft toward GRAINY: wrongly-on costs file
-        # size, wrongly-off costs visible quality.
+        # Grain: film sources (SDR, any resolution) need the SVT-AV1 grain path or
+        # NVENC strips their grain (waxy faces) — and, at the non-grain target,
+        # over-encodes what is left, ballooning the file past a compact source.
+        # Verdict is advisory — the file selector TUI can override per file.
+        # Fail-soft toward GRAINY: wrongly-on costs file size, wrongly-off costs
+        # visible quality.
         if grain_will_run:
             try:
                 flicker = self._prober.sample_grain(main_file, video_info.duration_s)
