@@ -50,8 +50,8 @@ class _FakeAnalyzer:
         *,
         on_progress: Callable[[float], None] | None = None,
     ) -> AnalysisOutcome:
-        if on_progress is not None:
-            on_progress(1.0)
+        assert on_progress is not None
+        on_progress(1.0)
         return self._outcomes[scan_result.main_file]
 
 

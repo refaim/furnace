@@ -81,7 +81,7 @@ class TestRowBuilding:
             pix_fmt="yuv420p10le",
             color_transfer="smpte2084",
             audios=(("rus", "eac3", 6), (None, "aac", 2)),
-            subs=(("eng", "subrip"),),
+            subs=(("eng", "subrip"), (None, "hdmv_pgs_subtitle")),
         )
         service, _ = make_service({movie: probe})
 
@@ -96,7 +96,10 @@ class TestRowBuilding:
                     AudioTrackSummary(language="rus", codec="eac3", channels=6),
                     AudioTrackSummary(language=None, codec="aac", channels=2),
                 ),
-                subtitles=(SubtitleTrackSummary(language="eng", codec="subrip"),),
+                subtitles=(
+                    SubtitleTrackSummary(language="eng", codec="subrip"),
+                    SubtitleTrackSummary(language=None, codec="hdmv_pgs_subtitle"),
+                ),
             )
         ]
 

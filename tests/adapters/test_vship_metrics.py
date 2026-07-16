@@ -42,10 +42,10 @@ class _Clip:
         self._values = values
 
     def get_frame(self, i: int) -> _Frame:
-        props: dict[str, float] = {}
-        if self._prop is not None:
-            props[self._prop] = self._values[i % len(self._values)]
-        return _Frame(props)
+        # Only vship metric nodes are ever pulled for frames; the source clips
+        # (prop=None) are just handed to the metric constructors.
+        assert self._prop is not None, "get_frame on a clip with no metric prop"
+        return _Frame({self._prop: self._values[i % len(self._values)]})
 
 
 class _FakeCore:
@@ -94,7 +94,7 @@ class _FakeCore:
         low = path.lower()
         if "bestsource" in low:
             self.bs = types.SimpleNamespace(VideoSource=self._source)
-        elif "vship" in low:
+        else:  # the adapter loads exactly two plugins: BestSource and vship
             self.vship = types.SimpleNamespace(
                 SSIMULACRA2=self._vship_metric("ssimulacra2", "_SSIMULACRA2", (80.0, 90.0)),
                 BUTTERAUGLI=self._vship_metric("butteraugli", "_BUTTERAUGLI_3Norm", (1.5, 2.5)),
@@ -219,6 +219,14 @@ class TestMeasure:
         assert first.ssimulacra2 is not None
         assert second.ssimulacra2 is not None  # None if it reloaded -> fail-soft
         assert core.loaded == ["BestSource.dll", "libvship.dll"]  # loaded once total
+
+    def test_fake_core_rejects_a_reload(self) -> None:
+        """The fake models real VapourSynth's load-once rule -- this raise is what
+        turns a reload regression into all-None scores in the test above."""
+        core = _FakeCore(ref=_Clip(), dist=_Clip())
+        core.std.LoadPlugin("BestSource.dll")
+        with pytest.raises(RuntimeError, match="already loaded"):
+            core.std.LoadPlugin("BestSource.dll")
 
 
 class TestMetricSelection:

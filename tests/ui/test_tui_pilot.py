@@ -212,13 +212,11 @@ async def test_track_selector_preview_no_callback_noop() -> None:
 async def test_track_selector_empty_tracks_guards() -> None:
     """Hit the `not self._tracks` guards in toggle/preview/set_downmix."""
     mv = _movie_with_audio_and_subs()
-
-    def preview(_t: Track) -> None:
-        raise AssertionError("should not fire")
+    previewed: list[Track] = []
 
     app = _HostApp(
         lambda: TrackSelectorScreen(
-            movie=mv, tracks=[], track_type=TrackType.AUDIO, preview_cb=preview
+            movie=mv, tracks=[], track_type=TrackType.AUDIO, preview_cb=previewed.append
         )
     )
     async with app.run_test() as pilot:
@@ -230,6 +228,7 @@ async def test_track_selector_empty_tracks_guards() -> None:
         await pilot.press("c")  # clear_downmix guarded (empty tracks)
         await pilot.press("d")
         await pilot.pause()
+    assert not previewed
     assert app.result == TrackSelection(tracks=[], downmix={})
 
 

@@ -437,26 +437,28 @@ _SCORE_MAPS: dict[int, dict[int, float]] = {
 
 
 def _simulate_av1an(score_map: dict[int, float]) -> list[tuple[int, float]]:
+    """Probe until the score lands in the target band, or fail loudly.
+
+    The lo/hi updates are clamped against each other, so ``lo <= hi`` holds by
+    construction; a search that stalls or wanders trips the probe cap instead
+    of spinning.
+    """
     history: list[tuple[int, float]] = []
     lo, hi = 1, 70
     target_lo, target_hi = 79.5, 80.5
-    for _ in range(10):
-        if lo > hi:
-            break
+    while True:
+        assert len(history) < 10, f"no convergence within 10 probes: {history}"
         predicted = predict_knob(lo, hi, history, target_lo, target_hi)
         # Snap to the nearest available data point in the sparse map.
         knob = min(score_map, key=lambda q: abs(q - predicted))
-        if any(k == knob for k, _ in history):
-            break
         score = score_map[knob]
         history.append((knob, score))
         if target_lo <= score <= target_hi:
-            break
+            return history
         if score > target_hi:
             lo = min(knob + 1, hi)
         else:
             hi = max(knob - 1, lo)
-    return history
 
 
 class TestAv1anTableCases:

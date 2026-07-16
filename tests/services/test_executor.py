@@ -989,8 +989,7 @@ class TestRunPipelineShutdown:
         def extract_and_shutdown(src: Any, idx: Any, out: Any, on_progress: Any = None) -> int:
             nonlocal call_count
             call_count += 1
-            if call_count == 1:
-                executor._shutdown_event.set()
+            executor._shutdown_event.set()
             return 0
 
         mocks.audio_extractor.extract_track.side_effect = extract_and_shutdown
@@ -1047,8 +1046,7 @@ class TestRunPipelineShutdown:
         def extract_and_shutdown(src: Any, idx: Any, out: Any, on_progress: Any = None) -> int:
             nonlocal call_count
             call_count += 1
-            if call_count == 1:
-                executor._shutdown_event.set()
+            executor._shutdown_event.set()
             return 0
 
         mocks.audio_extractor.extract_track.side_effect = extract_and_shutdown
@@ -2216,12 +2214,6 @@ class TestRunShutdownBetweenJobs:
         mocks.muxer.mux.return_value = 0
         mocks.tagger.set_encoder_tag.return_value = 0
 
-        def fake_clean(input_path: Any, output_path: Any, on_progress: Any = None) -> int:
-            Path(output_path).write_bytes(b"CLEAN")
-            return 0
-
-        mocks.cleaner.clean.side_effect = fake_clean
-
         executor = Executor(
             encoder=mocks.encoder,
             audio_extractor=mocks.audio_extractor,
@@ -2510,10 +2502,10 @@ class TestEncodeOnProgressOutputSize:
             rpu_path: Any = None,
             cq_override: Any = None,
         ) -> EncodeResult:
-            if on_progress:
-                # Create a fake video output to test size measurement
-                Path(output_path).write_bytes(b"V" * 500)
-                on_progress(ProgressSample(fraction=0.5))
+            assert on_progress is not None
+            # Create a fake video output to test size measurement
+            Path(output_path).write_bytes(b"V" * 500)
+            on_progress(ProgressSample(fraction=0.5))
             return EncodeResult(return_code=0, encoder_settings="test")
 
         mocks.encoder.encode.side_effect = fake_encode
@@ -2572,9 +2564,9 @@ class TestEncodeOnProgressOSError:
             rpu_path: Any = None,
             cq_override: Any = None,
         ) -> EncodeResult:
-            if on_progress:
-                # Don't create video file — test OSError path
-                on_progress(ProgressSample(fraction=0.1))
+            assert on_progress is not None
+            # Don't create video file — test OSError path
+            on_progress(ProgressSample(fraction=0.1))
             return EncodeResult(return_code=0, encoder_settings="test")
 
         mocks.encoder.encode.side_effect = fake_encode
@@ -3352,17 +3344,17 @@ class TestEncodeOnProgressStatOSError:
             rpu_path: Any = None,
             cq_override: Any = None,
         ) -> EncodeResult:
-            if on_progress:
-                # Create output then immediately delete to cause OSError on stat
-                Path(output_path).write_bytes(b"V")
+            assert on_progress is not None
+            # Create output then immediately delete to cause OSError on stat
+            Path(output_path).write_bytes(b"V")
 
-                def patched_stat(self_path: Path, **kwargs: Any) -> Any:
-                    if str(self_path) == str(output_path):
-                        raise OSError("permission denied")
-                    return Path.stat(self_path, **kwargs)
+            def patched_stat(self_path: Path, **kwargs: Any) -> Any:
+                # The callback stats nothing but the encode output while patched.
+                assert str(self_path) == str(output_path)
+                raise OSError("permission denied")
 
-                with patch.object(Path, "stat", patched_stat):
-                    on_progress(ProgressSample(fraction=0.3))
+            with patch.object(Path, "stat", patched_stat):
+                on_progress(ProgressSample(fraction=0.3))
             return EncodeResult(return_code=0, encoder_settings="test")
 
         mocks.encoder.encode.side_effect = fake_encode
@@ -3419,8 +3411,8 @@ class TestEncodeOnProgressNoProgress:
             rpu_path: Any = None,
             cq_override: Any = None,
         ) -> EncodeResult:
-            if on_progress:
-                on_progress(ProgressSample(fraction=0.5))
+            assert on_progress is not None
+            on_progress(ProgressSample(fraction=0.5))
             return EncodeResult(return_code=0, encoder_settings="test")
 
         mocks.encoder.encode.side_effect = fake_encode
@@ -3722,8 +3714,8 @@ class TestRunPipelinePassthrough:
 
         def fake_copy(input_path: Any, output_path: Any, on_progress: Any = None) -> int:
             Path(output_path).write_bytes(b"VIDEO_DATA")
-            if on_progress:
-                on_progress(ProgressSample(fraction=0.5))
+            assert on_progress is not None
+            on_progress(ProgressSample(fraction=0.5))
             return 0
 
         copier_mock.copy_video.side_effect = fake_copy
@@ -3767,8 +3759,8 @@ class TestRunPipelinePassthrough:
         executor, mocks = executor_with_mocks
 
         def fake_copy(input_path: Any, output_path: Any, on_progress: Any = None) -> int:
-            if on_progress:
-                on_progress(ProgressSample(fraction=0.5))
+            assert on_progress is not None
+            on_progress(ProgressSample(fraction=0.5))
             return 0
 
         mocks.video_copier.copy_video.side_effect = fake_copy

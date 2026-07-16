@@ -106,13 +106,13 @@ class TestDemuxTitleMakemkv:
             call_count += 1
             if "info" in str_cmd:
                 return 0, "Title #5 was added (3 cell(s), 1:00:00)\n"
-            if "mkv" in str_cmd:
-                # Simulate makemkvcon creating an MKV
-                mkv_file = tmp_path / "out" / "title_t05.mkv"
-                mkv_file.parent.mkdir(parents=True, exist_ok=True)
-                mkv_file.write_text("fake mkv")
-                return 0, ""
-            return 1, "unexpected"
+            # demux_title issues exactly two commands: info, then mkv.
+            assert "mkv" in str_cmd
+            # Simulate makemkvcon creating an MKV
+            mkv_file = tmp_path / "out" / "title_t05.mkv"
+            mkv_file.parent.mkdir(parents=True, exist_ok=True)
+            mkv_file.write_text("fake mkv")
+            return 0, ""
 
         adapter = MakemkvAdapter(Path("makemkvcon.exe"))
         output_dir = tmp_path / "out"

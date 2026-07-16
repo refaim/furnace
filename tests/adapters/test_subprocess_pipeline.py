@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -317,7 +318,7 @@ class _SyncThread:
 
     def __init__(
         self,
-        target: object = None,
+        target: Callable[..., object],
         args: tuple[object, ...] = (),
         daemon: bool = False,  # noqa: ARG002 — matches threading.Thread signature
     ) -> None:
@@ -327,8 +328,7 @@ class _SyncThread:
 
     def start(self) -> None:
         self._started = True
-        if callable(self._target):
-            self._target(*self._args)
+        self._target(*self._args)
 
     def join(self, timeout: float | None = None) -> None:  # noqa: ARG002
         return

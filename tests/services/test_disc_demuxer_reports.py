@@ -67,9 +67,9 @@ def test_fresh_dvd_title_emits_rip_only(tmp_path: Path) -> None:
     ) -> list[Path]:
         out = output_dir / "title.mkv"
         out.write_bytes(b"\x00")
-        if on_progress is not None:
-            on_progress(ProgressSample(fraction=0.5))
-            on_progress(ProgressSample(fraction=1.0))
+        assert on_progress is not None
+        on_progress(ProgressSample(fraction=0.5))
+        on_progress(ProgressSample(fraction=1.0))
         return [out]
 
     dvd_port.demux_title.side_effect = _fake_demux
@@ -289,10 +289,10 @@ def test_w64_transcode_emits_substeps_with_indices(tmp_path: Path) -> None:
         on_progress: OnProgress = None,
     ) -> int:
         output_path.write_bytes(b"flac")
-        if on_progress is not None:
-            # None fraction must be ignored, not crash
-            on_progress(ProgressSample(fraction=None))
-            on_progress(ProgressSample(fraction=0.7))
+        assert on_progress is not None
+        # None fraction must be ignored, not crash
+        on_progress(ProgressSample(fraction=None))
+        on_progress(ProgressSample(fraction=0.7))
         return 0
 
     transcoder.transcode_to_flac.side_effect = _fake_transcode
@@ -370,10 +370,10 @@ def test_remux_forwards_mkvmerge_progress(tmp_path: Path) -> None:
         on_progress_line: Callable[[str], bool] | None = None,
     ) -> tuple[int, str]:
         # mkvmerge would print progress and unrelated lines
-        if on_progress_line is not None:
-            assert on_progress_line("Progress: 25%") is True
-            assert on_progress_line("garbage line") is False
-            assert on_progress_line("Progress: 100%") is True
+        assert on_progress_line is not None
+        assert on_progress_line("Progress: 25%") is True
+        assert on_progress_line("garbage line") is False
+        assert on_progress_line("Progress: 100%") is True
         return 0, ""
 
     from unittest.mock import patch
@@ -430,10 +430,10 @@ def test_remux_progress_without_reporter_does_not_crash(tmp_path: Path) -> None:
         on_output: Callable[[str], None] | None = None,
         on_progress_line: Callable[[str], bool] | None = None,
     ) -> tuple[int, str]:
-        if on_progress_line is not None:
-            # Without reporter, demuxer still passes a closure (forwards into a
-            # `_rip_progress` that early-returns); just verify no crash.
-            on_progress_line("Progress: 50%")
+        # Without reporter, demuxer still passes a closure (forwards into a
+        # `_rip_progress` that early-returns); just verify no crash.
+        assert on_progress_line is not None
+        on_progress_line("Progress: 50%")
         return 0, ""
 
     from unittest.mock import patch
@@ -463,9 +463,9 @@ def test_mux_to_mkv_without_progress_callback(tmp_path: Path) -> None:
         on_output: Callable[[str], None] | None = None,
         on_progress_line: Callable[[str], bool] | None = None,
     ) -> tuple[int, str]:
-        if on_progress_line is not None:
-            # Drives the on_progress is None branch inside _on_progress_line.
-            assert on_progress_line("Progress: 30%") is True
+        # Drives the on_progress is None branch inside _on_progress_line.
+        assert on_progress_line is not None
+        assert on_progress_line("Progress: 30%") is True
         return 0, ""
 
     video = tmp_path / "video.h264"
@@ -566,9 +566,9 @@ def test_rip_progress_with_none_fraction_is_ignored(tmp_path: Path) -> None:
     ) -> list[Path]:
         out = output_dir / "x.mkv"
         out.write_bytes(b"\x00")
-        if on_progress is not None:
-            on_progress(ProgressSample(fraction=None))
-            on_progress(ProgressSample(fraction=0.42))
+        assert on_progress is not None
+        on_progress(ProgressSample(fraction=None))
+        on_progress(ProgressSample(fraction=0.42))
         return [out]
 
     dvd_port.demux_title.side_effect = _fake_demux

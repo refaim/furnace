@@ -199,9 +199,8 @@ class TestDoviExtractRpuExecution:
 
     def test_on_output_propagates(self) -> None:
         captured: dict[str, Any] = {}
-
-        def output_fn(_line: str) -> None:
-            return None
+        lines: list[str] = []
+        output_fn = lines.append
 
         adapter = DoviToolAdapter(DOVI, FFMPEG, on_output=output_fn)
         with self._patch_pipeline(captured):

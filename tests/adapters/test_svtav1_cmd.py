@@ -473,9 +473,8 @@ class TestSvtAv1Encode:
             log_path: Any = None,
             cwd: Any = None,
         ) -> tuple[int, str]:
-            if on_progress_line is not None:
-                on_progress_line("out_time_us=5000000")
-                on_progress_line("progress=continue")
+            on_progress_line("out_time_us=5000000")
+            on_progress_line("progress=continue")
             return 0, ""
 
         with patch("furnace.adapters.svtav1.run_tool", side_effect=fake_run_tool):
@@ -500,8 +499,7 @@ class TestSvtAv1Encode:
             log_path: Any = None,
             cwd: Any = None,
         ) -> tuple[int, str]:
-            if on_output is not None:
-                on_output("frame= 100")
+            on_output("frame= 100")
             return 0, ""
 
         with patch("furnace.adapters.svtav1.run_tool", side_effect=fake_run_tool):

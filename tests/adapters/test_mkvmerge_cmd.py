@@ -439,8 +439,7 @@ class TestMkvmergeMuxExecution:
             cwd: Any = None,
         ) -> tuple[int, str]:
             # Simulate a progress line
-            if on_progress_line is not None:
-                on_progress_line("Progress: 50%")
+            on_progress_line("Progress: 50%")
             return 0, ""
 
         adapter = MkvmergeAdapter(Path("mkvmerge.exe"))
@@ -468,8 +467,7 @@ class TestMkvmergeMuxExecution:
             log_path: Any = None,
             cwd: Any = None,
         ) -> tuple[int, str]:
-            if on_progress_line is not None:
-                progress_results.append(on_progress_line("Not a progress line"))
+            progress_results.append(on_progress_line("Not a progress line"))
             return 0, ""
 
         adapter = MkvmergeAdapter(Path("mkvmerge.exe"))
@@ -495,8 +493,7 @@ class TestMkvmergeMuxExecution:
             log_path: Any = None,
             cwd: Any = None,
         ) -> tuple[int, str]:
-            if on_progress_line is not None:
-                progress_results.append(on_progress_line("Progress: 50%"))
+            progress_results.append(on_progress_line("Progress: 50%"))
             return 0, ""
 
         adapter = MkvmergeAdapter(Path("mkvmerge.exe"))

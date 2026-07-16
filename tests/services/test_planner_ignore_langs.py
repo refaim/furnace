@@ -183,20 +183,16 @@ class TestIgnoreLangsPlan:
         subs = [_sub("ger", 3, main)]
         movie = _make_movie(main, audio=audio, subs=subs)
 
-        selector_calls: list[TrackType] = []
+        selector = MagicMock()
 
-        def _selector(m: Movie, cands: list[Track], tt: TrackType) -> list[Track]:
-            selector_calls.append(tt)
-            return list(cands)
-
-        planner = PlannerService(previewer=None, track_selector=_selector, ignore_langs=True)
+        planner = PlannerService(previewer=None, track_selector=selector, ignore_langs=True)
         plan = planner.create_plan(
             [(movie, tmp_path / "out.mkv")],
             audio_lang_filter=["jpn"],
             sub_lang_filter=["eng"],
         )
 
-        assert selector_calls == []
+        selector.assert_not_called()
         assert plan.jobs[0].audio[0].language == "jpn"
         assert plan.jobs[0].subtitles[0].language == "eng"
 
@@ -211,8 +207,9 @@ class TestIgnoreLangsPlan:
         captured: list[list[str]] = []
 
         def _selector(m: Movie, cands: list[Track], tt: TrackType) -> list[Track]:
-            if tt == TrackType.AUDIO:
-                captured.append([t.language for t in cands])
+            # This movie has no subtitle tracks, so only audio reaches the selector.
+            assert tt == TrackType.AUDIO
+            captured.append([t.language for t in cands])
             return list(cands)
 
         planner = PlannerService(previewer=None, track_selector=_selector, ignore_langs=True)

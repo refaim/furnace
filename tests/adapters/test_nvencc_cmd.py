@@ -676,8 +676,7 @@ class TestNVEncCEncode:
             log_path: Any = None,
             cwd: Any = None,
         ) -> tuple[int, str]:
-            if on_progress_line is not None:
-                on_progress_line("[50.0%] 1000 frames: 48.0 fps")
+            on_progress_line("[50.0%] 1000 frames: 48.0 fps")
             return 0, ""
 
         with patch("furnace.adapters.nvencc.subprocess.run") as mock_sub:
@@ -720,9 +719,8 @@ class TestNVEncCEncode:
             log_path: Any = None,
             cwd: Any = None,
         ) -> tuple[int, str]:
-            if on_progress_line is not None:
-                consumed = on_progress_line("[50.0%] frames")
-                assert consumed is True
+            consumed = on_progress_line("[50.0%] frames")
+            assert consumed is True
             return 0, ""
 
         with patch("furnace.adapters.nvencc.subprocess.run") as mock_sub:
@@ -744,9 +742,8 @@ class TestNVEncCEncode:
             log_path: Any = None,
             cwd: Any = None,
         ) -> tuple[int, str]:
-            if on_output is not None:
-                on_output("encode started")
-                on_output("encode finished")
+            on_output("encode started")
+            on_output("encode finished")
             return 0, ""
 
         with patch("furnace.adapters.nvencc.subprocess.run") as mock_sub:
@@ -770,8 +767,7 @@ class TestNVEncCEncode:
             log_path: Any = None,
             cwd: Any = None,
         ) -> tuple[int, str]:
-            if on_progress_line is not None:
-                results.append(on_progress_line("not a progress line"))
+            results.append(on_progress_line("not a progress line"))
             return 0, ""
 
         with patch("furnace.adapters.nvencc.subprocess.run") as mock_sub:

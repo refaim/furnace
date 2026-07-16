@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 from furnace.adapters.ffmpeg import FFmpegAdapter
-from furnace.config import load_config
+from furnace.config import ToolPaths, load_config
 
 
 def _resolve_ffmpeg_paths() -> tuple[Path, Path]:
@@ -30,6 +30,56 @@ def _resolve_ffmpeg_paths() -> tuple[Path, Path]:
             "ffmpeg/ffprobe not found via furnace.toml or PATH; these are required"
         )
     return Path(which_ffmpeg), Path(which_ffprobe)
+
+
+def _tool_paths(ffmpeg: Path, ffprobe: Path) -> ToolPaths:
+    """A ToolPaths carrying the two binaries under test; the rest are unused here."""
+    unused = Path("unused")
+    return ToolPaths(
+        ffmpeg=ffmpeg,
+        ffprobe=ffprobe,
+        mkvmerge=unused,
+        mkvpropedit=unused,
+        mkclean=unused,
+        eac3to=unused,
+        qaac64=unused,
+        mpv=unused,
+        makemkvcon=unused,
+        nvencc=unused,
+        dovi_tool=None,
+    )
+
+
+def test_resolve_ffmpeg_paths_prefers_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """furnace.toml wins over PATH when its binaries exist on disk."""
+    ffmpeg = tmp_path / "ffmpeg"
+    ffprobe = tmp_path / "ffprobe"
+    ffmpeg.touch()
+    ffprobe.touch()
+    monkeypatch.setattr(
+        "tests.test_ffmpeg_profile_audio.load_config",
+        lambda: _tool_paths(ffmpeg, ffprobe),
+    )
+    monkeypatch.setattr(shutil, "which", lambda _name: None)  # PATH must not be consulted
+
+    assert _resolve_ffmpeg_paths() == (ffmpeg, ffprobe)
+
+
+def test_resolve_ffmpeg_paths_hard_fails_when_tools_are_absent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No usable config and nothing on PATH -> loud failure, never a silent skip."""
+
+    def _no_config() -> ToolPaths:
+        raise FileNotFoundError("no furnace.toml")
+
+    monkeypatch.setattr("tests.test_ffmpeg_profile_audio.load_config", _no_config)
+    monkeypatch.setattr(shutil, "which", lambda _name: None)
+
+    with pytest.raises(RuntimeError, match="these are required"):
+        _resolve_ffmpeg_paths()
 
 
 def _write_synthetic_5_1_wav(path: Path, seconds: float = 2.0, sample_rate: int = 48000) -> None:

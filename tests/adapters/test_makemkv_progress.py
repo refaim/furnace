@@ -67,8 +67,7 @@ class TestDemuxProgressWiring:
             if "info" in str_cmd:
                 return 0, "Title #5 was added (3 cell(s), 1:00:00)\n"
             # demux step: feed progress_lines through the closure
-            if on_progress_line is not None:
-                progress_returns.extend(on_progress_line(line) for line in progress_lines)
+            progress_returns.extend(on_progress_line(line) for line in progress_lines)
             mkv_file = tmp_path / "out" / "title_t05.mkv"
             mkv_file.parent.mkdir(parents=True, exist_ok=True)
             mkv_file.write_text("fake mkv")

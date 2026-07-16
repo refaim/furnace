@@ -53,8 +53,7 @@ def _capture_probe_cmd(vp: VideoParams, *, qvbr: int, metric: str) -> list[str]:
         cwd: Any = None,
     ) -> tuple[int, str]:
         captured.extend(str(c) for c in cmd)
-        if on_output is not None:
-            on_output(_lines[metric])
+        on_output(_lines[metric])
         return 0, ""
 
     with patch("furnace.adapters.nvencc.run_tool", side_effect=fake_run_tool):
@@ -186,8 +185,7 @@ class TestNVEncCProbeMisc:
             cwd: Any = None,
         ) -> tuple[int, str]:
             captured_kwargs["log_path"] = log_path
-            if on_output is not None:
-                on_output("ssim/psnr/vmaf/vship: CVVDP Score 9.30")
+            on_output("ssim/psnr/vmaf/vship: CVVDP Score 9.30")
             return 0, ""
 
         with patch("furnace.adapters.nvencc.run_tool", side_effect=fake_run_tool):
@@ -207,8 +205,7 @@ class TestNVEncCProbeMisc:
             log_path: Any = None,
             cwd: Any = None,
         ) -> tuple[int, str]:
-            if on_output is not None:
-                on_output("ssim/psnr/vmaf/vship: CVVDP Score 9.30")
+            on_output("ssim/psnr/vmaf/vship: CVVDP Score 9.30")
             return 0, ""
 
         with patch("furnace.adapters.nvencc.run_tool", side_effect=fake_run_tool):

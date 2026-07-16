@@ -126,8 +126,7 @@ class TestMkcleanClean:
             log_path: Any = None,
             cwd: Any = None,
         ) -> tuple[int, str]:
-            if on_progress_line is not None:
-                on_progress_line("Progress 2/3:  50%")
+            on_progress_line("Progress 2/3:  50%")
             return 0, ""
 
         adapter = MkcleanAdapter(Path("mkclean.exe"))
@@ -164,8 +163,7 @@ class TestMkcleanClean:
             log_path: Any = None,
             cwd: Any = None,
         ) -> tuple[int, str]:
-            if on_progress_line is not None:
-                results.append(on_progress_line("mkclean v0.8.7"))
+            results.append(on_progress_line("mkclean v0.8.7"))
             return 0, ""
 
         adapter = MkcleanAdapter(Path("mkclean.exe"))
@@ -192,8 +190,7 @@ class TestMkcleanCleanWithoutProgressCallback:
             log_path: Any = None,
             cwd: Any = None,
         ) -> tuple[int, str]:
-            if on_progress_line is not None:
-                results.append(on_progress_line("Progress 1/3:  50%"))
+            results.append(on_progress_line("Progress 1/3:  50%"))
             return 0, ""
 
         adapter = MkcleanAdapter(Path("mkclean.exe"))

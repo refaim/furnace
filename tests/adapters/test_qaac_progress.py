@@ -95,8 +95,7 @@ class TestQaacEncodeAac:
             log_path: Any = None,
             cwd: Any = None,
         ) -> tuple[int, str]:
-            if on_progress_line is not None:
-                on_progress_line("[50.0%] 0:30/1:00.000 (30.0x)")
+            on_progress_line("[50.0%] 0:30/1:00.000 (30.0x)")
             return 0, ""
 
         adapter = QaacAdapter(Path("qaac64.exe"))
@@ -116,8 +115,7 @@ class TestQaacEncodeAac:
             log_path: Any = None,
             cwd: Any = None,
         ) -> tuple[int, str]:
-            if on_progress_line is not None:
-                results.append(on_progress_line("not progress"))
+            results.append(on_progress_line("not progress"))
             return 0, ""
 
         adapter = QaacAdapter(Path("qaac64.exe"))
@@ -136,8 +134,7 @@ class TestQaacEncodeAac:
             log_path: Any = None,
             cwd: Any = None,
         ) -> tuple[int, str]:
-            if on_progress_line is not None:
-                results.append(on_progress_line("[50%] 0:30/1:00"))
+            results.append(on_progress_line("[50%] 0:30/1:00"))
             return 0, ""
 
         adapter = QaacAdapter(Path("qaac64.exe"))

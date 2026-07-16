@@ -366,10 +366,9 @@ class TestExtractTrack:
             log_path: Any = None,
             cwd: Any = None,
         ) -> tuple[int, str]:
-            if on_progress_line is not None:
-                on_progress_line("out_time_us=60000000")
-                on_progress_line("speed=2.5x")
-                on_progress_line("progress=continue")
+            on_progress_line("out_time_us=60000000")
+            on_progress_line("speed=2.5x")
+            on_progress_line("progress=continue")
             return 0, ""
 
         adapter = _adapter()
@@ -389,8 +388,7 @@ class TestExtractTrack:
             log_path: Any = None,
             cwd: Any = None,
         ) -> tuple[int, str]:
-            if on_progress_line is not None:
-                results.append(on_progress_line("no equals sign here"))
+            results.append(on_progress_line("no equals sign here"))
             return 0, ""
 
         adapter = _adapter()
@@ -407,12 +405,11 @@ class TestExtractTrack:
             log_path: Any = None,
             cwd: Any = None,
         ) -> tuple[int, str]:
-            if on_progress_line is not None:
-                # Drive a full progress block through the closure. Without
-                # on_progress, the inner False branch of the guard fires.
-                assert on_progress_line("out_time_us=1000000") is True
-                assert on_progress_line("speed=1.5x") is True
-                assert on_progress_line("progress=continue") is True
+            # Drive a full progress block through the closure. Without
+            # on_progress, the inner False branch of the guard fires.
+            assert on_progress_line("out_time_us=1000000") is True
+            assert on_progress_line("speed=1.5x") is True
+            assert on_progress_line("progress=continue") is True
             return 0, ""
 
         adapter = _adapter()
@@ -456,10 +453,9 @@ class TestFfmpegToWav:
             log_path: Any = None,
             cwd: Any = None,
         ) -> tuple[int, str]:
-            if on_progress_line is not None:
-                on_progress_line("out_time_us=30000000")
-                on_progress_line("speed=1.0x")
-                on_progress_line("progress=continue")
+            on_progress_line("out_time_us=30000000")
+            on_progress_line("speed=1.0x")
+            on_progress_line("progress=continue")
             return 0, ""
 
         adapter = _adapter()
@@ -477,8 +473,7 @@ class TestFfmpegToWav:
             log_path: Any = None,
             cwd: Any = None,
         ) -> tuple[int, str]:
-            if on_progress_line is not None:
-                results.append(on_progress_line("plain text"))
+            results.append(on_progress_line("plain text"))
             return 0, ""
 
         adapter = _adapter()
@@ -495,10 +490,9 @@ class TestFfmpegToWav:
             log_path: Any = None,
             cwd: Any = None,
         ) -> tuple[int, str]:
-            if on_progress_line is not None:
-                assert on_progress_line("out_time_us=1000000") is True
-                assert on_progress_line("speed=1.5x") is True
-                assert on_progress_line("progress=continue") is True
+            assert on_progress_line("out_time_us=1000000") is True
+            assert on_progress_line("speed=1.5x") is True
+            assert on_progress_line("progress=continue") is True
             return 0, ""
 
         adapter = _adapter()

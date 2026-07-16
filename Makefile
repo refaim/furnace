@@ -12,6 +12,6 @@ typecheck:
 
 test:
 	uv run pytest tests/ -q \
-		--cov=furnace --cov-branch \
-		--cov-report=term-missing \
+		--cov=furnace --cov=tests --cov-branch \
+		--cov-report=term-missing:skip-covered \
 		--cov-fail-under=100

@@ -58,9 +58,9 @@ class _FakeAnalyzer:
         *,
         on_progress: Callable[[float], None] | None = None,
     ) -> AnalysisOutcome:
-        if on_progress is not None:
-            on_progress(0.5)
-            on_progress(1.0)
+        assert on_progress is not None
+        on_progress(0.5)
+        on_progress(1.0)
         return self._outcomes[scan_result.main_file]
 
 
@@ -93,9 +93,9 @@ class _FakeProber:
         self.calls.append(
             _CropCall(path, duration_s, interlaced, is_dvd, hdr_transfer, on_progress),
         )
-        if on_progress is not None:
-            on_progress(ProgressSample(fraction=0.5))  # forwarded to the file slot
-            on_progress(ProgressSample(fraction=None))  # no fraction -> ignored
+        assert on_progress is not None
+        on_progress(ProgressSample(fraction=0.5))  # forwarded to the file slot
+        on_progress(ProgressSample(fraction=None))  # no fraction -> ignored
         exc = self._raises.get(path)
         if exc is not None:
             raise exc

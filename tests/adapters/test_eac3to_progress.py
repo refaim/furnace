@@ -186,8 +186,7 @@ class TestDenormalize:
             log_path: Any = None,
             cwd: Any = None,
         ) -> tuple[int, str]:
-            if on_progress_line is not None:
-                on_progress_line("process: 50%")
+            on_progress_line("process: 50%")
             return 0, ""
 
         adapter = Eac3toAdapter(Path("eac3to.exe"))
@@ -207,8 +206,7 @@ class TestDenormalize:
             log_path: Any = None,
             cwd: Any = None,
         ) -> tuple[int, str]:
-            if on_progress_line is not None:
-                progress_returns.append(on_progress_line("analyze: 30%"))
+            progress_returns.append(on_progress_line("analyze: 30%"))
             return 0, ""
 
         adapter = Eac3toAdapter(Path("eac3to.exe"))
@@ -229,8 +227,7 @@ class TestDenormalize:
             log_path: Any = None,
             cwd: Any = None,
         ) -> tuple[int, str]:
-            if on_progress_line is not None:
-                progress_returns.append(on_progress_line("Reading file..."))
+            progress_returns.append(on_progress_line("Reading file..."))
             return 0, ""
 
         adapter = Eac3toAdapter(Path("eac3to.exe"))

@@ -16,6 +16,7 @@ def test_records_method_name_and_args(tmp_path: Path) -> None:
     r.demux_title_progress(0.37)
     r.demux_title_done()
     r.scan_file("Inception.mkv")
+    r.scan_skipped("weird.mkv", "no video stream")
     r.analyze_batch_start(1)
     r.analyze_batch_item("broken.mkv", "HDR10+ not supported", status=AnalyzeStatus.FAILED)
     r.analyze_batch_finish()
@@ -33,6 +34,7 @@ def test_records_method_name_and_args(tmp_path: Path) -> None:
         Event("demux_title_progress", (0.37,)),
         Event("demux_title_done", ()),
         Event("scan_file", ("Inception.mkv",)),
+        Event("scan_skipped", ("weird.mkv", "no video stream")),
         Event("analyze_batch_start", (1,)),
         Event(
             "analyze_batch_item",

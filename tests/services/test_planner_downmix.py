@@ -215,14 +215,14 @@ class TestCreatePlanDownmixOverrides:
         downmix_overrides: dict[tuple[Path, int], DownmixMode] = {}
 
         def selector(_movie: Movie, candidates: list[Track], track_type: TrackType) -> list[Track]:
-            if track_type == TrackType.AUDIO:
-                # Pick the first multichannel candidate and tag it for downmix.
-                picked = candidates[0]
-                downmix_overrides[(Path(str(picked.source_file)), picked.index)] = (
-                    DownmixMode.STEREO
-                )
-                return [picked]
-            return list(candidates)
+            # This movie has no subtitle tracks, so only audio reaches the selector.
+            assert track_type == TrackType.AUDIO
+            # Pick the first multichannel candidate and tag it for downmix.
+            picked = candidates[0]
+            downmix_overrides[(Path(str(picked.source_file)), picked.index)] = (
+                DownmixMode.STEREO
+            )
+            return [picked]
 
         planner = PlannerService(
             previewer=None, track_selector=selector,
