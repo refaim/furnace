@@ -116,6 +116,29 @@ class TestDecodeEncodeDownmixRouting:
         assert mocks.audio_extractor.ffmpeg_to_wav.called
         assert not mocks.audio_extractor.extract_track.called
 
+    def test_aac_downmix_uses_ffmpeg_to_wav(
+        self, executor_with_mocks: tuple[Executor, SimpleNamespace], tmp_path: Path,
+    ) -> None:
+        """eac3to has no AAC decoder of its own -- it hands AAC to the Nero
+        DirectShow filter, which mangles multichannel: measured on a real 5.1
+        AAC track it emits one channel as digital silence and delivers the rest
+        in AAC/MPEG order (C,L,R,Ls,Rs,LFE) inside a WAV tagged 5.1, and eac3to
+        has no channel remap for AAC (it only has them for MLP and ArcSoft
+        DTS). Its own -downStereo then mixes the wrong channels: L/R came out
+        7.9 dB apart with a genuine Nero 7 and 17.6 dB apart with the bundled
+        filter, against 0.12 dB for a correct downmix. eac3to exits 0 the whole
+        way, so the damage is silent. AAC must be pre-decoded by ffmpeg -- the
+        downmix itself still belongs to eac3to.
+        """
+        executor, mocks = executor_with_mocks
+        instr = _instr("aac", downmix=DownmixMode.STEREO, channels=6)
+        executor._process_audio_track(instr, tmp_path, _job())
+
+        assert mocks.audio_extractor.ffmpeg_to_wav.called
+        assert not mocks.audio_extractor.extract_track.called
+        decode_call = mocks.audio_decoder.decode_lossless.call_args
+        assert decode_call.kwargs.get("downmix") == DownmixMode.STEREO
+
     def test_no_downmix_on_truehd_passes_none(
         self, executor_with_mocks: tuple[Executor, SimpleNamespace], tmp_path: Path,
     ) -> None:

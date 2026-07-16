@@ -891,7 +891,24 @@ class FFmpegAdapter:
         output_wav: Path,
         on_progress: Callable[[ProgressSample], None] | None = None,
     ) -> int:
-        """ffmpeg -i input -map 0:{index} -f wav -rf64 auto -progress pipe:1 output.wav"""
+        """ffmpeg -i input -map 0:{index} -c:a pcm_s24le -f wav -rf64 auto ... output.wav
+
+        Decode only -- never -ac. On the two DECODE_ENCODE routes this WAV is
+        handed to eac3to, which performs the downmix (-downStereo / -down6)
+        with its own matrix; an -ac here would silently substitute ffmpeg's.
+        On the FFMPEG_ENCODE route it goes straight to qaac64 and there is no
+        downmix at all.
+
+        -c:a pcm_s24le is explicit because the WAV muxer would otherwise default
+        to pcm_s16le and truncate the decoder's float output to 16 bits. That
+        matters most ahead of eac3to's downmix -- summing six channels sums six
+        lots of quantisation noise -- and on the qaac route it costs only temp
+        size, the encoder simply getting more precision. eac3to reads 24-bit WAV
+        natively and mixes at 64-bit internally. (-rf64 auto keeps >4 GB decodes
+        muxable; at 1.5x the bytes, 24-bit cuts the duration at which that kicks
+        in to two thirds -- 5.1/48k goes from ~124 to ~83 min -- and both eac3to
+        and qaac64 read RF64.)
+        """
         cmd = [
             str(self._ffmpeg),
             "-hide_banner",
@@ -901,6 +918,8 @@ class FFmpegAdapter:
             str(input_path),
             "-map",
             f"0:{stream_index}",
+            "-c:a",
+            "pcm_s24le",
             "-f",
             "wav",
             "-rf64",
@@ -1077,6 +1096,11 @@ class FFmpegAdapter:
             "-map", f"0:{stream_index}",
             "-af", af_value,
             "-ac", "1",
+            # The pan above averages two channels; the WAV muxer would default
+            # to pcm_s16le and truncate that result to 16 bits. Keep 24-bit, as
+            # ffmpeg_to_wav does -- on the multichannel route this step is fed
+            # by it via eac3to's 24-bit downmix.
+            "-c:a", "pcm_s24le",
             "-f", "wav",
             "-rf64", "auto",
             "-progress", "pipe:1",

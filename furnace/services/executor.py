@@ -76,6 +76,25 @@ _SUBTITLE_CODEC_EXT: dict[str, str] = {
 }
 
 
+# Codecs eac3to decodes correctly on its own. Consulted only inside the
+# DECODE_ENCODE branch: a listed codec is extracted and handed to eac3to,
+# anything else is pre-decoded to WAV by ffmpeg first -- either way the CHANNEL
+# downmix (multichannel -> stereo) stays eac3to's. Membership says nothing about
+# which action a codec gets: mp2/mp3 are listed but default to FFMPEG_ENCODE and
+# never reach eac3to. Nor does it govern the final stereo -> mono averaging,
+# which is always ffmpeg's (FFmpegAdapter.stereo_to_mono_wav).
+#
+# AAC is deliberately NOT here. eac3to lists AAC as a supported source, but it
+# has no AAC decoder of its own -- it hands the stream to the Nero "Audio
+# Decoder 2" DirectShow filter, which mangles multichannel AAC. Measured on a
+# real 5.1 AAC track: one channel comes back as digital silence and the rest
+# arrive in AAC/MPEG order (C,L,R,Ls,Rs,LFE) inside a WAV tagged 5.1, and
+# eac3to has no channel remap for AAC (it only ships them for MLP and ArcSoft
+# DTS). Its own -downStereo therefore mixes the wrong channels: L/R landed
+# 7.9 dB apart with a genuine Nero 7 filter and 17.6 dB apart with the one
+# bundled with eac3to, where a correct downmix sits 0.12 dB apart. eac3to
+# returns 0 throughout, so routing AAC here would corrupt audio silently --
+# and "eac3to -test" reports the broken filter as "works fine".
 _EAC3TO_SUPPORTED_SRC: frozenset[str] = frozenset(
     {
         "ac3",
@@ -86,7 +105,6 @@ _EAC3TO_SUPPORTED_SRC: frozenset[str] = frozenset(
         "pcm_s16le",
         "pcm_s24le",
         "pcm_s16be",
-        "aac",
         "mp2",
         "mp3",
     }
@@ -94,7 +112,7 @@ _EAC3TO_SUPPORTED_SRC: frozenset[str] = frozenset(
 
 
 def _codec_supported_by_eac3to(codec_name: str) -> bool:
-    """Return True if eac3to can read this source codec directly."""
+    """Return True if eac3to can decode this source codec unaided."""
     return codec_name.lower() in _EAC3TO_SUPPORTED_SRC
 
 

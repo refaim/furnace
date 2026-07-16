@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from itertools import pairwise
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -420,7 +421,9 @@ class TestExtractTrack:
 
 
 class TestFfmpegToWav:
-    def test_ffmpeg_to_wav_cmd(self) -> None:
+    @staticmethod
+    def _run(input_name: str = "audio.thd") -> tuple[int, list[str]]:
+        """Invoke ffmpeg_to_wav with run_tool patched; return (rc, argv)."""
         captured: list[str] = []
 
         def fake_run_tool(
@@ -435,13 +438,42 @@ class TestFfmpegToWav:
 
         adapter = _adapter()
         with patch("furnace.adapters.ffmpeg.run_tool", side_effect=fake_run_tool):
-            rc = adapter.ffmpeg_to_wav(Path("audio.thd"), 1, Path("out.wav"))
+            rc = adapter.ffmpeg_to_wav(Path(input_name), 1, Path("out.wav"))
+        return rc, captured
+
+    def test_ffmpeg_to_wav_cmd(self) -> None:
+        rc, captured = self._run()
         assert rc == 0
         assert "-f" in captured
         assert "wav" in captured
         assert "-rf64" in captured
         assert "auto" in captured
         assert "0:1" in captured
+
+    def test_ffmpeg_to_wav_asks_for_24_bit(self) -> None:
+        """The WAV muxer's default sample format is pcm_s16le. This WAV is not
+        a deliverable -- on the DECODE_ENCODE routes it is what eac3to downmixes
+        from, so truncating the decoder's float output to 16 bits here would
+        throw away precision before the mix and sum six channels' worth of
+        quantisation noise. eac3to reads 24-bit natively (it reports "24 bits"
+        on the way in) and mixes at 64-bit internally.
+
+        Asserted as an adjacent (flag, value) pair rather than mere membership:
+        a bare `"pcm_s24le" in captured` would also pass if the string only
+        turned up in, say, an input path.
+        """
+        _rc, captured = self._run(input_name="audio.m4a")
+        assert ("-c:a", "pcm_s24le") in pairwise(captured)
+
+    def test_ffmpeg_to_wav_does_not_downmix(self) -> None:
+        """Standing guard on a contract this function has always honoured: it
+        DECODES only. The downmix belongs to eac3to (-downStereo / -down6) and
+        its matrix is the one furnace ships -- an -ac here would silently
+        substitute ffmpeg's, which is exactly the regression the AAC routing
+        change must not tempt anyone into.
+        """
+        _rc, captured = self._run(input_name="audio.m4a")
+        assert "-ac" not in captured
 
     def test_ffmpeg_to_wav_progress(self) -> None:
         samples: list[ProgressSample] = []

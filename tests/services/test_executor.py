@@ -2452,7 +2452,7 @@ class TestCodecSupportedByEac3to:
 
         supported = [
             "ac3", "eac3", "dts", "truehd", "flac",
-            "pcm_s16le", "pcm_s24le", "pcm_s16be", "aac", "mp2", "mp3",
+            "pcm_s16le", "pcm_s24le", "pcm_s16be", "mp2", "mp3",
         ]
         for codec in supported:
             assert _codec_supported_by_eac3to(codec), f"{codec} should be supported"
@@ -2462,6 +2462,19 @@ class TestCodecSupportedByEac3to:
 
         for codec in ["opus", "vorbis", "wmav2", "amr_nb"]:
             assert not _codec_supported_by_eac3to(codec), f"{codec} should NOT be supported"
+
+    def test_aac_is_not_supported(self) -> None:
+        """eac3to advertises AAC as a source format, but it has no AAC decoder
+        of its own -- it delegates to the Nero DirectShow filter, which mangles
+        multichannel AAC (a channel lost to silence, the rest in AAC/MPEG order
+        under a 5.1 tag, no remap) while still exiting 0. Routing AAC to eac3to
+        therefore corrupts audio silently, so it must be pre-decoded by ffmpeg.
+        This is a deliberate exclusion, not an oversight -- do not re-add it.
+        """
+        from furnace.services.executor import _codec_supported_by_eac3to
+
+        assert not _codec_supported_by_eac3to("aac")
+        assert not _codec_supported_by_eac3to("AAC")
 
     def test_case_insensitive(self) -> None:
         from furnace.services.executor import _codec_supported_by_eac3to

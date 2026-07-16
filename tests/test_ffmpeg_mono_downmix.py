@@ -8,6 +8,7 @@ pipe:1`` plumbing that drives the per-step progress bar).
 
 from __future__ import annotations
 
+from itertools import pairwise
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -51,11 +52,37 @@ def _invoke(
     return _af_value(run_tool.call_args)
 
 
+def _invoke_cmd(adapter: FFmpegAdapter, tmp_path: Path) -> list[str]:
+    """Run the adapter with run_tool patched, return the whole command."""
+    with patch("furnace.adapters.ffmpeg.run_tool") as run_tool:
+        run_tool.return_value = (0, "")
+        adapter.stereo_to_mono_wav(
+            input_path=tmp_path / "a.mkv",
+            stream_index=1,
+            output_wav=tmp_path / "out.wav",
+            delay_ms=0,
+        )
+    return [str(c) for c in run_tool.call_args[0][0]]
+
+
 def test_stereo_averages_fronts(
     adapter: FFmpegAdapter, tmp_path: Path,
 ) -> None:
     af = _invoke(adapter, tmp_path)
     assert PAN_STEREO in af
+
+
+def test_mono_wav_asks_for_24_bit(
+    adapter: FFmpegAdapter, tmp_path: Path,
+) -> None:
+    """The pan formula above averages two channels -- that IS a mix, and the
+    WAV muxer would otherwise default to pcm_s16le and truncate its result to
+    16 bits. Ask for 24-bit explicitly, matching ffmpeg_to_wav, which feeds
+    this step on the multichannel -> mono route (ffmpeg_to_wav 24-bit ->
+    eac3to -downStereo 24-bit -> here). Cheap: the next step is qaac.
+    """
+    cmd = _invoke_cmd(adapter, tmp_path)
+    assert ("-c:a", "pcm_s24le") in pairwise(cmd)
 
 
 def test_no_alimiter(
