@@ -34,6 +34,12 @@ _CHANNELS_STEREO = 2
 _CHANNELS_5_1 = 6
 _CHANNELS_7_1 = 8
 
+# --- Field-pairing probe (interlaced sources reporting a field rate) -------
+# One window from the start of the stream, long enough that a boundary packet
+# cannot move the packets-per-frame ratio off 2.0 by more than the tolerance
+# ``core.detect.detect_field_separated`` allows (~1500 frames at 25 fps).
+_FIELD_PAIRING_SECONDS = 60
+
 # --- Film-grain probe (SDR sources, any resolution) ------------------------
 # Five short windows across the timeline; each pipes a handful of luma-only
 # frames and measures how much the calmest 16x16 blocks flicker frame to frame.
@@ -561,6 +567,60 @@ class FFmpegAdapter:
             flags.extend(window_flags)
 
         return flags
+
+    def sample_field_pairing(self, path: Path) -> tuple[int, int]:
+        """Count decoded frames vs demuxed packets over one window from the start.
+
+        Uses: ffprobe -v quiet -print_format json -select_streams v:0
+              -count_frames -count_packets
+              -show_entries stream=nb_read_frames,nb_read_packets
+              -read_intervals "%+<seconds>" path
+
+        The window starts at zero deliberately: on a seek, ffprobe reads the
+        packets between the seek point and the first keyframe but decodes no
+        frame from them, inflating the ratio the caller measures. From the
+        start every packet pairs with the frame it belongs to, so the ratio is
+        exact. One window suffices -- how a muxer stores fields is a property
+        of the whole track, not of a moment in the timeline.
+
+        Fail-soft: an ffprobe error, unparseable JSON, a missing stream, or a
+        counter ffprobe could not fill (it reports "N/A") all return ``(0, 0)``,
+        which ``core.detect.detect_field_separated`` reads as an untrustworthy
+        sample and answers by keeping the container's reported rate.
+        """
+        cmd = [
+            str(self._ffprobe),
+            "-v",
+            "quiet",
+            "-print_format",
+            "json",
+            "-select_streams",
+            "v:0",
+            "-count_frames",
+            "-count_packets",
+            "-show_entries",
+            "stream=nb_read_frames,nb_read_packets",
+            "-read_intervals",
+            f"%+{_FIELD_PAIRING_SECONDS}",
+            str(path),
+        ]
+        logger.debug("sample_field_pairing cmd: %s", cmd)
+        result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", check=False)
+        if result.returncode != 0:
+            logger.warning("sample_field_pairing failed (rc=%d), returning (0, 0)", result.returncode)
+            return (0, 0)
+        try:
+            data: dict[str, Any] = json.loads(result.stdout)
+            streams: list[dict[str, Any]] = data.get("streams", [])
+            if not streams:
+                logger.warning("sample_field_pairing found no video stream, returning (0, 0)")
+                return (0, 0)
+            frames = int(streams[0]["nb_read_frames"])
+            packets = int(streams[0]["nb_read_packets"])
+        except (ValueError, KeyError, TypeError) as exc:
+            logger.warning("sample_field_pairing returned unusable data (%s), returning (0, 0)", exc)
+            return (0, 0)
+        return (frames, packets)
 
     def sample_grain(self, path: Path, duration_s: float) -> list[float]:
         """Measure film-grain amplitude via static-block temporal flicker.

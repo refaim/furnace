@@ -34,6 +34,7 @@ def make_prober(
     prober.probe_hdr_side_data.return_value = hdr_side_data or []
     prober.sample_repeat_pict.return_value = []
     prober.sample_grain.return_value = []
+    prober.sample_field_pairing.return_value = (0, 0)
     return prober
 
 
@@ -2143,3 +2144,126 @@ class TestAudioProfiling:
         assert movie is not None
         assert movie.audio_tracks[0].audio_profile is None
         prober.profile_audio_track.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# field-separated storage path
+# ---------------------------------------------------------------------------
+
+
+class TestFieldSeparatedPath:
+    """Cover the field-rate probe: a container that counts fields, not frames."""
+
+    def _field_rate_probe_data(self) -> dict[str, Any]:
+        """1080i25 stored as separated fields — ffprobe reports tt at 50 fps."""
+        return {
+            "streams": [
+                {
+                    "index": 0,
+                    "codec_type": "video",
+                    "codec_name": "h264",
+                    "width": 1920,
+                    "height": 1080,
+                    "avg_frame_rate": "50/1",
+                    "r_frame_rate": "50/1",
+                    "duration": "5372.48",
+                    "field_order": "tt",
+                    "pix_fmt": "yuv420p",
+                },
+            ],
+            "format": {"duration": "5372.48"},
+            "chapters": [],
+        }
+
+    def _analyze(self, tmp_path: Path, prober: MagicMock) -> AnalysisOutcome:
+        scan_result = make_scan_result(tmp_path)
+        with (
+            patch("furnace.services.analyzer.should_skip_file", return_value=(False, "")),
+            patch("furnace.services.analyzer.check_unsupported_codecs", return_value=None),
+        ):
+            return Analyzer(prober=prober).analyze(scan_result)
+
+    def test_field_separated_source_carries_the_coded_frame_rate(self, tmp_path: Path) -> None:
+        """Two packets per decoded frame → the plan gets 25/1, not the field rate."""
+        prober = make_prober(probe_data=self._field_rate_probe_data())
+        prober.sample_field_pairing.return_value = (1500, 3000)
+
+        outcome = self._analyze(tmp_path, prober)
+
+        assert outcome.status is AnalyzeStatus.DONE
+        movie = outcome.movie
+        assert movie is not None
+        assert (movie.video.fps_num, movie.video.fps_den) == (25, 1)
+        # The whole point: it still deinterlaces, and single-rate nnedi/bwdif
+        # emit one frame per coded frame — which is what 25/1 now describes.
+        assert movie.video.interlaced is True
+        prober.sample_field_pairing.assert_called_once_with(tmp_path / "movie.mkv")
+
+    def test_frame_coded_source_keeps_the_container_rate(self, tmp_path: Path) -> None:
+        """One packet per frame → nothing to undo, the rate stands."""
+        prober = make_prober(probe_data=self._field_rate_probe_data())
+        prober.sample_field_pairing.return_value = (1500, 1500)
+
+        outcome = self._analyze(tmp_path, prober)
+
+        movie = outcome.movie
+        assert movie is not None
+        assert (movie.video.fps_num, movie.video.fps_den) == (50, 1)
+
+    def test_probe_skipped_for_ordinary_interlaced_source(self, tmp_path: Path) -> None:
+        """1080i25 that already reports 25 fps is never probed."""
+        probe_data = self._field_rate_probe_data()
+        probe_data["streams"][0]["avg_frame_rate"] = "25/1"
+        probe_data["streams"][0]["r_frame_rate"] = "50/1"
+        prober = make_prober(probe_data=probe_data)
+
+        outcome = self._analyze(tmp_path, prober)
+
+        movie = outcome.movie
+        assert movie is not None
+        assert (movie.video.fps_num, movie.video.fps_den) == (25, 1)
+        prober.sample_field_pairing.assert_not_called()
+
+    def test_probe_skipped_for_progressive_source(self, tmp_path: Path) -> None:
+        """Genuine 50p reports its true rate — halving it would play it slow."""
+        probe_data = self._field_rate_probe_data()
+        probe_data["streams"][0]["field_order"] = "progressive"
+        prober = make_prober(probe_data=probe_data)
+
+        outcome = self._analyze(tmp_path, prober)
+
+        movie = outcome.movie
+        assert movie is not None
+        assert (movie.video.fps_num, movie.video.fps_den) == (50, 1)
+        prober.sample_field_pairing.assert_not_called()
+
+    def test_probe_exception_logged_and_keeps_container_rate(self, tmp_path: Path) -> None:
+        """The probe is fail-soft, like idet and the pulldown probe."""
+        prober = make_prober(probe_data=self._field_rate_probe_data())
+        prober.sample_field_pairing.side_effect = RuntimeError("ffprobe crash")
+
+        outcome = self._analyze(tmp_path, prober)
+
+        assert outcome.status is AnalyzeStatus.DONE
+        movie = outcome.movie
+        assert movie is not None
+        assert (movie.video.fps_num, movie.video.fps_den) == (50, 1)
+
+    def test_probe_reports_progress(self, tmp_path: Path) -> None:
+        """The probe is a counted stage, so the batch bar advances across it.
+
+        Two stages run for this source: the field-rate probe and the grain
+        probe (SDR), so the field-rate probe lands the bar on half.
+        """
+        prober = make_prober(probe_data=self._field_rate_probe_data())
+        prober.sample_field_pairing.return_value = (1500, 3000)
+        scan_result = make_scan_result(tmp_path)
+        seen: list[float] = []
+
+        with (
+            patch("furnace.services.analyzer.should_skip_file", return_value=(False, "")),
+            patch("furnace.services.analyzer.check_unsupported_codecs", return_value=None),
+        ):
+            Analyzer(prober=prober).analyze(scan_result, on_progress=seen.append)
+
+        assert seen == [0.5, 1.0, 1.0]

@@ -413,6 +413,76 @@ def should_deinterlace(field_order: str | None, fps: float, idet_ratio: float, h
     return idet_ratio > _IDET_INTERLACE_THRESHOLD
 
 
+# Field-separated storage feeds exactly two container blocks (one per field)
+# per decoded frame. Real samples jitter by a packet at the window boundary --
+# a trailing field whose frame never completed -- which this tolerates while
+# still rejecting a frame-coded stream (ratio 1) or mixed PAFF (between 1 and 2).
+_FIELD_SEPARATED_PACKETS_PER_FRAME = 2.0
+_FIELD_SEPARATED_RATIO_TOLERANCE = 0.02
+_MIN_FIELD_PAIRING_SAMPLE = 100
+
+
+def needs_field_rate_probe(field_order: str | None, fps_num: int, fps_den: int) -> bool:
+    """Determine if the container may be reporting the FIELD rate as the frame rate.
+
+    A muxer can store an interlaced stream's two fields as separate container
+    blocks (MediaInfo: "Scan type, store method: Separated fields"). The block
+    count then measures fields, so ffprobe derives 50 fps for 1080i25 and both
+    ``avg_frame_rate`` and ``r_frame_rate`` carry the field rate. Every decoder
+    pairs the fields back into 25 frames and furnace's deinterlacers are
+    single-rate, so the encoder emits half the frames the plan's rate promises
+    and the mux pins ``--default-duration`` twice too fast.
+
+    True only when field_order is tt/bb AND the reported rate is >= 48: no
+    broadcast format codes 48+ interlaced FRAMES per second, so at that rate an
+    interlaced stream must be counting fields. Whether it actually is stays a
+    measurement (:func:`detect_field_separated`) rather than an assumption --
+    a progressive 50p stream mis-flagged tt would play at half speed if halved
+    on the flag alone.
+
+    Mutually exclusive with :func:`needs_pulldown_probe` by construction: that
+    gate needs an NTSC rate (~30), this one needs >= 48, so no source can take
+    both fps-rewriting paths. That exclusion is load-bearing, not decorative --
+    the analyzer computes both gates BEFORE either probe runs, so a rate halved
+    here is never re-examined for pulldown, and halving 60000/1001 does land in
+    the NTSC window. Nothing is lost only because a packets-per-frame ratio of 2
+    proves field-coded storage while soft telecine needs frame-coded pictures
+    carrying RFF flags -- one stream cannot be both. Lowering _TV_FPS_THRESHOLD
+    into the NTSC window would turn that into a silent wrong rate, so the
+    exclusion is pinned by test.
+    """
+    if field_order not in _INTERLACED_FIELD_ORDERS:
+        return False
+    return fps_num / fps_den >= _TV_FPS_THRESHOLD
+
+
+def detect_field_separated(
+    fps_num: int, fps_den: int, frames: int, packets: int,
+) -> tuple[int, int] | None:
+    """Derive the coded frame rate from the packet-to-frame ratio.
+
+    ``frames`` is how many pictures the decoder emitted over a sample window
+    and ``packets`` how many container blocks it consumed. Field-separated
+    storage feeds exactly two packets per frame, so a ratio of 2 proves the
+    reported rate counts fields and the coded frame rate is exactly half --
+    returned as a reduced fraction (50/1 -> 25/1, 60000/1001 -> 30000/1001).
+
+    Returns None -- keep the reported rate -- for anything else: a frame-coded
+    stream (ratio 1, the ordinary case), a stream that mixes frame- and
+    field-coded pictures (no single halving is correct for it, and the reported
+    rate at least matches the packet cadence), or a sample too small to trust
+    (including the ``(0, 0)`` a failed probe returns).
+    """
+    if frames < _MIN_FIELD_PAIRING_SAMPLE:
+        return None
+    ratio = packets / frames
+    if abs(ratio - _FIELD_SEPARATED_PACKETS_PER_FRAME) > _FIELD_SEPARATED_RATIO_TOLERANCE:
+        return None
+    num, den = fps_num, fps_den * 2
+    common = math.gcd(num, den)
+    return num // common, den // common
+
+
 # NTSC display rate is 30000/1001 (or a whole 30/1 on sloppy authorings);
 # anything inside this window is a candidate for 2:3 soft pulldown.
 _NTSC_FPS_MIN = 29.9

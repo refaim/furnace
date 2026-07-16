@@ -12,9 +12,11 @@ from furnace.core.audio_profile import classify_audio
 from furnace.core.detect import (
     check_unsupported_codecs,
     classify_grain,
+    detect_field_separated,
     detect_forced_subtitles,
     detect_hdr,
     detect_soft_telecine,
+    needs_field_rate_probe,
     needs_grain_probe,
     needs_idet,
     needs_pulldown_probe,
@@ -209,6 +211,9 @@ class Analyzer:
         # profileable audio track. ``_emit`` reports the running fraction after
         # each stage completes.
         idet_will_run = needs_idet(field_order_raw, fps, video_info.height)
+        field_rate_will_run = needs_field_rate_probe(
+            field_order_raw, video_info.fps_num, video_info.fps_den,
+        )
         pulldown_will_run = needs_pulldown_probe(
             video_info.codec_name, video_info.fps_num, video_info.fps_den, video_info.height,
         )
@@ -216,6 +221,7 @@ class Analyzer:
         n_profileable = sum(1 for t in audio_tracks if t.channels in _PROFILEABLE_CHANNEL_COUNTS)
         total_stages = (
             (1 if idet_will_run else 0)
+            + (1 if field_rate_will_run else 0)
             + (1 if pulldown_will_run else 0)
             + (1 if grain_will_run else 0)
             + n_profileable
@@ -240,6 +246,32 @@ class Analyzer:
             logger.info("%s: interlaced content detected", name)
         else:
             logger.debug("%s: progressive content", name)
+
+        # Field-separated storage: a muxer can store each FIELD as its own
+        # container block, so the block count measures the field rate and
+        # ffprobe reports 1080i25 as 50 fps. Decoders pair the fields back into
+        # 25 frames and the deinterlacers are single-rate, so the plan must
+        # carry the coded frame rate — with the field rate the mux pins
+        # --default-duration twice too fast and the video outruns the audio by
+        # 2x. Measured, never assumed: a progressive 50p mis-flagged tt would
+        # play at half speed if halved on the flag alone. Fail-soft like idet.
+        if field_rate_will_run:
+            frame_rate = None
+            try:
+                frames, packets = self._prober.sample_field_pairing(main_file)
+                frame_rate = detect_field_separated(
+                    video_info.fps_num, video_info.fps_den, frames, packets,
+                )
+            except (OSError, RuntimeError, ValueError) as exc:
+                logger.warning("field pairing probe failed for %s: %s", name, exc)
+            if frame_rate is not None:
+                video_info.fps_num, video_info.fps_den = frame_rate
+                logger.info(
+                    "%s: field-separated storage, using coded frame rate %d/%d",
+                    name, video_info.fps_num, video_info.fps_den,
+                )
+            stages_done += 1
+            _emit()
 
         # Soft telecine: an NTSC DVD can hide 24000/1001 film behind pulldown
         # flags. NVEncC's decode ignores the flags and encodes the coded film

@@ -55,6 +55,9 @@ class _MinimalProber:
     def sample_grain(self, path: Path, duration_s: float) -> list[float]:  # noqa: ARG002
         return []
 
+    def sample_field_pairing(self, path: Path) -> tuple[int, int]:  # noqa: ARG002
+        return (0, 0)
+
     def profile_audio_track(
         self,
         path: Path,  # noqa: ARG002
@@ -179,6 +182,7 @@ def test_minimal_prober_method_surface() -> None:
     assert stub.probe_hdr_side_data(Path("/dev/null")) == []
     assert stub.sample_repeat_pict(Path("/dev/null"), 60.0) == []
     assert stub.sample_grain(Path("/dev/null"), 60.0) == []
+    assert stub.sample_field_pairing(Path("/dev/null")) == (0, 0)
 
 
 class _MinimalAudioExtractor:

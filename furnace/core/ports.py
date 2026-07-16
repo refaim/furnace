@@ -82,6 +82,17 @@ class Prober(Protocol):
         """
         ...
 
+    def sample_field_pairing(self, path: Path) -> tuple[int, int]:
+        """Count decoded frames against demuxed packets over one sample window.
+
+        Returns ``(frames, packets)``. Field-separated storage (each field its
+        own container block) yields two packets per decoded frame;
+        ``core.detect.detect_field_separated`` reduces the pair to a coded
+        frame rate. A probe that fails returns ``(0, 0)``, which that function
+        reads as "too small to trust" and leaves the reported rate alone.
+        """
+        ...
+
     def sample_grain(self, path: Path, duration_s: float) -> list[float]:
         """Measure film-grain amplitude across the timeline.
 
