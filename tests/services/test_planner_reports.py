@@ -100,9 +100,9 @@ def test_format_plan_summary_no_crop_no_deinterlace() -> None:
         sub_lang_filter=[],
     )
     summary = _format_plan_summary(movie, plan.jobs[0])
-    assert summary.endswith("1920x1080 to 1920x1080")
-    assert summary.startswith("cq ")
-    assert "deinterlace" not in summary
+    # No quality knob in the plan line — it is target-quality-searched at run.
+    assert summary == "1920x1080 to 1920x1080"
+    assert "cq" not in summary
 
 
 def test_format_plan_summary_with_crop_uses_cropped_dims() -> None:
@@ -169,7 +169,7 @@ def test_plan_file_done_summary_is_emitted_via_reporter() -> None:
     summary = done_events[0].args[0]
     assert isinstance(summary, str)
     assert "1920x1080" in summary
-    assert "cq " in summary
+    assert "cq" not in summary
 
 
 def test_format_plan_summary_passthrough() -> None:
@@ -226,7 +226,7 @@ def test_format_plan_summary_dv_p7_fallback() -> None:
     assert job.video_params.dv_mode == DvMode.TO_8_1
     summary = _format_plan_summary(movie, job, "DV P7 FEL")
     assert summary.startswith("encode (DV P7 FEL), ")
-    assert "cq " in summary
+    assert "cq" not in summary
 
 
 def test_format_plan_summary_normal_encode_has_no_reason_prefix() -> None:
@@ -239,7 +239,8 @@ def test_format_plan_summary_normal_encode_has_no_reason_prefix() -> None:
         sub_lang_filter=[],
     )
     summary = _format_plan_summary(movie, plan.jobs[0])
-    assert summary.startswith("cq ")
+    assert summary.startswith("1920x1080 to ")
+    assert "cq" not in summary
     assert "encode (" not in summary
     assert "passthrough" not in summary
 

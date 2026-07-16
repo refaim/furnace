@@ -50,7 +50,12 @@ def _format_plan_summary(movie: Movie, job: Job, fallback_reason: str | None = N
     - Encode jobs that *fell back* from a requested passthrough render
       ``encode (<reason>), <encode summary>`` — e.g. ``encode (interlaced), ...``
       or ``encode (DV P7 FEL), ...``.
-    - Plain encode jobs render ``cq <CQ>, <SrcW>x<SrcH> to <DstW>x<DstH>[, deinterlace]``.
+    - Plain encode jobs render ``<SrcW>x<SrcH> to <DstW>x<DstH>[, deinterlace]``.
+
+    No quality knob is shown: the real CRF/QVBR is target-quality-searched per
+    film at ``furnace run`` time (and can differ wildly from any plan-time guess),
+    so printing ``vp.cq`` — the pre-target-quality resolution-based anchor, unused
+    by the grain encode and only a rare NVEnc fallback — would mislead.
 
     The ``DstWxDstH`` part is the *actual* encoded output (crop -> SAR ->
     mod-8 alignment), via :func:`final_output_dimensions`. The
@@ -62,10 +67,7 @@ def _format_plan_summary(movie: Movie, job: Job, fallback_reason: str | None = N
     src_w = movie.video.width
     src_h = movie.video.height
     dst_w, dst_h = final_output_dimensions(job.video_params)
-    parts = [
-        f"cq {job.video_params.cq}",
-        f"{src_w}x{src_h} to {dst_w}x{dst_h}",
-    ]
+    parts = [f"{src_w}x{src_h} to {dst_w}x{dst_h}"]
     if job.video_params.deinterlace:
         parts.append("deinterlace")
     encode_summary = ", ".join(parts)
