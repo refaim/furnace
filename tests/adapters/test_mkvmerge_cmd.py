@@ -1,4 +1,3 @@
-"""Tests for mkvmerge color/HDR metadata flags, audio/sub/attach/chapters args, and mux execution."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -16,7 +15,6 @@ def _build_cmd(
     attachments: list[tuple[Path, str, str]] | None = None,
     chapters_source: Path | None = None,
 ) -> list[str]:
-    """Helper: build mkvmerge command with minimal args and optional video_meta."""
     adapter = MkvmergeAdapter(Path("mkvmerge.exe"))
     return adapter._build_mux_cmd(
         video_path=Path("video.obu"),
@@ -37,8 +35,6 @@ class TestMkvmergeSetLogDir:
 
 
 class TestMkvmergeGlobalFlags:
-    """Test --title and --normalize-language-ietf are always present."""
-
     def test_title_empty(self) -> None:
         cmd = _build_cmd()
         idx = cmd.index("--title")
@@ -170,32 +166,33 @@ class TestMkvmergeHdrMetadata:
 
 
 class TestMkvmergeFullHdrPipeline:
-    """Integration: all color+HDR flags together as they would appear for HDR10."""
-
     def test_hdr10_full_metadata(self) -> None:
-        cmd = _build_cmd({
-            "color_range": "tv",
-            "color_primaries": "bt2020",
-            "color_transfer": "smpte2084",
-            "hdr_max_cll": "1000",
-            "hdr_max_fall": "400",
-        })
+        cmd = _build_cmd(
+            {
+                "color_range": "tv",
+                "color_primaries": "bt2020",
+                "color_transfer": "smpte2084",
+                "hdr_max_cll": "1000",
+                "hdr_max_fall": "400",
+            }
+        )
         assert "--color-range" in cmd
         assert "--color-primaries" in cmd
         assert "--color-transfer-characteristics" in cmd
         assert "--max-content-light" in cmd
         assert "--max-frame-light" in cmd
-        # Verify values
         assert cmd[cmd.index("--color-range") + 1] == "0:1"
         assert cmd[cmd.index("--color-primaries") + 1] == "0:9"
         assert cmd[cmd.index("--color-transfer-characteristics") + 1] == "0:16"
 
     def test_sdr_bt709(self) -> None:
-        cmd = _build_cmd({
-            "color_range": "tv",
-            "color_primaries": "bt709",
-            "color_transfer": "bt709",
-        })
+        cmd = _build_cmd(
+            {
+                "color_range": "tv",
+                "color_primaries": "bt709",
+                "color_transfer": "bt709",
+            }
+        )
         assert "--color-range" in cmd
         assert "--color-primaries" in cmd
         assert "--color-transfer-characteristics" in cmd
@@ -204,19 +201,14 @@ class TestMkvmergeFullHdrPipeline:
 
 
 class TestMkvmergeAudioArgs:
-    """Audio track flags: language, default, delay, no-chapters."""
-
     def test_language_flag(self) -> None:
         cmd = _build_cmd(audio_files=[(Path("a.flac"), {"language": "rus"})])
-        # First --language is for video (0:und), second is for audio
-        # Find audio --language after the audio track separator
         audio_lang_indices = [i for i, x in enumerate(cmd) if x == "--language" and cmd[i + 1].startswith("0:rus")]
         assert len(audio_lang_indices) == 1
         assert cmd[audio_lang_indices[0] + 1] == "0:rus"
 
     def test_default_flag_yes(self) -> None:
         cmd = _build_cmd(audio_files=[(Path("a.flac"), {"language": "eng", "default": True})])
-        # Find default-track-flag with value "0:yes" (audio)
         yes_indices = [i for i, x in enumerate(cmd) if x == "--default-track-flag" and cmd[i + 1] == "0:yes"]
         assert len(yes_indices) == 1
 
@@ -236,14 +228,11 @@ class TestMkvmergeAudioArgs:
 
     def test_no_chapters_on_audio(self) -> None:
         cmd = _build_cmd(audio_files=[(Path("a.flac"), {"language": "eng"})])
-        # --no-chapters appears at least twice: once for video, once for audio
         count = cmd.count("--no-chapters")
         assert count >= 2
 
 
 class TestMkvmergeSubtitleArgs:
-    """Subtitle track flags: language, default, forced, encoding, no-chapters."""
-
     def test_subtitle_language(self) -> None:
         cmd = _build_cmd(subtitle_files=[(Path("s.sup"), {"language": "rus"})])
         lang_indices = [i for i, x in enumerate(cmd) if x == "--language" and cmd[i + 1] == "0:rus"]
@@ -284,8 +273,6 @@ class TestMkvmergeSubtitleArgs:
 
 
 class TestMkvmergeAttachments:
-    """Attachment flags: name, mime-type, attach-file."""
-
     def test_attachment_flags(self) -> None:
         cmd = _build_cmd(attachments=[(Path("/fonts/Arial.ttf"), "Arial.ttf", "application/x-truetype-font")])
         idx_name = cmd.index("--attachment-name")
@@ -296,18 +283,18 @@ class TestMkvmergeAttachments:
         assert Path(cmd[idx_file + 1]) == Path("/fonts/Arial.ttf")
 
     def test_multiple_attachments(self) -> None:
-        cmd = _build_cmd(attachments=[
-            (Path("/fonts/A.ttf"), "A.ttf", "application/x-truetype-font"),
-            (Path("/fonts/B.otf"), "B.otf", "font/otf"),
-        ])
+        cmd = _build_cmd(
+            attachments=[
+                (Path("/fonts/A.ttf"), "A.ttf", "application/x-truetype-font"),
+                (Path("/fonts/B.otf"), "B.otf", "font/otf"),
+            ]
+        )
         assert cmd.count("--attach-file") == 2
         assert cmd.count("--attachment-name") == 2
         assert cmd.count("--attachment-mime-type") == 2
 
 
 class TestMkvmergeChapters:
-    """Chapters arg: --chapters path."""
-
     def test_chapters_present(self) -> None:
         chap = Path("/work/chapters.txt")
         cmd = _build_cmd(chapters_source=chap)
@@ -320,8 +307,6 @@ class TestMkvmergeChapters:
 
 
 class TestMkvmergeTrackOrder:
-    """Track order: video first, then audio, then subtitles."""
-
     def test_track_order_with_audio_and_subs(self) -> None:
         cmd = _build_cmd(
             audio_files=[
@@ -338,8 +323,6 @@ class TestMkvmergeTrackOrder:
 
 
 class TestMkvmergeMuxExecution:
-    """Test mux() method by mocking run_tool."""
-
     def _fake_run_tool(
         self,
         rc: int,
@@ -402,7 +385,6 @@ class TestMkvmergeMuxExecution:
         assert rc == 2
 
     def test_mux_log_path_from_log_dir(self, tmp_path: Path) -> None:
-        """When log_dir is set, log_path is passed to run_tool."""
         captured_kwargs: dict[str, Any] = {}
 
         def fake(
@@ -428,7 +410,6 @@ class TestMkvmergeMuxExecution:
         assert captured_kwargs["log_path"] == tmp_path / "mkvmerge.log"
 
     def test_mux_progress_callback(self) -> None:
-        """Progress lines from run_tool are forwarded to on_progress."""
         samples: list[ProgressSample] = []
 
         def fake(
@@ -438,7 +419,6 @@ class TestMkvmergeMuxExecution:
             log_path: Any = None,
             cwd: Any = None,
         ) -> tuple[int, str]:
-            # Simulate a progress line
             on_progress_line("Progress: 50%")
             return 0, ""
 
@@ -457,7 +437,6 @@ class TestMkvmergeMuxExecution:
         assert samples[0].fraction == 0.5
 
     def test_mux_progress_non_progress_line(self) -> None:
-        """Non-progress lines return False from on_progress_line."""
         progress_results: list[bool] = []
 
         def fake(
@@ -483,7 +462,6 @@ class TestMkvmergeMuxExecution:
         assert progress_results == [False]
 
     def test_mux_progress_without_callback(self) -> None:
-        """Progress lines consumed even when on_progress is None."""
         progress_results: list[bool] = []
 
         def fake(
@@ -510,7 +488,6 @@ class TestMkvmergeMuxExecution:
         assert progress_results == [True]
 
     def test_mux_no_log_dir(self) -> None:
-        """When log_dir is None, log_path=None is passed."""
         captured_kwargs: dict[str, Any] = {}
 
         def fake(
@@ -537,12 +514,6 @@ class TestMkvmergeMuxExecution:
 
 
 class TestMkvmergeDefaultDuration:
-    """Raw AV1 OBU elementary streams carry no frame rate, so mkvmerge would
-    default a timeless video track to 25 fps. When video_meta supplies the
-    source frame rate, a ``--default-duration 0:<num>/<den>p`` flag must be
-    emitted for the video track (track 0) so playback runs at the right speed.
-    """
-
     def _video_idx(self, cmd: list[str]) -> int:
         return cmd.index("video.obu")
 
@@ -550,7 +521,6 @@ class TestMkvmergeDefaultDuration:
         cmd = _build_cmd({"fps_num": 24, "fps_den": 1})
         idx = cmd.index("--default-duration")
         assert cmd[idx + 1] == "0:24/1p"
-        # Must precede the video input file it applies to.
         assert idx < self._video_idx(cmd)
 
     def test_default_duration_emitted_for_fractional_fps(self) -> None:
@@ -560,7 +530,6 @@ class TestMkvmergeDefaultDuration:
         assert idx < self._video_idx(cmd)
 
     def test_default_duration_with_color_meta(self) -> None:
-        """fps and color metadata coexist on the same video track."""
         cmd = _build_cmd({"fps_num": 24, "fps_den": 1, "color_range": "tv"})
         dd = cmd.index("--default-duration")
         cr = cmd.index("--color-range")
@@ -576,10 +545,7 @@ class TestMkvmergeDefaultDuration:
         assert "--default-duration" not in _build_cmd(None)
 
     def test_no_default_duration_when_fps_den_missing(self) -> None:
-        """Partial fps info (num without den) is ignored rather than emitting
-        a malformed flag."""
         assert "--default-duration" not in _build_cmd({"fps_num": 24})
 
     def test_no_default_duration_when_fps_den_zero(self) -> None:
-        """fps_den of 0 would be a divide-by-zero / nonsense rate — skip it."""
         assert "--default-duration" not in _build_cmd({"fps_num": 24, "fps_den": 0})

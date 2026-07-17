@@ -18,20 +18,13 @@ from tests.conftest import make_job, make_movie, make_plan, make_track
 runner = CliRunner()
 
 
-# ---------------------------------------------------------------------------
-# _setup_logging
-# ---------------------------------------------------------------------------
-
-
 class TestSetupLogging:
     def _cleanup_root_handlers(self) -> None:
-        """Remove all FileHandler instances from root logger."""
         root = logging.getLogger()
         for h in list(root.handlers):
             if isinstance(h, logging.FileHandler):
                 root.removeHandler(h)
                 h.close()
-        # Also remove any StreamHandlers we may have added
         for h in list(root.handlers):
             if isinstance(h, logging.StreamHandler) and not isinstance(h, logging.FileHandler):
                 fmt = h.formatter
@@ -76,7 +69,6 @@ class TestSetupLogging:
 
     def test_console_disabled_no_stream_handler(self, tmp_path: Path) -> None:
         log_dir = tmp_path / "logs"
-        # Count existing stream handlers before
         root = logging.getLogger()
         before = [
             h
@@ -112,13 +104,7 @@ class TestSetupLogging:
         self._cleanup_root_handlers()
 
 
-# ---------------------------------------------------------------------------
-# plan --dry-run
-# ---------------------------------------------------------------------------
-
-
 def _make_tool_paths(tmp_path: Path) -> MagicMock:
-    """Create a mock ToolPaths with all required attributes pointing to tmp_path files."""
     cfg = MagicMock()
     cfg.ffmpeg = tmp_path / "ffmpeg"
     cfg.ffprobe = tmp_path / "ffprobe"
@@ -138,7 +124,6 @@ def _make_tool_paths(tmp_path: Path) -> MagicMock:
 
 class TestPlanDryRun:
     def test_dry_run_no_movies(self, tmp_path: Path) -> None:
-        """--dry-run with no scan results prints zero jobs."""
         source = tmp_path / "src"
         source.mkdir()
         output = tmp_path / "out"
@@ -172,14 +157,10 @@ class TestPlanDryRun:
             )
 
         assert result.exit_code == 0, result.output
-        # plan_saved no longer prints a visible line, so we verify via mocks
-        # that the planner was invoked and produced a zero-job plan.
         mock_planner_cls.return_value.create_plan.assert_called_once()
-        # Analyzer should not have been called since scanner returned empty
         mock_analyzer_cls.return_value.analyze.assert_not_called()
 
     def test_dry_run_with_movies(self, tmp_path: Path) -> None:
-        """--dry-run with scan results prints job count."""
         from furnace.core.models import ScanResult
 
         source = tmp_path / "src"
@@ -226,13 +207,10 @@ class TestPlanDryRun:
             )
 
         assert result.exit_code == 0, result.output
-        # plan_saved no longer prints a visible line; verify the planner ran
-        # and produced the expected two-job plan.
         mock_planner_cls.return_value.create_plan.assert_called_once()
         assert len(mock_planner_cls.return_value.create_plan.return_value.jobs) == 2
 
     def test_dry_run_passes_language_lists(self, tmp_path: Path) -> None:
-        """Language lists are correctly parsed and passed to planner."""
         source = tmp_path / "src"
         source.mkdir()
         output = tmp_path / "out"
@@ -266,7 +244,6 @@ class TestPlanDryRun:
         assert call_kwargs.kwargs["sub_lang_filter"] == ["rus"]
 
     def test_dry_run_passes_null_track_selector(self, tmp_path: Path) -> None:
-        """In --dry-run mode, PlannerService receives track_selector=None."""
         source = tmp_path / "src"
         source.mkdir()
         output = tmp_path / "out"
@@ -300,19 +277,27 @@ class TestPlanDryRun:
         assert planner_init_kwargs.kwargs["und_resolver"] is None
 
     def test_metrics_flag_is_rejected(self, tmp_path: Path) -> None:
-        """--metrics is no longer a valid option."""
         source = tmp_path / "src"
         source.mkdir()
         with patch("furnace.cli.load_config", return_value=_make_tool_paths(tmp_path)):
             result = runner.invoke(
                 app,
-                ["plan", str(source), "-o", str(tmp_path / "out"),
-                 "-al", "eng", "-sl", "eng", "--dry-run", "--metrics"],
+                [
+                    "plan",
+                    str(source),
+                    "-o",
+                    str(tmp_path / "out"),
+                    "-al",
+                    "eng",
+                    "-sl",
+                    "eng",
+                    "--dry-run",
+                    "--metrics",
+                ],
             )
         assert result.exit_code != 0
 
     def test_copy_video_flag_forwarded(self, tmp_path: Path) -> None:
-        """--copy-video flag is forwarded to planner.create_plan()."""
         source = tmp_path / "src"
         source.mkdir()
         output = tmp_path / "out"
@@ -345,7 +330,6 @@ class TestPlanDryRun:
         assert call_kwargs["copy_video"] is True
 
     def test_copy_video_short_flag_forwarded(self, tmp_path: Path) -> None:
-        """-cv short flag is forwarded to planner.create_plan()."""
         source = tmp_path / "src"
         source.mkdir()
         output = tmp_path / "out"
@@ -378,7 +362,6 @@ class TestPlanDryRun:
         assert call_kwargs["copy_video"] is True
 
     def test_copy_video_defaults_false(self, tmp_path: Path) -> None:
-        """Without the flag, copy_video defaults to False in create_plan()."""
         source = tmp_path / "src"
         source.mkdir()
         output = tmp_path / "out"
@@ -411,7 +394,6 @@ class TestPlanDryRun:
         assert call_kwargs["copy_video"] is False
 
     def test_force_flag_forwarded(self, tmp_path: Path) -> None:
-        """--force flag is forwarded to the Analyzer."""
         source = tmp_path / "src"
         source.mkdir()
         output = tmp_path / "out"
@@ -444,7 +426,6 @@ class TestPlanDryRun:
         assert mock_analyzer_cls.call_args.kwargs["force"] is True
 
     def test_force_short_flag_forwarded(self, tmp_path: Path) -> None:
-        """-f short flag is forwarded to the Analyzer."""
         source = tmp_path / "src"
         source.mkdir()
         output = tmp_path / "out"
@@ -477,7 +458,6 @@ class TestPlanDryRun:
         assert mock_analyzer_cls.call_args.kwargs["force"] is True
 
     def test_force_defaults_false(self, tmp_path: Path) -> None:
-        """Without the flag, force defaults to False on the Analyzer."""
         source = tmp_path / "src"
         source.mkdir()
         output = tmp_path / "out"
@@ -510,14 +490,8 @@ class TestPlanDryRun:
         assert mock_analyzer_cls.call_args.kwargs["force"] is False
 
 
-# ---------------------------------------------------------------------------
-# plan (non-dry-run) — save_plan path
-# ---------------------------------------------------------------------------
-
-
 class TestPlanSave:
     def test_save_plan_writes_file(self, tmp_path: Path) -> None:
-        """Non-dry-run plan command saves plan JSON and prints path."""
         source = tmp_path / "src"
         source.mkdir()
         output = tmp_path / "out"
@@ -553,20 +527,12 @@ class TestPlanSave:
             )
 
         assert result.exit_code == 0, result.output
-        # plan_saved no longer prints a visible line; verify the plan was
-        # written to disk via save_plan and the planner was invoked.
         mock_save.assert_called_once()
         mock_planner_cls.return_value.create_plan.assert_called_once()
 
 
-# ---------------------------------------------------------------------------
-# plan --names
-# ---------------------------------------------------------------------------
-
-
 class TestPlanNames:
     def test_names_map_loaded(self, tmp_path: Path) -> None:
-        """--names option loads JSON names map and passes to scanner."""
         import json
 
         source = tmp_path / "src"
@@ -611,23 +577,12 @@ class TestPlanNames:
             )
 
         assert result.exit_code == 0, result.output
-        # Scanner.scan should have received the names map
         call_args = mock_scanner_cls.return_value.scan.call_args
         assert call_args.args[2] == {"movie.mkv": "Movie Title"}
 
 
-# ---------------------------------------------------------------------------
-# plan with detected discs (dry_run — disc code skipped)
-# ---------------------------------------------------------------------------
-
-
 class TestPlanDiscDryRun:
     def test_detected_discs_skipped_in_dry_run(self, tmp_path: Path) -> None:
-        """When discs are detected but --dry-run is set, demux phase is skipped.
-
-        list_titles still runs once per disc — it now feeds the Detect phase
-        rendering (``... -> N titles``). Only the actual demux is skipped.
-        """
         from furnace.core.models import DiscSource, DiscTitle, DiscType
 
         source = tmp_path / "src"
@@ -662,20 +617,12 @@ class TestPlanDiscDryRun:
             )
 
         assert result.exit_code == 0, result.output
-        # list_titles is now called from the Detect loop (not from demux).
         mock_demuxer_cls.return_value.list_titles.assert_called_once_with(disc)
-        # But the actual demux is still skipped under --dry-run.
         mock_demuxer_cls.return_value.demux.assert_not_called()
-
-
-# ---------------------------------------------------------------------------
-# plan demux_dir assignment
-# ---------------------------------------------------------------------------
 
 
 class TestPlanDemuxDirAssignment:
     def test_demux_dir_not_set_when_no_discs(self, tmp_path: Path) -> None:
-        """demux_dir stays None when no disc demux happened."""
         source = tmp_path / "src"
         source.mkdir()
         output = tmp_path / "out"
@@ -707,14 +654,8 @@ class TestPlanDemuxDirAssignment:
         assert plan_obj.demux_dir is None
 
 
-# ---------------------------------------------------------------------------
-# plan — analyzer returns None (skip)
-# ---------------------------------------------------------------------------
-
-
 class TestPlanAnalyzerNone:
     def test_analyzer_none_skips_movie(self, tmp_path: Path) -> None:
-        """When analyzer.analyze yields a SKIPPED outcome (no movie), it is skipped."""
         from furnace.core.models import ScanResult
 
         source = tmp_path / "src"
@@ -754,19 +695,12 @@ class TestPlanAnalyzerNone:
             )
 
         assert result.exit_code == 0, result.output
-        # Planner should have been called with an empty movies list
         call_kwargs = mock_planner_cls.return_value.create_plan.call_args
         assert call_kwargs.kwargs["movies"] == []
 
 
-# ---------------------------------------------------------------------------
-# run command
-# ---------------------------------------------------------------------------
-
-
 class TestRunCommand:
     def test_run_all_done_no_pending(self, tmp_path: Path) -> None:
-        """run command with all-done jobs: launches TUI, prints report."""
         plan_file = tmp_path / "plan.json"
         plan_obj = make_plan(
             jobs=[make_job(job_id="j1", status=JobStatus.DONE)],
@@ -788,12 +722,10 @@ class TestRunCommand:
 
         assert result.exit_code == 0, result.output
         mock_run_app_cls.assert_called_once()
-        # Verify RunApp was constructed with total_jobs=0 (done jobs aren't pending)
         init_kwargs = mock_run_app_cls.call_args.kwargs
         assert init_kwargs["total_jobs"] == 0
 
     def test_run_with_pending_jobs(self, tmp_path: Path) -> None:
-        """run command counts pending+error jobs for TUI."""
         plan_file = tmp_path / "plan.json"
         plan_obj = make_plan(
             jobs=[
@@ -819,10 +751,9 @@ class TestRunCommand:
 
         assert result.exit_code == 0, result.output
         init_kwargs = mock_run_app_cls.call_args.kwargs
-        assert init_kwargs["total_jobs"] == 2  # 1 pending + 1 error
+        assert init_kwargs["total_jobs"] == 2
 
     def test_run_calls_report_printer(self, tmp_path: Path) -> None:
-        """After TUI exits (no shutdown), ReportPrinter is called."""
         plan_file = tmp_path / "plan.json"
         plan_obj = make_plan(
             jobs=[make_job(job_id="j1", status=JobStatus.DONE)],
@@ -846,7 +777,6 @@ class TestRunCommand:
         mock_printer_cls.return_value.print_report.assert_called_once()
 
     def test_run_shutdown_event_calls_os_exit(self, tmp_path: Path) -> None:
-        """When shutdown_event is set (ESC), os._exit(0) is called."""
         plan_file = tmp_path / "plan.json"
         plan_obj = make_plan(
             jobs=[make_job(job_id="j1", status=JobStatus.PENDING)],
@@ -862,9 +792,8 @@ class TestRunCommand:
             patch("furnace.cli.RunApp") as mock_run_app_cls,
             patch("furnace.cli.os._exit") as mock_exit,
         ):
-            # Make the RunApp.run() set the shutdown_event
+
             def _run_sets_shutdown() -> None:
-                # The shutdown_event is passed as kwarg to RunApp
                 shutdown_evt = mock_run_app_cls.call_args.kwargs["shutdown_event"]
                 shutdown_evt.set()
 
@@ -875,7 +804,6 @@ class TestRunCommand:
         mock_exit.assert_called_once_with(0)
 
     def test_run_cleanup_demux_dir_all_done(self, tmp_path: Path) -> None:
-        """Demux directory is removed when all jobs are done."""
         plan_file = tmp_path / "plan.json"
         demux_dir = tmp_path / "demux"
         demux_dir.mkdir()
@@ -904,7 +832,6 @@ class TestRunCommand:
         assert not demux_dir.exists()
 
     def test_run_no_cleanup_demux_dir_not_all_done(self, tmp_path: Path) -> None:
-        """Demux directory is NOT removed when some jobs are pending."""
         plan_file = tmp_path / "plan.json"
         demux_dir = tmp_path / "demux"
         demux_dir.mkdir()
@@ -935,7 +862,6 @@ class TestRunCommand:
         assert demux_dir.exists()
 
     def test_run_no_cleanup_when_demux_dir_none(self, tmp_path: Path) -> None:
-        """No cleanup attempted when demux_dir is None."""
         plan_file = tmp_path / "plan.json"
         plan_obj = make_plan(
             jobs=[make_job(job_id="j1", status=JobStatus.DONE)],
@@ -961,7 +887,6 @@ class TestRunCommand:
         mock_rmtree.assert_not_called()
 
     def test_run_config_option(self, tmp_path: Path) -> None:
-        """--config option is forwarded to load_config."""
         plan_file = tmp_path / "plan.json"
         config_file = tmp_path / "custom.toml"
         plan_obj = make_plan(
@@ -986,14 +911,8 @@ class TestRunCommand:
         mock_load_cfg.assert_called_once_with(config_file)
 
 
-# ---------------------------------------------------------------------------
-# plan — config option
-# ---------------------------------------------------------------------------
-
-
 class TestPlanConfigOption:
     def test_config_option_forwarded(self, tmp_path: Path) -> None:
-        """--config is forwarded to load_config in plan command."""
         source = tmp_path / "src"
         source.mkdir()
         output = tmp_path / "out"
@@ -1038,14 +957,8 @@ class TestPlanConfigOption:
         mock_load_cfg.assert_called_once_with(config_file)
 
 
-# ---------------------------------------------------------------------------
-# run — _run_executor closure
-# ---------------------------------------------------------------------------
-
-
 class TestRunExecutorClosure:
     def test_executor_fn_creates_adapters_and_runs(self, tmp_path: Path) -> None:
-        """The executor_fn closure creates adapters and calls executor.run()."""
         plan_file = tmp_path / "plan.json"
         plan_obj = make_plan(
             jobs=[make_job(job_id="j1", status=JobStatus.PENDING)],
@@ -1063,7 +976,7 @@ class TestRunExecutorClosure:
             patch("furnace.cli.RunApp") as mock_run_app_cls,
             patch("furnace.cli.ReportPrinter"),
         ):
-            # Capture the executor_fn instead of running it
+
             def _capture_and_noop() -> None:
                 captured_executor_fn.append(mock_run_app_cls.call_args.kwargs["executor_fn"])
 
@@ -1074,7 +987,6 @@ class TestRunExecutorClosure:
         assert result.exit_code == 0, result.output
         assert len(captured_executor_fn) == 1
 
-        # Now call the captured executor_fn with full adapter mocking
         executor_fn = captured_executor_fn[0]
         mock_progress = MagicMock()
         mock_progress.add_tool_line = MagicMock()
@@ -1093,14 +1005,11 @@ class TestRunExecutorClosure:
 
         mock_executor_cls.return_value.run.assert_called_once()
         mock_progress.stop.assert_called_once()
-        # The executor must be wired with a video_copier for passthrough jobs.
         exec_kwargs = mock_executor_cls.call_args.kwargs
         assert exec_kwargs["video_copier"] is not None
-        # ...and with an always-on target-quality service (NVEnc QVBR search).
         assert exec_kwargs["target_quality"] is not None
 
     def test_executor_fn_wires_svt_grain_encoder(self, tmp_path: Path) -> None:
-        """The executor_fn builds an SvtAv1Adapter from cfg.ffmpeg as grain_encoder."""
         plan_file = tmp_path / "plan.json"
         plan_obj = make_plan(
             jobs=[make_job(job_id="j1", status=JobStatus.PENDING)],
@@ -1118,6 +1027,7 @@ class TestRunExecutorClosure:
             patch("furnace.cli.RunApp") as mock_run_app_cls,
             patch("furnace.cli.ReportPrinter"),
         ):
+
             def _capture() -> None:
                 captured_executor_fn.append(mock_run_app_cls.call_args.kwargs["executor_fn"])
 
@@ -1142,17 +1052,13 @@ class TestRunExecutorClosure:
         ):
             executor_fn(mock_progress)
 
-        # SVT adapter is built from the bundled ffmpeg path (no new config key).
         mock_svt.assert_called_once()
         svt_args = mock_svt.call_args.args
         assert svt_args[0] == cfg.ffmpeg
-        # ...and wired into the executor as the grain encoder.
         exec_kwargs = mock_executor_cls.call_args.kwargs
         assert exec_kwargs["grain_encoder"] is mock_svt.return_value
 
     def _run_executor_fn(self, tmp_path: Path, cfg: Any) -> tuple[Any, Any]:
-        """Drive ``furnace run`` far enough to capture and invoke the executor
-        factory with all adapters mocked. Returns (mock_vship, mock_svt)."""
         plan_file = tmp_path / "plan.json"
         plan_obj = make_plan(
             jobs=[make_job(job_id="j1", status=JobStatus.PENDING)],
@@ -1167,6 +1073,7 @@ class TestRunExecutorClosure:
             patch("furnace.cli.RunApp") as mock_run_app_cls,
             patch("furnace.cli.ReportPrinter"),
         ):
+
             def _capture() -> None:
                 captured_executor_fn.append(mock_run_app_cls.call_args.kwargs["executor_fn"])
 
@@ -1194,9 +1101,6 @@ class TestRunExecutorClosure:
         return mock_vship, mock_svt
 
     def test_executor_fn_wires_vship_metrics(self, tmp_path: Path) -> None:
-        """bestsource+vship configured -> VshipMetricsAdapter built for the grain
-        target-quality search (the reference geometry is handled by ffmpeg, so no
-        deinterlace plugin is threaded in)."""
         cfg = _make_tool_paths(tmp_path)
         cfg.bestsource = tmp_path / "BestSource.dll"
         cfg.vship = tmp_path / "libvship.dll"
@@ -1206,7 +1110,6 @@ class TestRunExecutorClosure:
         mock_vship.assert_called_once_with(cfg.bestsource, cfg.vship)
 
     def test_executor_fn_with_dovi_tool(self, tmp_path: Path) -> None:
-        """When dovi_tool is set, DoviToolAdapter is created."""
         plan_file = tmp_path / "plan.json"
         plan_obj = make_plan(
             jobs=[make_job(job_id="j1", status=JobStatus.PENDING)],
@@ -1225,6 +1128,7 @@ class TestRunExecutorClosure:
             patch("furnace.cli.RunApp") as mock_run_app_cls,
             patch("furnace.cli.ReportPrinter"),
         ):
+
             def _capture() -> None:
                 captured_executor_fn.append(mock_run_app_cls.call_args.kwargs["executor_fn"])
 
@@ -1256,7 +1160,6 @@ class TestRunExecutorClosure:
         mock_executor_cls.return_value.run.assert_called_once()
 
     def test_executor_fn_stops_progress_on_error(self, tmp_path: Path) -> None:
-        """progress.stop() is called even when executor.run() raises."""
         plan_file = tmp_path / "plan.json"
         plan_obj = make_plan(
             jobs=[make_job(job_id="j1", status=JobStatus.PENDING)],
@@ -1274,6 +1177,7 @@ class TestRunExecutorClosure:
             patch("furnace.cli.RunApp") as mock_run_app_cls,
             patch("furnace.cli.ReportPrinter"),
         ):
+
             def _capture() -> None:
                 captured_executor_fn.append(mock_run_app_cls.call_args.kwargs["executor_fn"])
 
@@ -1297,18 +1201,11 @@ class TestRunExecutorClosure:
             with contextlib.suppress(RuntimeError):
                 executor_fn(mock_progress)
 
-        # progress.stop() must be called even on error (finally block)
         mock_progress.stop.assert_called_once()
-
-
-# ---------------------------------------------------------------------------
-# run — demux_dir exists but path not on disk
-# ---------------------------------------------------------------------------
 
 
 class TestRunDemuxDirEdgeCases:
     def test_demux_dir_set_but_not_on_disk(self, tmp_path: Path) -> None:
-        """When demux_dir is set in plan but the path doesn't exist, no error."""
         plan_file = tmp_path / "plan.json"
         plan_obj = make_plan(
             jobs=[make_job(job_id="j1", status=JobStatus.DONE)],
@@ -1332,14 +1229,8 @@ class TestRunDemuxDirEdgeCases:
         assert result.exit_code == 0, result.output
 
 
-# ---------------------------------------------------------------------------
-# __main__
-# ---------------------------------------------------------------------------
-
-
 class TestMainModule:
     def test_main_calls_app(self) -> None:
-        """Running furnace as `python -m furnace` calls app()."""
         import runpy
 
         with patch("furnace.cli.app") as mock_app:
@@ -1348,14 +1239,8 @@ class TestMainModule:
         mock_app.assert_called_once()
 
 
-# ---------------------------------------------------------------------------
-# _make_preview_track_cb
-# ---------------------------------------------------------------------------
-
-
 class TestMakePreviewTrackCb:
     def test_audio_track_calls_preview_audio(self, tmp_path: Path) -> None:
-        """Preview callback for an audio track calls mpv.preview_audio."""
         from furnace.cli import _make_preview_track_cb
 
         movie = make_movie(main_file=tmp_path / "m.mkv")
@@ -1373,7 +1258,6 @@ class TestMakePreviewTrackCb:
         mpv.preview_subtitle.assert_not_called()
 
     def test_subtitle_track_calls_preview_subtitle(self, tmp_path: Path) -> None:
-        """Preview callback for a subtitle track calls mpv.preview_subtitle."""
         from furnace.cli import _make_preview_track_cb
 
         movie = make_movie(main_file=tmp_path / "m.mkv")
@@ -1392,14 +1276,8 @@ class TestMakePreviewTrackCb:
         mpv.preview_audio.assert_not_called()
 
 
-# ---------------------------------------------------------------------------
-# _select_tracks_tui
-# ---------------------------------------------------------------------------
-
-
 class TestSelectTracksTui:
     def test_returns_app_runner_result(self, tmp_path: Path) -> None:
-        """_select_tracks_tui returns whatever the app_runner returns."""
         from furnace.cli import _select_tracks_tui
         from furnace.ui.tui import TrackSelection
 
@@ -1420,7 +1298,6 @@ class TestSelectTracksTui:
         fake_runner.assert_called_once()
 
     def test_none_result_falls_back_to_empty(self, tmp_path: Path) -> None:
-        """If the app_runner returns None, _select_tracks_tui returns an empty TrackSelection."""
         from furnace.cli import _select_tracks_tui
         from furnace.ui.tui import TrackSelection
 
@@ -1439,7 +1316,6 @@ class TestSelectTracksTui:
         assert result.downmix == {}
 
     def test_factory_instantiates_track_selector_screen(self, tmp_path: Path) -> None:
-        """The internal screen-factory closure returns a TrackSelectorScreen for the given movie."""
         from furnace.cli import _select_tracks_tui
         from furnace.ui.tui import TrackSelection, TrackSelectorScreen
 
@@ -1464,7 +1340,6 @@ class TestSelectTracksTui:
         assert isinstance(captured[0], TrackSelectorScreen)
 
     def test_factory_forwards_relabel_options(self, tmp_path: Path) -> None:
-        """allow_relabel and lang_list are forwarded into the TrackSelectorScreen."""
         from furnace.cli import _select_tracks_tui
         from furnace.ui.tui import TrackSelection, TrackSelectorScreen
 
@@ -1493,14 +1368,8 @@ class TestSelectTracksTui:
         assert screen._lang_list == ["jpn", "rus"]
 
 
-# ---------------------------------------------------------------------------
-# _select_tracks_tui_for_planner
-# ---------------------------------------------------------------------------
-
-
 class TestSelectTracksTuiForPlanner:
     def test_audio_updates_downmix_overrides(self, tmp_path: Path) -> None:
-        """For audio, the planner wrapper updates the shared downmix_overrides dict."""
         from furnace.cli import _select_tracks_tui_for_planner
         from furnace.core.models import DownmixMode
         from furnace.ui.tui import TrackSelection
@@ -1529,7 +1398,6 @@ class TestSelectTracksTuiForPlanner:
         assert lang_overrides == {}
 
     def test_subtitle_does_not_update_downmix_overrides(self, tmp_path: Path) -> None:
-        """For subtitles, downmix overrides are left alone."""
         from furnace.cli import _select_tracks_tui_for_planner
         from furnace.ui.tui import TrackSelection
 
@@ -1556,7 +1424,6 @@ class TestSelectTracksTuiForPlanner:
         assert lang_overrides == {}
 
     def test_audio_merges_languages_and_downmix(self, tmp_path: Path) -> None:
-        """For audio, both the relabel languages and downmix are merged into the shared dicts."""
         from furnace.cli import _select_tracks_tui_for_planner
         from furnace.core.models import DownmixMode
         from furnace.ui.tui import TrackSelection
@@ -1589,7 +1456,6 @@ class TestSelectTracksTuiForPlanner:
         assert lang_overrides == {key: "rus"}
 
     def test_subtitle_merges_languages_only(self, tmp_path: Path) -> None:
-        """For subtitles, languages merge into the shared dict but downmix is untouched."""
         from furnace.cli import _select_tracks_tui_for_planner
         from furnace.ui.tui import TrackSelection
 
@@ -1617,7 +1483,6 @@ class TestSelectTracksTuiForPlanner:
         assert downmix_overrides == {}
 
     def test_forwards_allow_relabel_and_lang_list(self, tmp_path: Path) -> None:
-        """allow_relabel and lang_list are forwarded down into _select_tracks_tui."""
         from furnace.cli import _select_tracks_tui_for_planner
         from furnace.ui.tui import TrackSelection
 
@@ -1642,14 +1507,8 @@ class TestSelectTracksTuiForPlanner:
         assert kwargs["lang_list"] == ["jpn", "rus"]
 
 
-# ---------------------------------------------------------------------------
-# _resolve_und_language_tui
-# ---------------------------------------------------------------------------
-
-
 class TestResolveUndLanguageTui:
     def test_returns_app_runner_result(self, tmp_path: Path) -> None:
-        """Runner-returned language is surfaced back to caller."""
         from furnace.cli import _resolve_und_language_tui
 
         movie = make_movie(main_file=tmp_path / "m.mkv")
@@ -1666,7 +1525,6 @@ class TestResolveUndLanguageTui:
         assert result == "rus"
 
     def test_none_falls_back_to_first_lang(self, tmp_path: Path) -> None:
-        """If the runner returns None, fall back to the first language in the list."""
         from furnace.cli import _resolve_und_language_tui
 
         movie = make_movie(main_file=tmp_path / "m.mkv")
@@ -1683,7 +1541,6 @@ class TestResolveUndLanguageTui:
         assert result == "jpn"
 
     def test_factory_instantiates_language_screen(self, tmp_path: Path) -> None:
-        """The internal factory returns a LanguageSelectorScreen for the supplied track."""
         from furnace.cli import _resolve_und_language_tui
         from furnace.ui.tui import LanguageSelectorScreen
 
@@ -1707,14 +1564,8 @@ class TestResolveUndLanguageTui:
         assert isinstance(captured[0], LanguageSelectorScreen)
 
 
-# ---------------------------------------------------------------------------
-# _append_demuxed_scan_results
-# ---------------------------------------------------------------------------
-
-
 class TestAppendDemuxedScanResults:
     def test_appends_one_scan_result_per_demuxed_path(self, tmp_path: Path) -> None:
-        """Each demuxed path becomes a ScanResult with expected output_path layout."""
         from furnace.cli import _append_demuxed_scan_results
 
         output = tmp_path / "out"
@@ -1730,22 +1581,15 @@ class TestAppendDemuxedScanResults:
         assert scan_results[1].output_path == output / "disc_title_2" / "disc_title_2.mkv"
 
     def test_empty_demuxed_does_nothing(self, tmp_path: Path) -> None:
-        """No demuxed paths => nothing appended."""
         from furnace.cli import _append_demuxed_scan_results
 
         scan_results: list[Any] = [MagicMock()]
         _append_demuxed_scan_results(scan_results, [], tmp_path / "out")
-        assert len(scan_results) == 1  # unchanged
-
-
-# ---------------------------------------------------------------------------
-# _apply_demux_dir_to_plan
-# ---------------------------------------------------------------------------
+        assert len(scan_results) == 1
 
 
 class TestApplyDemuxDirToPlan:
     def test_sets_demux_dir_on_plan(self, tmp_path: Path) -> None:
-        """When demux_dir is provided, its str form is assigned to plan.demux_dir."""
         from furnace.cli import _apply_demux_dir_to_plan
 
         plan_obj = make_plan(jobs=[])
@@ -1753,7 +1597,6 @@ class TestApplyDemuxDirToPlan:
         assert plan_obj.demux_dir == str(tmp_path / "demux")
 
     def test_none_leaves_plan_unchanged(self) -> None:
-        """When demux_dir is None, plan.demux_dir stays at its current value."""
         from furnace.cli import _apply_demux_dir_to_plan
 
         plan_obj = make_plan(jobs=[], demux_dir=None)
@@ -1761,14 +1604,8 @@ class TestApplyDemuxDirToPlan:
         assert plan_obj.demux_dir is None
 
 
-# ---------------------------------------------------------------------------
-# _run_disc_demux_interactive
-# ---------------------------------------------------------------------------
-
-
 class TestDvdDemuxedPaths:
     def test_matches_only_paths_prefixed_with_disc_label(self, tmp_path: Path) -> None:
-        """Only paths whose name starts with the disc label are marked as DVD demuxed."""
         from furnace.cli import _dvd_demuxed_paths
         from furnace.core.models import DiscSource, DiscType
 
@@ -1779,7 +1616,6 @@ class TestDvdDemuxedPaths:
         assert result == {mine}
 
     def test_non_dvd_disc_ignored(self, tmp_path: Path) -> None:
-        """Bluray discs are never flagged even when the filename matches."""
         from furnace.cli import _dvd_demuxed_paths
         from furnace.core.models import DiscSource, DiscType
 
@@ -1788,7 +1624,6 @@ class TestDvdDemuxedPaths:
         assert _dvd_demuxed_paths([disc], {disc: [MagicMock()]}, [mkv]) == set()
 
     def test_disc_not_in_selected_titles_ignored(self, tmp_path: Path) -> None:
-        """DVD that wasn't selected isn't considered."""
         from furnace.cli import _dvd_demuxed_paths
         from furnace.core.models import DiscSource, DiscType
 
@@ -1802,7 +1637,6 @@ class TestRunDiscDemuxInteractive:
         return MagicMock(), MagicMock()
 
     def test_no_discs_returns_empty(self, tmp_path: Path) -> None:
-        """No discs detected => returns (None, [], set())."""
         from furnace.cli import _run_disc_demux_interactive
 
         ffmpeg, mpv = self._adapters()
@@ -1822,12 +1656,9 @@ class TestRunDiscDemuxInteractive:
         assert demux_dir is None
         assert paths == []
         assert sar == set()
-        # list_titles is no longer called inside _run_disc_demux_interactive —
-        # it's invoked by `cli.plan`'s Detect loop and passed in as `disc_titles`.
         demuxer.list_titles.assert_not_called()
 
     def test_single_playlist_auto_selected_and_demuxed(self, tmp_path: Path) -> None:
-        """One playlist -> no TUI, just demux (single HD file, no file-selector)."""
         from furnace.cli import _run_disc_demux_interactive
         from furnace.core.models import DiscSource, DiscTitle, DiscType
 
@@ -1840,8 +1671,6 @@ class TestRunDiscDemuxInteractive:
         demuxer.demux.return_value = [demuxed_mkv]
 
         ffmpeg, mpv = self._adapters()
-        # Single HDR file: offers no grain toggle (the grain path cannot score PQ),
-        # so with one file and no DVD there is nothing to select -> no screen.
         ffmpeg.probe.return_value = {
             "format": {"duration": "5400.0", "size": "1000"},
             "streams": [
@@ -1856,8 +1685,8 @@ class TestRunDiscDemuxInteractive:
             disc_demuxer=demuxer,
             ffmpeg_adapter=ffmpeg,
             mpv_adapter=mpv,
-            playlist_app_runner=MagicMock(),  # not called
-            file_app_runner=MagicMock(),  # not called (single file, no DVD)
+            playlist_app_runner=MagicMock(),
+            file_app_runner=MagicMock(),
         )
 
         assert demux_dir == tmp_path / ".furnace_demux"
@@ -1867,8 +1696,6 @@ class TestRunDiscDemuxInteractive:
         demuxer.list_titles.assert_not_called()
 
     def test_empty_playlist_list_skips_disc(self, tmp_path: Path) -> None:
-        """When list_titles returned [] (now passed in via disc_titles), that
-        disc is skipped entirely."""
         from furnace.cli import _run_disc_demux_interactive
         from furnace.core.models import DiscSource, DiscType
 
@@ -1894,11 +1721,6 @@ class TestRunDiscDemuxInteractive:
         demuxer.demux.assert_not_called()
 
     def test_multiple_playlists_uses_runner(self, tmp_path: Path) -> None:
-        """Multi-playlist disc: runner picks a subset; only picked titles are demuxed.
-
-        The runner is also driven here to invoke its factory, exercising the
-        PlaylistSelectorScreen construction path.
-        """
         from furnace.cli import _run_disc_demux_interactive
         from furnace.core.models import DiscSource, DiscTitle, DiscType
         from furnace.ui.tui import PlaylistSelectorScreen
@@ -1936,12 +1758,10 @@ class TestRunDiscDemuxInteractive:
         assert sar == set()
         assert len(screens_built) == 1
         assert isinstance(screens_built[0], PlaylistSelectorScreen)
-        # Only t2 should have been passed to demuxer.demux
         call_kwargs = demuxer.demux.call_args.kwargs
         assert call_kwargs["selected_titles"] == {disc: [t2]}
 
     def test_multiple_playlists_runner_returns_none_skips_disc(self, tmp_path: Path) -> None:
-        """If the playlist runner returns None, that disc is skipped."""
         from furnace.cli import _run_disc_demux_interactive
         from furnace.core.models import DiscSource, DiscTitle, DiscType
 
@@ -1971,8 +1791,6 @@ class TestRunDiscDemuxInteractive:
         demuxer.demux.assert_not_called()
 
     def test_dvd_demuxed_file_triggers_file_selector_and_sar(self, tmp_path: Path) -> None:
-        """DVD-demuxed files run the file-selector, surface SAR overrides, and
-        the file runner builds a FileSelectorScreen via the factory."""
         from furnace.cli import _run_disc_demux_interactive
         from furnace.core.models import DiscSource, DiscTitle, DiscType
         from furnace.ui.tui import FileSelection, FileSelectorScreen
@@ -2011,11 +1829,9 @@ class TestRunDiscDemuxInteractive:
         assert sar == {dvd_mkv}
         assert len(screens_built) == 1
         assert isinstance(screens_built[0], FileSelectorScreen)
-        # ffmpeg.probe was called for the demuxed file
         ffmpeg.probe.assert_called_once_with(dvd_mkv)
 
     def test_multiple_demuxed_files_trigger_file_selector(self, tmp_path: Path) -> None:
-        """Non-DVD but >1 demuxed file => file selector runs."""
         from furnace.cli import _run_disc_demux_interactive
         from furnace.core.models import DiscSource, DiscTitle, DiscType
         from furnace.ui.tui import FileSelection
@@ -2053,7 +1869,6 @@ class TestRunDiscDemuxInteractive:
         file_runner.assert_called_once()
 
     def test_file_selector_returning_none_keeps_demuxed_paths(self, tmp_path: Path) -> None:
-        """If the file-selector runner returns None, original demuxed paths are kept."""
         from furnace.cli import _run_disc_demux_interactive
         from furnace.core.models import DiscSource, DiscTitle, DiscType
 
@@ -2087,7 +1902,6 @@ class TestRunDiscDemuxInteractive:
         assert sar == set()
 
     def test_probe_missing_format_defaults(self, tmp_path: Path) -> None:
-        """Probing a file without a format dict falls back to zero values without crashing."""
         from furnace.cli import _run_disc_demux_interactive
         from furnace.core.models import DiscSource, DiscTitle, DiscType
         from furnace.ui.tui import FileSelection
@@ -2101,7 +1915,7 @@ class TestRunDiscDemuxInteractive:
         demuxer.demux.return_value = [mkv]
 
         ffmpeg = MagicMock()
-        ffmpeg.probe.return_value = {}  # no 'format' key
+        ffmpeg.probe.return_value = {}
         mpv = MagicMock()
         file_runner = MagicMock(return_value=FileSelection(selected=[mkv], sar_override=set()))
 
@@ -2119,14 +1933,8 @@ class TestRunDiscDemuxInteractive:
         assert paths == [mkv]
 
 
-# ---------------------------------------------------------------------------
-# plan — full integration with interactive disc-demux path
-# ---------------------------------------------------------------------------
-
-
 class TestPlanSelectorClosures:
     def test_track_selector_closure_routes_through_helper(self, tmp_path: Path) -> None:
-        """The track_selector closure passed to PlannerService routes to _select_tracks_tui_for_planner."""
         source = tmp_path / "src"
         source.mkdir()
         output = tmp_path / "out"
@@ -2161,12 +1969,10 @@ class TestPlanSelectorClosures:
 
             assert result.exit_code == 0, result.output
 
-            # Pull the closures the planner was instantiated with
             planner_kwargs = mock_planner_cls.call_args.kwargs
             selector = planner_kwargs["track_selector"]
             resolver = planner_kwargs["und_resolver"]
 
-            # Invoke them — this exercises the closure bodies at lines 454/457.
             movie = make_movie(main_file=source / "m.mkv")
             track = make_track(index=1, track_type=TrackType.AUDIO)
             selector(movie, [track], TrackType.AUDIO)
@@ -2176,7 +1982,6 @@ class TestPlanSelectorClosures:
             mock_res.assert_called_once()
 
     def test_track_selector_forwards_lang_list_and_relabel_under_ignore_langs(self, tmp_path: Path) -> None:
-        """Under -il, the track_selector closure picks audio/sub lang_list by type and forwards allow_relabel=True."""
         source = tmp_path / "src"
         source.mkdir()
         output = tmp_path / "out"
@@ -2225,7 +2030,6 @@ class TestPlanSelectorClosures:
             assert sub_call.kwargs["lang_list"] == ["jpn"]
 
     def test_track_selector_relabel_false_without_flag(self, tmp_path: Path) -> None:
-        """Without -il, the track_selector closure forwards allow_relabel=False."""
         source = tmp_path / "src"
         source.mkdir()
         output = tmp_path / "out"
@@ -2299,19 +2103,16 @@ class TestPlanIgnoreLangs:
         return mock_planner_cls
 
     def test_ignore_langs_long_flag_sets_planner_and_lang_overrides(self, tmp_path: Path) -> None:
-        """--ignore-langs sets PlannerService(ignore_langs=True) and passes lang_overrides to create_plan."""
         mock_planner_cls = self._run_plan(tmp_path, ["--ignore-langs"])
         assert mock_planner_cls.call_args.kwargs["ignore_langs"] is True
         call_kwargs = mock_planner_cls.return_value.create_plan.call_args.kwargs
         assert call_kwargs["lang_overrides"] == {}
 
     def test_ignore_langs_short_flag(self, tmp_path: Path) -> None:
-        """The -il short flag also enables ignore_langs."""
         mock_planner_cls = self._run_plan(tmp_path, ["-il"])
         assert mock_planner_cls.call_args.kwargs["ignore_langs"] is True
 
     def test_ignore_langs_defaults_false(self, tmp_path: Path) -> None:
-        """Without the flag, ignore_langs is False and lang_overrides is an empty dict."""
         mock_planner_cls = self._run_plan(tmp_path, [])
         assert mock_planner_cls.call_args.kwargs["ignore_langs"] is False
         call_kwargs = mock_planner_cls.return_value.create_plan.call_args.kwargs
@@ -2320,7 +2121,6 @@ class TestPlanIgnoreLangs:
 
 class TestPlanDiscInteractive:
     def test_plan_calls_disc_interactive_when_discs_detected(self, tmp_path: Path) -> None:
-        """plan() delegates to _run_disc_demux_interactive when discs are found and not dry_run."""
         from furnace.core.models import DiscSource, DiscType
 
         source = tmp_path / "src"
@@ -2362,28 +2162,15 @@ class TestPlanDiscInteractive:
 
         assert result.exit_code == 0, result.output
         mock_interactive.assert_called_once()
-        # _run_disc_demux_interactive received the disc_titles dict from the
-        # Detect loop.
         assert "disc_titles" in mock_interactive.call_args.kwargs
-        # Plan.demux_dir should be set from the returned demux_dir
         assert plan_obj.demux_dir == str(source / ".furnace_demux")
-        # sar_override_paths forwarded to planner
         call_kwargs = mock_planner_cls.return_value.create_plan.call_args.kwargs
         assert call_kwargs["sar_overrides"] == {demuxed}
-        # grain decisions from the disc file-selector reach the planner
         assert call_kwargs["grain_overrides"] == {demuxed: True}
 
 
-# ---------------------------------------------------------------------------
-# disc-demux interactive: reporter pause/resume coverage
-# ---------------------------------------------------------------------------
-
-
 class TestPlanDiscInteractiveReporter:
-    """Cover the `reporter is not None` branches in `_run_disc_demux_interactive`."""
-
     def test_reporter_pause_resume_around_screens(self, tmp_path: Path) -> None:
-        """When a reporter is supplied, pause/resume bracket every interactive screen."""
         from unittest.mock import call
 
         from furnace.cli import _run_disc_demux_interactive
@@ -2424,30 +2211,18 @@ class TestPlanDiscInteractiveReporter:
             file_app_runner=file_runner,
         )
 
-        # pause/resume called once around the playlist runner (now inside
-        # _collect_selected_titles) and once around the file runner.
         assert manager.mock_calls == [call.pause(), call.resume(), call.pause(), call.resume()]
-        # demuxer.demux receives the reporter (not on_output) under the new wiring.
         assert demuxer.demux.call_args.kwargs["reporter"] is reporter
 
 
-# ---------------------------------------------------------------------------
-# plan: detect_disc rel_path fallback (ValueError branch)
-# ---------------------------------------------------------------------------
-
-
 class TestPlanDetectRelPathFallback:
-    """The `rel_str = disc.path.parent.name` fallback fires when relative_to() raises."""
-
     def test_disc_outside_source_falls_back_to_basename(self, tmp_path: Path) -> None:
-        """A disc whose parent dir is not under `source` triggers the ValueError branch."""
         from furnace.core.models import DiscSource, DiscType
 
         source = tmp_path / "src"
         source.mkdir()
         output = tmp_path / "out"
 
-        # Disc lives outside `source`, so .relative_to(source) raises ValueError.
         outside = tmp_path / "elsewhere" / "BDMV"
         disc = DiscSource(path=outside, disc_type=DiscType.BLURAY)
 
@@ -2482,20 +2257,11 @@ class TestPlanDetectRelPathFallback:
             )
 
         assert result.exit_code == 0, result.output
-        # detect_disc was called with the parent-name fallback.
         reporter_inst.detect_disc.assert_called_once_with(DiscType.BLURAY, "elsewhere")
-        # detect_disc_titles_done was called too with the empty title count.
         reporter_inst.detect_disc_titles_done.assert_called_once_with(0)
 
 
-# ---------------------------------------------------------------------------
-# plan: HDR10+ source (FAILED batch outcome, no exception)
-# ---------------------------------------------------------------------------
-
-
 class TestPlanHdr10Plus:
-    """An HDR10+ source yields a FAILED batch outcome: no job, no exception."""
-
     def test_hdr10_plus_surfaces_failed_line_and_no_job(self, tmp_path: Path) -> None:
         from furnace.core.models import ScanResult
 
@@ -2527,7 +2293,6 @@ class TestPlanHdr10Plus:
             reporter_inst = mock_reporter_cls.return_value
             mock_demuxer_cls.return_value.detect.return_value = []
             mock_scanner_cls.return_value.scan.return_value = [scan_result]
-            # analyze() no longer raises for HDR10+; it returns a FAILED outcome.
             mock_analyzer_cls.return_value.analyze.return_value = AnalysisOutcome(
                 None, AnalyzeStatus.FAILED, "HDR10+ not supported"
             )
@@ -2538,25 +2303,15 @@ class TestPlanHdr10Plus:
                 ["plan", str(source), "-o", str(output), "-al", "eng", "-sl", "eng", "--dry-run"],
             )
 
-        # No exception escapes the command (the old try/except ValueError is gone).
         assert result.exit_code == 0, result.output
-        # The FAILED outcome is surfaced as a batch line for that file.
         reporter_inst.analyze_batch_item.assert_called_once_with(
             "movie.mkv", "HDR10+ not supported", status=AnalyzeStatus.FAILED
         )
-        # Planner sees no movies because the HDR10+ file produced no job.
         call_kwargs = mock_planner_cls.return_value.create_plan.call_args.kwargs
         assert call_kwargs["movies"] == []
 
 
-# ---------------------------------------------------------------------------
-# plan: --jobs / parallel analysis worker count
-# ---------------------------------------------------------------------------
-
-
 class TestPlanJobs:
-    """The --jobs flag controls how many AnalysisPipeline workers are used."""
-
     @staticmethod
     def _invoke_capturing_pipeline(
         tmp_path: Path,
@@ -2564,7 +2319,6 @@ class TestPlanJobs:
         *,
         cpu_count: int | None = 8,
     ) -> Any:
-        """Run ``plan --dry-run`` with AnalysisPipeline patched; return its mock class."""
         from furnace.services.analysis_pipeline import AnalysisBatchResult
 
         source = tmp_path / "src"
@@ -2595,8 +2349,16 @@ class TestPlanJobs:
             result = runner.invoke(
                 app,
                 [
-                    "plan", str(source), "-o", str(output),
-                    "-al", "eng", "-sl", "eng", "--dry-run", *extra_args,
+                    "plan",
+                    str(source),
+                    "-o",
+                    str(output),
+                    "-al",
+                    "eng",
+                    "-sl",
+                    "eng",
+                    "--dry-run",
+                    *extra_args,
                 ],
             )
 
@@ -2604,37 +2366,30 @@ class TestPlanJobs:
         return mock_pipeline_cls
 
     def test_jobs_flag_forwards_max_workers(self, tmp_path: Path) -> None:
-        """``--jobs 4`` reaches AnalysisPipeline as max_workers=4."""
         pipeline_cls = self._invoke_capturing_pipeline(tmp_path, ["--jobs", "4"])
         assert pipeline_cls.call_args.kwargs["max_workers"] == 4
 
     def test_jobs_short_flag_forwards_max_workers(self, tmp_path: Path) -> None:
-        """``-j 3`` reaches AnalysisPipeline as max_workers=3."""
         pipeline_cls = self._invoke_capturing_pipeline(tmp_path, ["-j", "3"])
         assert pipeline_cls.call_args.kwargs["max_workers"] == 3
 
     def test_jobs_flag_floored_at_one(self, tmp_path: Path) -> None:
-        """``--jobs 0`` is floored up to a single worker."""
         pipeline_cls = self._invoke_capturing_pipeline(tmp_path, ["--jobs", "0"])
         assert pipeline_cls.call_args.kwargs["max_workers"] == 1
 
     def test_default_workers_is_cpu_count_minus_two(self, tmp_path: Path) -> None:
-        """Without --jobs, workers default to max(1, os.cpu_count() - 2)."""
         pipeline_cls = self._invoke_capturing_pipeline(tmp_path, [], cpu_count=8)
         assert pipeline_cls.call_args.kwargs["max_workers"] == 6
 
     def test_default_workers_floored_when_few_cpus(self, tmp_path: Path) -> None:
-        """A one-core machine still yields at least one worker."""
         pipeline_cls = self._invoke_capturing_pipeline(tmp_path, [], cpu_count=1)
         assert pipeline_cls.call_args.kwargs["max_workers"] == 1
 
     def test_default_workers_when_cpu_count_none(self, tmp_path: Path) -> None:
-        """os.cpu_count() returning None falls back to a single worker."""
         pipeline_cls = self._invoke_capturing_pipeline(tmp_path, [], cpu_count=None)
         assert pipeline_cls.call_args.kwargs["max_workers"] == 1
 
     def test_jobs_one_yields_same_plan_as_default(self, tmp_path: Path) -> None:
-        """``--jobs 1`` is accepted and feeds the planner the same movies as the default."""
         from furnace.core.models import ScanResult
 
         source = tmp_path / "src"
@@ -2672,8 +2427,16 @@ class TestPlanJobs:
                 result = runner.invoke(
                     app,
                     [
-                        "plan", str(source), "-o", str(output),
-                        "-al", "eng", "-sl", "eng", "--dry-run", *extra_args,
+                        "plan",
+                        str(source),
+                        "-o",
+                        str(output),
+                        "-al",
+                        "eng",
+                        "-sl",
+                        "eng",
+                        "--dry-run",
+                        *extra_args,
                     ],
                 )
             assert result.exit_code == 0, result.output
@@ -2687,14 +2450,7 @@ class TestPlanJobs:
         assert jobs1_movies == expected
 
 
-# ---------------------------------------------------------------------------
-# plan: KeyboardInterrupt -> reporter.interrupted() + Exit(130)
-# ---------------------------------------------------------------------------
-
-
 class TestPlanKeyboardInterrupt:
-    """Ctrl+C anywhere in the plan body exits 130 and notifies the reporter."""
-
     def test_keyboard_interrupt_during_detect(self, tmp_path: Path) -> None:
         source = tmp_path / "src"
         source.mkdir()
@@ -2725,19 +2481,8 @@ class TestPlanKeyboardInterrupt:
         reporter_inst.stop.assert_called_once()
 
 
-# ---------------------------------------------------------------------------
-# default app-runner helpers construct & call App/screen correctly
-# ---------------------------------------------------------------------------
-
-
 class TestDefaultAppRunner:
     def test_run_screen_app_captures_dismiss_result(self) -> None:
-        """_run_screen_app runs an App, and on_mount pushes the screen factory's screen.
-
-        We drive the inner class by intercepting `run()` to simulate Textual
-        calling compose+on_mount: we call them ourselves, then check the
-        dismiss callback captures the value returned to _run_screen_app.
-        """
         from furnace.cli import _run_screen_app
 
         sentinel = "dismiss-result"
@@ -2748,13 +2493,10 @@ class TestDefaultAppRunner:
             factory_calls.append(1)
             return fake_screen
 
-        # Patch App.run so on_mount is invoked and the dismiss callback is triggered.
         composed: list[Any] = []
 
         def fake_run(self: Any) -> None:
-            # Drive compose() so the Header-yielding line is covered.
             composed.extend(self.compose())
-            # Stub push_screen: call the on_dismiss callback immediately with sentinel.
             pushed: list[Any] = []
 
             def _push_screen(screen: Any, on_dismiss: Callable[[Any], None]) -> None:
@@ -2762,7 +2504,6 @@ class TestDefaultAppRunner:
                 on_dismiss(sentinel)
 
             self.push_screen = _push_screen
-            # Also stub exit so it's a no-op.
             self.exit = lambda _result: None
             self.on_mount()
             assert pushed == [fake_screen]
@@ -2772,10 +2513,9 @@ class TestDefaultAppRunner:
 
         assert result == sentinel
         assert factory_calls == [1]
-        assert len(composed) == 1  # Header yielded
+        assert len(composed) == 1
 
     def test_run_screen_app_handles_none_dismiss(self) -> None:
-        """Dismiss callback receiving None makes _run_screen_app return None."""
         from collections.abc import Callable as _Callable
 
         from furnace.cli import _run_screen_app
@@ -2796,14 +2536,8 @@ class TestDefaultAppRunner:
         assert result is None
 
 
-# ---------------------------------------------------------------------------
-# scan command
-# ---------------------------------------------------------------------------
-
-
 class TestScanCommand:
     def test_no_filters_calls_service_with_defaults(self, tmp_path: Path) -> None:
-        """`furnace scan SRC` runs the service with all filters off."""
         src = tmp_path / "movies"
         src.mkdir()
         cfg = _make_tool_paths(tmp_path)
@@ -2892,9 +2626,7 @@ class TestScanCommand:
         ):
             mock_service_cls.return_value.scan.return_value = ([], 0)
 
-            result = runner.invoke(
-                app, ["scan", str(src), "--not-encoded", "--max-version", "1.19.3"]
-            )
+            result = runner.invoke(app, ["scan", str(src), "--not-encoded", "--max-version", "1.19.3"])
 
         assert result.exit_code == 0, result.output
         kwargs = mock_service_cls.return_value.scan.call_args.kwargs
@@ -2902,7 +2634,6 @@ class TestScanCommand:
         assert kwargs["max_version"] == (1, 19, 3)
 
     def test_bad_max_version_is_cli_error(self, tmp_path: Path) -> None:
-        """A non-X.Y.Z --max-version yields a typer BadParameter (exit != 0)."""
         src = tmp_path / "movies"
         src.mkdir()
         cfg = _make_tool_paths(tmp_path)
@@ -2917,7 +2648,6 @@ class TestScanCommand:
 
         assert result.exit_code != 0
         assert "max-version" in result.output
-        # The error is raised before any work happens.
         mock_load_cfg.assert_not_called()
         mock_service_cls.return_value.scan.assert_not_called()
 
@@ -2959,11 +2689,9 @@ class TestScanCommand:
         ffmpeg_args = mock_ffmpeg_cls.call_args.args
         assert ffmpeg_args[0] == cfg.ffmpeg
         assert ffmpeg_args[1] == cfg.ffprobe
-        # The service is built with the ffprobe-backed adapter.
         assert mock_service_cls.call_args.kwargs["prober"] is mock_ffmpeg_cls.return_value
 
     def test_total_taken_from_service(self, tmp_path: Path) -> None:
-        """The summary total (M) is the count the service reports alongside rows."""
         src = tmp_path / "movies"
         src.mkdir()
         cfg = _make_tool_paths(tmp_path)
@@ -2984,7 +2712,6 @@ class TestScanCommand:
         assert render_kwargs["total"] == 3
 
     def test_unreadable_rows_become_warnings(self, tmp_path: Path) -> None:
-        """Each unreadable row is surfaced as a stderr warning; readable rows are not."""
         from furnace.core.scan import ScanRow, VideoSummary
 
         src = tmp_path / "movies"
@@ -3049,11 +2776,6 @@ class TestScanCommand:
         assert mock_render.call_args.args[0] == [row]
 
     def test_integration_real_service_and_renderer(self, tmp_path: Path) -> None:
-        """End-to-end wiring: real ScanService + real renderer, only the prober stubbed.
-
-        Catches drift between the CLI, the service, the ``ScanRow`` model and the
-        renderer that the fully-mocked tests above cannot see.
-        """
         src = tmp_path / "movies"
         src.mkdir()
         encoded = src / "encoded.mkv"
@@ -3100,7 +2822,6 @@ class TestScanCommand:
         assert "2 of 2 shown" in out
 
     def test_integration_filter_reduces_rows_below_total(self, tmp_path: Path) -> None:
-        """A filter trims rendered rows (N) below the discovered total (M), end-to-end."""
         src = tmp_path / "movies"
         src.mkdir()
         encoded = src / "encoded.mkv"
@@ -3177,7 +2898,6 @@ class TestScanCommand:
         [["--not-encoded"], ["--encoded"], ["--max-version", "2.0.0"]],
     )
     def test_outdated_is_standalone(self, tmp_path: Path, clashing: list[str]) -> None:
-        """--outdated combined with any status filter is a usage error, raised early."""
         src = tmp_path / "movies"
         src.mkdir()
 
@@ -3195,7 +2915,6 @@ class TestScanCommand:
         mock_service_cls.return_value.scan.assert_not_called()
 
     def test_integration_outdated_flags_and_drops(self, tmp_path: Path) -> None:
-        """End-to-end --outdated: foreign + defective kept, clean current dropped."""
         src = tmp_path / "movies"
         src.mkdir()
         clean = src / "a_clean.mkv"
@@ -3241,7 +2960,6 @@ class TestScanCommand:
         assert "2 of 3 shown" in result.output
 
     def test_integration_outdated_keeps_unreadable_and_exits_zero(self, tmp_path: Path) -> None:
-        """--outdated still exits 0 and surfaces an unreadable file as its own row."""
         src = tmp_path / "movies"
         src.mkdir()
         good = src / "a_good.mkv"
@@ -3253,7 +2971,6 @@ class TestScanCommand:
         def probe(p: Path) -> dict[str, Any]:
             if p == bad:
                 raise OSError("boom")
-            # Clean current file → dropped from the outdated work-list.
             return {
                 "streams": [
                     {"codec_type": "video", "codec_name": "av1", "height": 1080, "color_space": "bt709"},
@@ -3279,14 +2996,8 @@ class TestScanCommand:
         assert "1 of 2 shown" in out
 
 
-# ---------------------------------------------------------------------------
-# _probe_file_infos — height (has-video guard) + transfer (grain gate) are captured
-# ---------------------------------------------------------------------------
-
-
 class TestProbeFileInfosHeight:
     def test_includes_first_video_stream_height_and_transfer(self, tmp_path: Path) -> None:
-        """_probe_file_infos returns (path, duration, size, height, transfer) 5-tuples."""
         from furnace.cli import _probe_file_infos
 
         p = tmp_path / "a.mkv"
@@ -3304,7 +3015,6 @@ class TestProbeFileInfosHeight:
         assert infos == [(p, 10.0, 20, 576, "bt709")]
 
     def test_no_video_stream_height_zero_transfer_none(self, tmp_path: Path) -> None:
-        """No video stream -> height 0 (excluded from the grain toggle) and no transfer."""
         from furnace.cli import _probe_file_infos
 
         p = tmp_path / "a.mkv"
@@ -3316,7 +3026,6 @@ class TestProbeFileInfosHeight:
         assert infos == [(p, 0.0, 0, 0, None)]
 
     def test_untagged_transfer_is_none(self, tmp_path: Path) -> None:
-        """A video stream with no colour_transfer tag reports None (assumed SDR)."""
         from furnace.cli import _probe_file_infos
 
         p = tmp_path / "a.mkv"
@@ -3331,11 +3040,6 @@ class TestProbeFileInfosHeight:
         assert infos == [(p, 5.0, 10, 1080, None)]
 
 
-# ---------------------------------------------------------------------------
-# _run_disc_demux_interactive — SD grain pre-probe + threading
-# ---------------------------------------------------------------------------
-
-
 class TestDiscDemuxGrain:
     def _sd_probe(self, height: int = 480) -> dict[str, Any]:
         return {
@@ -3344,8 +3048,6 @@ class TestDiscDemuxGrain:
         }
 
     def test_grainy_sd_file_pre_lit_and_threaded(self, tmp_path: Path) -> None:
-        """A DVD SD file whose sample_grain classifies GRAINY starts pre-lit and
-        its grain decision is threaded out of _run_disc_demux_interactive."""
         from furnace.cli import _run_disc_demux_interactive
         from furnace.core.models import DiscSource, DiscTitle, DiscType
         from furnace.ui.tui import FileSelection, FileSelectorScreen
@@ -3360,7 +3062,7 @@ class TestDiscDemuxGrain:
 
         ffmpeg = MagicMock()
         ffmpeg.probe.return_value = self._sd_probe(480)
-        ffmpeg.sample_grain.return_value = [1.0, 1.2]  # median >= 0.5 -> GRAINY
+        ffmpeg.sample_grain.return_value = [1.0, 1.2]
 
         screens_built: list[Any] = []
 
@@ -3381,16 +3083,13 @@ class TestDiscDemuxGrain:
 
         assert paths == [dvd_mkv]
         assert grain == {dvd_mkv: True}
-        # Grain was pre-probed once, on the SD file, with its duration.
         ffmpeg.sample_grain.assert_called_once_with(dvd_mkv, 100.0)
-        # The screen was seeded with sd_files and a pre-lit grain default.
         screen = screens_built[0]
         assert isinstance(screen, FileSelectorScreen)
         assert screen._grain_files == {dvd_mkv}
         assert screen._grain_defaults == {dvd_mkv}
 
     def test_clean_sd_file_not_pre_lit(self, tmp_path: Path) -> None:
-        """A CLEAN sample_grain verdict leaves the SD file's grain default off."""
         from furnace.cli import _run_disc_demux_interactive
         from furnace.core.models import DiscSource, DiscTitle, DiscType
 
@@ -3404,7 +3103,7 @@ class TestDiscDemuxGrain:
 
         ffmpeg = MagicMock()
         ffmpeg.probe.return_value = self._sd_probe(480)
-        ffmpeg.sample_grain.return_value = [0.1, 0.2]  # median < 0.5 -> CLEAN
+        ffmpeg.sample_grain.return_value = [0.1, 0.2]
 
         screens_built: list[Any] = []
 
@@ -3430,8 +3129,6 @@ class TestDiscDemuxGrain:
         assert screens_built[0]._grain_defaults == set()
 
     def test_single_sd_file_triggers_screen(self, tmp_path: Path) -> None:
-        """A single non-DVD SD file (len==1, no DVD) still opens the file-selector
-        because it is grain-eligible."""
         from furnace.cli import _run_disc_demux_interactive
         from furnace.core.models import DiscSource, DiscTitle, DiscType
         from furnace.ui.tui import FileSelection
@@ -3448,9 +3145,7 @@ class TestDiscDemuxGrain:
         ffmpeg.probe.return_value = self._sd_probe(480)
         ffmpeg.sample_grain.return_value = [1.0]
 
-        file_runner = MagicMock(
-            return_value=FileSelection(selected=[mkv], sar_override=set(), grain={mkv: True})
-        )
+        file_runner = MagicMock(return_value=FileSelection(selected=[mkv], sar_override=set(), grain={mkv: True}))
 
         _dir, paths, _sar, grain = _run_disc_demux_interactive(
             source=tmp_path,
@@ -3468,9 +3163,6 @@ class TestDiscDemuxGrain:
         assert grain == {mkv: True}
 
     def test_grain_defaults_never_include_hdr(self, tmp_path: Path) -> None:
-        """INVARIANT: a GRAINY HDR file is never pre-lit — grain_defaults ⊆ grain_files,
-        and the grain path cannot score PQ. An HD *SDR* file IS eligible (resolution
-        no longer gates: grainy HD film needs the grain path too)."""
         from furnace.cli import _run_disc_demux_interactive
         from furnace.core.models import DiscSource, DiscTitle, DiscType
         from furnace.ui.tui import FileSelection
@@ -3491,20 +3183,18 @@ class TestDiscDemuxGrain:
             stream: dict[str, Any] = (
                 {"codec_type": "video", "height": 2160, "color_transfer": "smpte2084"}
                 if path == hdr_mkv
-                else {"codec_type": "video", "height": 1080}  # HD SDR (untagged)
+                else {"codec_type": "video", "height": 1080}
             )
             return {"format": {"duration": "100.0", "size": "1000"}, "streams": [stream]}
 
         ffmpeg.probe.side_effect = _probe
-        ffmpeg.sample_grain.return_value = [9.0]  # everything reads GRAINY
+        ffmpeg.sample_grain.return_value = [9.0]
 
         screens_built: list[Any] = []
 
         def file_runner(factory: Callable[[], Any]) -> FileSelection:
             screens_built.append(factory())
-            return FileSelection(
-                selected=[hdr_mkv, sdr_mkv], sar_override=set(), grain={sdr_mkv: True}
-            )
+            return FileSelection(selected=[hdr_mkv, sdr_mkv], sar_override=set(), grain={sdr_mkv: True})
 
         _run_disc_demux_interactive(
             source=tmp_path,
@@ -3520,12 +3210,9 @@ class TestDiscDemuxGrain:
         screen = screens_built[0]
         assert screen._grain_files == {sdr_mkv}
         assert screen._grain_defaults == {sdr_mkv}
-        # sample_grain only ran for the SDR file, never for the HDR one.
         ffmpeg.sample_grain.assert_called_once_with(sdr_mkv, 100.0)
 
     def test_grain_probe_uses_stream_duration(self, tmp_path: Path) -> None:
-        """Finding 1: the pre-probe seeks with the video STREAM's duration (not
-        format.duration) so it matches the analyzer's stream-first precedence."""
         from furnace.cli import _run_disc_demux_interactive
         from furnace.core.models import DiscSource, DiscTitle, DiscType
         from furnace.ui.tui import FileSelection
@@ -3539,7 +3226,6 @@ class TestDiscDemuxGrain:
         demuxer.demux.return_value = [dvd_mkv]
 
         ffmpeg = MagicMock()
-        # Stream duration (55.0) differs from format.duration (100.0).
         ffmpeg.probe.return_value = {
             "format": {"duration": "100.0", "size": "1000"},
             "streams": [{"codec_type": "video", "height": 480, "duration": "55.0"}],
@@ -3561,12 +3247,9 @@ class TestDiscDemuxGrain:
             file_app_runner=file_runner,
         )
 
-        # Seeks with the stream duration, not format's 100.0.
         ffmpeg.sample_grain.assert_called_once_with(dvd_mkv, 55.0)
 
     def test_grain_probe_falls_back_to_format_duration(self, tmp_path: Path) -> None:
-        """Finding 1 fallback: with no video-stream duration, the pre-probe uses
-        format.duration (matching the analyzer's fallback)."""
         from furnace.cli import _run_disc_demux_interactive
         from furnace.core.models import DiscSource, DiscTitle, DiscType
         from furnace.ui.tui import FileSelection
@@ -3580,7 +3263,6 @@ class TestDiscDemuxGrain:
         demuxer.demux.return_value = [dvd_mkv]
 
         ffmpeg = MagicMock()
-        # No stream duration -> fall back to format.duration (77.0).
         ffmpeg.probe.return_value = {
             "format": {"duration": "77.0", "size": "1000"},
             "streams": [{"codec_type": "video", "height": 480}],
@@ -3605,9 +3287,6 @@ class TestDiscDemuxGrain:
         ffmpeg.sample_grain.assert_called_once_with(dvd_mkv, 77.0)
 
     def test_pre_probe_raise_defaults_grainy_and_survives(self, tmp_path: Path) -> None:
-        """Finding 2: a hard sample_grain failure (broken ffmpeg) on one SD file is
-        caught and defaulted to GRAINY, without crashing the run or affecting a
-        sibling SD file whose probe succeeds CLEAN."""
         from furnace.cli import _run_disc_demux_interactive
         from furnace.core.models import DiscSource, DiscTitle, DiscType
         from furnace.ui.tui import FileSelection, FileSelectorScreen
@@ -3628,7 +3307,7 @@ class TestDiscDemuxGrain:
         def _grain(path: Path, dur: float) -> list[float]:
             if path == raising_mkv:
                 raise OSError("ffmpeg exploded")
-            return [0.1]  # CLEAN
+            return [0.1]
 
         ffmpeg.sample_grain.side_effect = _grain
 
@@ -3636,9 +3315,7 @@ class TestDiscDemuxGrain:
 
         def file_runner(factory: Callable[[], Any]) -> FileSelection:
             screens_built.append(factory())
-            return FileSelection(
-                selected=[raising_mkv, clean_mkv], sar_override=set(), grain={}
-            )
+            return FileSelection(selected=[raising_mkv, clean_mkv], sar_override=set(), grain={})
 
         _dir, paths, _sar, _grain_out = _run_disc_demux_interactive(
             source=tmp_path,
@@ -3651,16 +3328,12 @@ class TestDiscDemuxGrain:
             file_app_runner=file_runner,
         )
 
-        # The run survived (no propagated OSError) and reached the selector.
         assert paths == [raising_mkv, clean_mkv]
         screen = screens_built[0]
         assert isinstance(screen, FileSelectorScreen)
-        # The raising file defaulted GRAINY; the CLEAN sibling is unaffected.
         assert screen._grain_defaults == {raising_mkv}
 
     def test_pre_probe_runtimeerror_defaults_grainy(self, tmp_path: Path) -> None:
-        """Finding 2 (RuntimeError variant): a RuntimeError from sample_grain is
-        caught the same way and defaults the SD file to GRAINY."""
         from furnace.cli import _run_disc_demux_interactive
         from furnace.core.models import DiscSource, DiscTitle, DiscType
         from furnace.ui.tui import FileSelection
@@ -3698,15 +3371,8 @@ class TestDiscDemuxGrain:
         assert screens_built[0]._grain_defaults == {dvd_mkv}
 
 
-# ---------------------------------------------------------------------------
-# plan — plain-files (no discs) SD grain flow
-# ---------------------------------------------------------------------------
-
-
 class TestPlanPlainFilesGrain:
     def _sd_streams(self, height: int, transfer: str | None = None) -> dict[str, Any]:
-        """Probe dict for one video stream. ``transfer=None`` -> SDR (grain-eligible
-        at any resolution); pass an HDR transfer to make it grain-ineligible."""
         stream: dict[str, Any] = {"codec_type": "video", "height": height}
         if transfer is not None:
             stream["color_transfer"] = transfer
@@ -3716,8 +3382,6 @@ class TestPlanPlainFilesGrain:
         }
 
     def test_sd_source_shows_screen_and_threads_grain(self, tmp_path: Path) -> None:
-        """A plain SD source (no discs) opens the file-selector and its grain
-        decision reaches create_plan as grain_overrides."""
         from furnace.core.models import ScanResult
         from furnace.services.analysis_pipeline import AnalysisBatchResult
         from furnace.ui.tui import FileSelection
@@ -3751,7 +3415,7 @@ class TestPlanPlainFilesGrain:
             patch("furnace.cli._run_screen_app", return_value=selection) as mock_runner,
         ):
             mock_ffmpeg_cls.return_value.probe.return_value = self._sd_streams(480)
-            mock_ffmpeg_cls.return_value.sample_grain.return_value = [1.0]  # GRAINY
+            mock_ffmpeg_cls.return_value.sample_grain.return_value = [1.0]
             mock_demuxer_cls.return_value.detect.return_value = []
             mock_scanner_cls.return_value.scan.return_value = [scan_result]
             mock_pipeline_cls.return_value.run.return_value = AnalysisBatchResult(movies=[], crops={})
@@ -3768,9 +3432,6 @@ class TestPlanPlainFilesGrain:
         assert call_kwargs["grain_overrides"] == {main_file: True}
 
     def test_hdr_only_source_no_screen_and_grain_none(self, tmp_path: Path) -> None:
-        """A plain HDR-only source offers no grain toggle (the grain path cannot
-        score PQ), so no screen opens and grain_overrides stays None. Resolution
-        alone no longer excludes anything — an HD *SDR* source does open it."""
         from furnace.core.models import ScanResult
         from furnace.services.analysis_pipeline import AnalysisBatchResult
 
@@ -3801,7 +3462,8 @@ class TestPlanPlainFilesGrain:
             patch("furnace.cli._run_screen_app") as mock_runner,
         ):
             mock_ffmpeg_cls.return_value.probe.return_value = self._sd_streams(
-                2160, transfer="smpte2084",
+                2160,
+                transfer="smpte2084",
             )
             mock_demuxer_cls.return_value.detect.return_value = []
             mock_scanner_cls.return_value.scan.return_value = [scan_result]
@@ -3820,8 +3482,6 @@ class TestPlanPlainFilesGrain:
         assert call_kwargs["grain_overrides"] is None
 
     def test_sd_source_screen_dismissed_keeps_grain_none(self, tmp_path: Path) -> None:
-        """If the plain-files grain screen is dismissed (None), no overrides are
-        threaded and grain_overrides stays None."""
         from furnace.core.models import ScanResult
         from furnace.services.analysis_pipeline import AnalysisBatchResult
 
@@ -3869,7 +3529,6 @@ class TestPlanPlainFilesGrain:
         assert call_kwargs["grain_overrides"] is None
 
     def test_dry_run_no_screen_grain_none(self, tmp_path: Path) -> None:
-        """--dry-run never opens the grain screen and passes grain_overrides=None."""
         from furnace.core.models import ScanResult
 
         source = tmp_path / "src"
@@ -3900,9 +3559,7 @@ class TestPlanPlainFilesGrain:
         ):
             mock_demuxer_cls.return_value.detect.return_value = []
             mock_scanner_cls.return_value.scan.return_value = [scan_result]
-            mock_analyzer_cls.return_value.analyze.return_value = AnalysisOutcome(
-                movie, AnalyzeStatus.DONE, "summary"
-            )
+            mock_analyzer_cls.return_value.analyze.return_value = AnalysisOutcome(movie, AnalyzeStatus.DONE, "summary")
             mock_planner_cls.return_value.create_plan.return_value = plan_obj
 
             result = runner.invoke(
@@ -3917,9 +3574,6 @@ class TestPlanPlainFilesGrain:
         assert call_kwargs["grain_overrides"] is None
 
     def test_deselected_plain_file_does_not_reach_pipeline(self, tmp_path: Path) -> None:
-        """Un-checking a plain file in the selector filters it out: the deselected
-        file's scan result never reaches the analysis pipeline, while the still-
-        selected file (and its grain decision) does."""
         from furnace.core.models import ScanResult
         from furnace.services.analysis_pipeline import AnalysisBatchResult
         from furnace.ui.tui import FileSelection
@@ -3942,8 +3596,6 @@ class TestPlanPlainFilesGrain:
             output_path=output / "drop" / "drop.mkv",
         )
         plan_obj = make_plan(jobs=[])
-        # The selector returns only the kept file (dropped file un-checked); its
-        # grain decision is likewise only present for the kept file.
         selection = FileSelection(selected=[kept_file], sar_override=set(), grain={kept_file: True})
 
         with (
@@ -3961,7 +3613,7 @@ class TestPlanPlainFilesGrain:
             patch("furnace.cli._run_screen_app", return_value=selection) as mock_runner,
         ):
             mock_ffmpeg_cls.return_value.probe.return_value = self._sd_streams(480)
-            mock_ffmpeg_cls.return_value.sample_grain.return_value = [1.0]  # GRAINY
+            mock_ffmpeg_cls.return_value.sample_grain.return_value = [1.0]
             mock_demuxer_cls.return_value.detect.return_value = []
             mock_scanner_cls.return_value.scan.return_value = [kept_result, dropped_result]
             mock_pipeline_cls.return_value.run.return_value = AnalysisBatchResult(movies=[], crops={})
@@ -3974,19 +3626,14 @@ class TestPlanPlainFilesGrain:
 
         assert result.exit_code == 0, result.output
         mock_runner.assert_called_once()
-        # The pipeline must receive only the still-selected scan result.
         pipeline_results = mock_pipeline_cls.return_value.run.call_args.args[0]
         pipeline_files = {sr.main_file for sr in pipeline_results}
         assert pipeline_files == {kept_file}
         assert dropped_file not in pipeline_files
-        # The kept file's grain decision is still threaded through.
         call_kwargs = mock_planner_cls.return_value.create_plan.call_args.kwargs
         assert call_kwargs["grain_overrides"] == {kept_file: True}
 
     def test_all_plain_files_deselected_does_not_crash(self, tmp_path: Path) -> None:
-        """De-selecting every plain file yields an empty scan-result set that flows
-        through without crashing: the pipeline gets no files and create_plan is
-        still called (with empty movies)."""
         from furnace.core.models import ScanResult
         from furnace.services.analysis_pipeline import AnalysisBatchResult
         from furnace.ui.tui import FileSelection

@@ -1,4 +1,3 @@
-"""Planner consumes a precomputed crop map (it no longer runs cropdetect)."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -42,7 +41,6 @@ def _make_movie(tmp_path: Path, *, width: int = 1920, height: int = 1080) -> Mov
 
 class TestPrecomputedCrop:
     def test_precomputed_crop_applied(self, tmp_path: Path) -> None:
-        """A crop supplied for the movie's main_file lands verbatim in VideoParams."""
         movie = _make_movie(tmp_path)
         planner = PlannerService(previewer=None)
 
@@ -58,7 +56,6 @@ class TestPrecomputedCrop:
         assert (vp.crop.w, vp.crop.h, vp.crop.x, vp.crop.y) == (1920, 800, 0, 140)
 
     def test_no_entry_for_file_means_no_crop(self, tmp_path: Path) -> None:
-        """A crop map that has no key for this file -> crop is None."""
         movie = _make_movie(tmp_path)
         planner = PlannerService(previewer=None)
 
@@ -72,7 +69,6 @@ class TestPrecomputedCrop:
         assert plan.jobs[0].video_params.crop is None
 
     def test_precomputed_crops_none_means_no_crop(self, tmp_path: Path) -> None:
-        """Omitting precomputed_crops (None default) -> crop is None."""
         movie = _make_movie(tmp_path)
         planner = PlannerService(previewer=None)
 

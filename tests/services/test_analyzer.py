@@ -18,9 +18,6 @@ from furnace.core.models import (
 )
 from furnace.services.analyzer import _TEXT_SUBTITLE_CODECS, Analyzer
 
-# ---------------------------------------------------------------------------
-# Helpers / fixtures
-# ---------------------------------------------------------------------------
 
 def make_prober(
     probe_data: dict[str, Any] | None = None,
@@ -40,7 +37,7 @@ def make_prober(
 
 def make_scan_result(tmp_path: Path, filename: str = "movie.mkv") -> ScanResult:
     main_file = tmp_path / filename
-    main_file.write_bytes(b"\x00" * 1024)  # give it a real size for stat()
+    main_file.write_bytes(b"\x00" * 1024)
     output_path = tmp_path / "out" / filename
     return ScanResult(
         main_file=main_file,
@@ -50,7 +47,6 @@ def make_scan_result(tmp_path: Path, filename: str = "movie.mkv") -> ScanResult:
 
 
 def _h264_probe_data() -> dict[str, Any]:
-    """Realistic ffprobe-like dict for a standard H.264 SDR MKV."""
     return {
         "streams": [
             {
@@ -116,7 +112,6 @@ def _h264_probe_data() -> dict[str, Any]:
 
 
 def _dv_probe_data() -> dict[str, Any]:
-    """ffprobe-like dict for a Dolby Vision file."""
     return {
         "streams": [
             {
@@ -143,17 +138,11 @@ def _dv_probe_data() -> dict[str, Any]:
     }
 
 
-# ---------------------------------------------------------------------------
-# Tests
-# ---------------------------------------------------------------------------
-
 class TestAnalyzerParsesTracks:
     def test_analyzer_parses_tracks(self, tmp_path: Path) -> None:
-        """Mock Prober returns ffprobe-like data -> correct Track objects."""
         scan_result = make_scan_result(tmp_path)
         prober = make_prober(probe_data=_h264_probe_data())
 
-        # Patch should_skip_file to always allow processing
         with patch("furnace.services.analyzer.should_skip_file", return_value=(False, "")):
             analyzer = Analyzer(prober=prober)
             outcome = analyzer.analyze(scan_result)
@@ -162,11 +151,9 @@ class TestAnalyzerParsesTracks:
         assert outcome.detail == "h264 1920x1080 23fps SDR, 2 audio (eng,rus), 1 subs"
         movie = outcome.movie
         assert movie is not None
-        # Video info
         assert movie.video.codec_name == "h264"
         assert movie.video.width == 1920
         assert movie.video.height == 1080
-        # Audio tracks: eng AAC + rus AC3
         assert len(movie.audio_tracks) == 2
         eng_track = next(t for t in movie.audio_tracks if t.language == "eng")
         rus_track = next(t for t in movie.audio_tracks if t.language == "rus")
@@ -174,16 +161,13 @@ class TestAnalyzerParsesTracks:
         assert eng_track.track_type == TrackType.AUDIO
         assert rus_track.codec_id == AudioCodecId.AC3
         assert rus_track.channels == 6
-        # Subtitle track
         assert len(movie.subtitle_tracks) == 1
         sub = movie.subtitle_tracks[0]
         assert sub.codec_id == SubtitleCodecId.PGS
         assert sub.language == "rus"
-        # Chapters
         assert movie.has_chapters is True
 
     def test_analyzer_parses_audio_language_and_disposition(self, tmp_path: Path) -> None:
-        """Audio track language and default disposition are parsed correctly."""
         scan_result = make_scan_result(tmp_path)
         prober = make_prober(probe_data=_h264_probe_data())
 
@@ -202,7 +186,6 @@ class TestAnalyzerParsesTracks:
 
 class TestAnalyzerDVProceeds:
     def test_analyzer_dv_returns_movie(self, tmp_path: Path) -> None:
-        """DV file (dvhe codec) -> analyze returns Movie (no longer skipped)."""
         scan_result = make_scan_result(tmp_path)
         prober = make_prober(probe_data=_dv_probe_data())
 
@@ -220,25 +203,22 @@ class TestAnalyzerDVProceeds:
 
 
 class TestAnalyzerHdrSideDataMerge:
-    """Stream-level DOVI config + frame-level MDCV/CLL must merge into hdr metadata.
-
-    Real-world UHD Blu-Ray DV P7 remuxes carry DOVI configuration record at
-    packet (stream) level, but MDCV and Content Light at frame level.
-    The analyzer must probe both and merge.
-    """
-
     def test_stream_dovi_and_frame_mdcv_cll_both_detected(self, tmp_path: Path) -> None:
         scan_result = make_scan_result(tmp_path)
-        probe_data = _dv_probe_data()  # stream has DOVI configuration record, PQ transfer
-        # Real ffprobe-like frame-level side data
+        probe_data = _dv_probe_data()
         frame_side_data: list[dict[str, Any]] = [
             {
                 "side_data_type": "Mastering display metadata",
-                "red_x": "35400/50000", "red_y": "14600/50000",
-                "green_x": "8500/50000", "green_y": "39850/50000",
-                "blue_x": "6550/50000", "blue_y": "2300/50000",
-                "white_point_x": "15635/50000", "white_point_y": "16450/50000",
-                "min_luminance": "50/10000", "max_luminance": "40000000/10000",
+                "red_x": "35400/50000",
+                "red_y": "14600/50000",
+                "green_x": "8500/50000",
+                "green_y": "39850/50000",
+                "blue_x": "6550/50000",
+                "blue_y": "2300/50000",
+                "white_point_x": "15635/50000",
+                "white_point_y": "16450/50000",
+                "min_luminance": "50/10000",
+                "max_luminance": "40000000/10000",
             },
             {
                 "side_data_type": "Content light level metadata",
@@ -247,13 +227,13 @@ class TestAnalyzerHdrSideDataMerge:
             },
             {"side_data_type": "Dolby Vision RPU Data"},
         ]
-        # Inject dv_profile on the stream-level DOVI config so the analyzer
-        # can compute dv_mode correctly.
-        probe_data["streams"][0]["side_data_list"] = [{
-            "side_data_type": "DOVI configuration record",
-            "dv_profile": 7,
-            "dv_bl_signal_compatibility_id": 0,
-        }]
+        probe_data["streams"][0]["side_data_list"] = [
+            {
+                "side_data_type": "DOVI configuration record",
+                "dv_profile": 7,
+                "dv_bl_signal_compatibility_id": 0,
+            }
+        ]
         prober = make_prober(probe_data=probe_data, hdr_side_data=frame_side_data)
 
         with patch("furnace.services.analyzer.should_skip_file", return_value=(False, "")):
@@ -270,11 +250,9 @@ class TestAnalyzerHdrSideDataMerge:
         assert hdr.mastering_display is not None
         assert "L(40000000,50)" in hdr.mastering_display
         assert hdr.content_light == "MaxCLL=4342,MaxFALL=2342"
-        # Frame-level probe must have been called for PQ content
         prober.probe_hdr_side_data.assert_called_once()
 
     def test_sdr_skips_frame_side_data_probe(self, tmp_path: Path) -> None:
-        """SDR content (bt709 transfer) -> frame-level probe not called."""
         scan_result = make_scan_result(tmp_path)
         prober = make_prober(probe_data=_h264_probe_data())
 
@@ -287,7 +265,6 @@ class TestAnalyzerHdrSideDataMerge:
 
 class TestAnalyzerHDR10PlusError:
     def test_analyzer_hdr10plus_returns_failed(self, tmp_path: Path) -> None:
-        """HDR10+ content -> analyze returns a FAILED outcome (no raise)."""
         scan_result = make_scan_result(tmp_path)
         prober = make_prober(probe_data=_dv_probe_data())
 
@@ -301,8 +278,6 @@ class TestAnalyzerHDR10PlusError:
 
 
 class TestAnalyzerHdrSummary:
-    """The analyze summary reflects the source HDR class and interlaced marker."""
-
     @staticmethod
     def _probe_with_transfer(transfer: str) -> dict[str, Any]:
         data = _h264_probe_data()
@@ -352,7 +327,7 @@ class TestAnalyzerHdrSummary:
 
     def test_interlaced_marker_in_summary(self, tmp_path: Path) -> None:
         data = _h264_probe_data()
-        data["streams"][0]["field_order"] = "tt"  # HD tt -> always deinterlace
+        data["streams"][0]["field_order"] = "tt"
         scan_result = make_scan_result(tmp_path)
         prober = make_prober(probe_data=data)
 
@@ -365,12 +340,8 @@ class TestAnalyzerHdrSummary:
 
 
 class TestAnalyzerProgress:
-    """``analyze(on_progress=...)`` reports the running stage fraction then 1.0."""
-
     def test_on_progress_reports_stage_fractions(self, tmp_path: Path) -> None:
         scan_result = make_scan_result(tmp_path)
-        # _h264 (HD SDR) has two profileable audio tracks and no idet, plus the
-        # grain probe (SDR is probed at any resolution) -> three heavy stages.
         prober = make_prober(probe_data=_h264_probe_data())
         fractions: list[float] = []
 
@@ -379,13 +350,11 @@ class TestAnalyzerProgress:
             outcome = analyzer.analyze(scan_result, on_progress=fractions.append)
 
         assert outcome.status is AnalyzeStatus.DONE
-        # After grain (1/3) and each of the two audio stages (2/3, 3/3), then a final 1.0.
         assert fractions == pytest.approx([1 / 3, 2 / 3, 1.0, 1.0])
 
 
 class TestAnalyzerDelay:
     def test_analyzer_delay_from_start_pts(self, tmp_path: Path) -> None:
-        """start_pts=500 -> delay_ms=500 (used directly as integer ms)."""
         probe_data = {
             "streams": [
                 {
@@ -429,7 +398,6 @@ class TestAnalyzerDelay:
         assert movie.audio_tracks[0].delay_ms == 500
 
     def test_analyzer_delay_fallback_start_time(self, tmp_path: Path) -> None:
-        """No start_pts, start_time=0.5 -> delay_ms=500."""
         probe_data = {
             "streams": [
                 {
@@ -473,7 +441,6 @@ class TestAnalyzerDelay:
         assert movie.audio_tracks[0].delay_ms == 500
 
     def test_analyzer_delay_default(self, tmp_path: Path) -> None:
-        """No start_pts, no start_time -> delay_ms=0."""
         probe_data = {
             "streams": [
                 {
@@ -517,8 +484,6 @@ class TestAnalyzerDelay:
 
 
 class TestAnalyzerDelayDirect:
-    """Unit-test _detect_audio_delay directly (no full analyze pipeline needed)."""
-
     def test_detect_delay_from_start_pts(self) -> None:
         prober = MagicMock()
         analyzer = Analyzer(prober=prober)
@@ -538,27 +503,17 @@ class TestAnalyzerDelayDirect:
         assert result == 0
 
     def test_detect_delay_start_pts_takes_priority(self) -> None:
-        """When both start_pts and start_time present, start_pts wins."""
         prober = MagicMock()
         analyzer = Analyzer(prober=prober)
         result = analyzer._detect_audio_delay({"start_pts": 100, "start_time": "5.0"})
         assert result == 100
 
 
-# ---------------------------------------------------------------------------
-# Early returns in analyze()
-# ---------------------------------------------------------------------------
-
-
 class TestAnalyzeEarlyReturns:
-    """Cover early-return branches in analyze()."""
-
     def test_skip_when_should_skip_file_returns_true(self, tmp_path: Path) -> None:
-        """should_skip_file returns (True, reason) -> analyze returns SKIPPED."""
         scan_result = make_scan_result(tmp_path)
         prober = make_prober(probe_data=_h264_probe_data(), encoder_tag="Furnace 1.0")
 
-        # should_skip_file recognises "Furnace" prefix in encoder tag
         analyzer = Analyzer(prober=prober)
         outcome = analyzer.analyze(scan_result)
 
@@ -567,9 +522,7 @@ class TestAnalyzeEarlyReturns:
         assert outcome.detail == "file already encoded by Furnace (tag: Furnace 1.0)"
 
     def test_skip_when_output_exists(self, tmp_path: Path) -> None:
-        """Output file already exists -> should_skip_file -> SKIPPED."""
         scan_result = make_scan_result(tmp_path)
-        # Create the output so should_skip_file sees it
         scan_result.output_path.parent.mkdir(parents=True, exist_ok=True)
         scan_result.output_path.write_bytes(b"x")
         prober = make_prober(probe_data=_h264_probe_data())
@@ -582,7 +535,6 @@ class TestAnalyzeEarlyReturns:
         assert outcome.detail == f"output file already exists: {scan_result.output_path}"
 
     def test_force_processes_furnace_tagged_file(self, tmp_path: Path) -> None:
-        """force=True -> a Furnace-tagged source is analyzed instead of skipped."""
         scan_result = make_scan_result(tmp_path)
         prober = make_prober(probe_data=_h264_probe_data(), encoder_tag="Furnace 1.17.0")
 
@@ -594,7 +546,6 @@ class TestAnalyzeEarlyReturns:
         assert result is not None
 
     def test_force_processes_when_output_exists(self, tmp_path: Path) -> None:
-        """force=True -> an existing output no longer skips the file."""
         scan_result = make_scan_result(tmp_path)
         scan_result.output_path.parent.mkdir(parents=True, exist_ok=True)
         scan_result.output_path.write_bytes(b"x")
@@ -608,7 +559,6 @@ class TestAnalyzeEarlyReturns:
         assert result is not None
 
     def test_probe_raises_oserror(self, tmp_path: Path) -> None:
-        """prober.probe raises OSError -> analyze returns FAILED."""
         scan_result = make_scan_result(tmp_path)
         prober = make_prober()
         prober.probe.side_effect = OSError("disk failure")
@@ -622,7 +572,6 @@ class TestAnalyzeEarlyReturns:
         assert outcome.detail == "probe failed"
 
     def test_probe_raises_runtime_error(self, tmp_path: Path) -> None:
-        """prober.probe raises RuntimeError -> analyze returns FAILED."""
         scan_result = make_scan_result(tmp_path)
         prober = make_prober()
         prober.probe.side_effect = RuntimeError("ffprobe crash")
@@ -635,7 +584,6 @@ class TestAnalyzeEarlyReturns:
         assert outcome.detail == "probe failed"
 
     def test_probe_raises_value_error(self, tmp_path: Path) -> None:
-        """prober.probe raises ValueError -> analyze returns FAILED."""
         scan_result = make_scan_result(tmp_path)
         prober = make_prober()
         prober.probe.side_effect = ValueError("bad data")
@@ -648,17 +596,25 @@ class TestAnalyzeEarlyReturns:
         assert outcome.detail == "probe failed"
 
     def test_no_video_stream(self, tmp_path: Path) -> None:
-        """Probe data with no video stream -> returns SKIPPED."""
         scan_result = make_scan_result(tmp_path)
-        prober = make_prober(probe_data={
-            "streams": [
-                {"index": 0, "codec_type": "audio", "codec_name": "aac", "profile": "LC",
-                 "channels": 2, "sample_rate": "48000",
-                 "tags": {"language": "eng"}, "disposition": {"default": 1, "forced": 0}},
-            ],
-            "format": {"duration": "100.0"},
-            "chapters": [],
-        })
+        prober = make_prober(
+            probe_data={
+                "streams": [
+                    {
+                        "index": 0,
+                        "codec_type": "audio",
+                        "codec_name": "aac",
+                        "profile": "LC",
+                        "channels": 2,
+                        "sample_rate": "48000",
+                        "tags": {"language": "eng"},
+                        "disposition": {"default": 1, "forced": 0},
+                    },
+                ],
+                "format": {"duration": "100.0"},
+                "chapters": [],
+            }
+        )
 
         with patch("furnace.services.analyzer.should_skip_file", return_value=(False, "")):
             outcome = Analyzer(prober=prober).analyze(scan_result)
@@ -668,14 +624,14 @@ class TestAnalyzeEarlyReturns:
         assert outcome.detail == "no video stream"
 
     def test_parse_video_info_raises_key_error(self, tmp_path: Path) -> None:
-        """_parse_video_info raises KeyError -> analyze returns FAILED."""
         scan_result = make_scan_result(tmp_path)
-        # Provide a video stream but patch _parse_video_info to raise
-        prober = make_prober(probe_data={
-            "streams": [{"index": 0, "codec_type": "video", "codec_name": "h264"}],
-            "format": {},
-            "chapters": [],
-        })
+        prober = make_prober(
+            probe_data={
+                "streams": [{"index": 0, "codec_type": "video", "codec_name": "h264"}],
+                "format": {},
+                "chapters": [],
+            }
+        )
 
         with patch("furnace.services.analyzer.should_skip_file", return_value=(False, "")):
             analyzer = Analyzer(prober=prober)
@@ -687,7 +643,6 @@ class TestAnalyzeEarlyReturns:
         assert outcome.detail == "parse failed"
 
     def test_check_unsupported_codecs_returns_warning(self, tmp_path: Path) -> None:
-        """check_unsupported_codecs returns a string -> analyze returns SKIPPED."""
         scan_result = make_scan_result(tmp_path)
         prober = make_prober(probe_data=_h264_probe_data())
 
@@ -705,16 +660,8 @@ class TestAnalyzeEarlyReturns:
         assert outcome.detail == "unsupported codecs detected: audio stream #1"
 
 
-# ---------------------------------------------------------------------------
-# Parsing fallbacks in _parse_video_info()
-# ---------------------------------------------------------------------------
-
-
 class TestParseVideoInfoFallbacks:
-    """Cover fallback branches in _parse_video_info."""
-
     def _make_base_stream(self) -> dict[str, Any]:
-        """Minimal video stream dict."""
         return {
             "index": 0,
             "codec_type": "video",
@@ -728,7 +675,6 @@ class TestParseVideoInfoFallbacks:
         }
 
     def test_fps_non_fraction_string(self, tmp_path: Path) -> None:
-        """FPS as plain number '25' (not fraction) -> parsed correctly."""
         stream = self._make_base_stream()
         stream["avg_frame_rate"] = "25"
         prober = MagicMock()
@@ -741,7 +687,6 @@ class TestParseVideoInfoFallbacks:
         assert vi.fps_den == 1
 
     def test_fps_float_non_fraction_string(self, tmp_path: Path) -> None:
-        """FPS as '23.976' -> parsed via int(float(...))."""
         stream = self._make_base_stream()
         stream["avg_frame_rate"] = "23.976"
         prober = MagicMock()
@@ -754,12 +699,9 @@ class TestParseVideoInfoFallbacks:
         assert vi.fps_den == 1
 
     def test_fps_avg_zero_over_zero_falls_back_to_r_frame_rate(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
-        """ffprobe reports an unknown avg_frame_rate as '0/0'; it must be
-        ignored in favour of r_frame_rate so a re-encode never carries
-        fps_num=0 (which would make mkvmerge default the muxed track to 25
-        fps and drift out of sync)."""
         stream = self._make_base_stream()
         stream["avg_frame_rate"] = "0/0"
         stream["r_frame_rate"] = "24/1"
@@ -773,7 +715,6 @@ class TestParseVideoInfoFallbacks:
         assert vi.fps_den == 1
 
     def test_fps_both_zero_over_zero_defaults_to_25(self, tmp_path: Path) -> None:
-        """Both avg and r frame rates '0/0' → safe 25/1 default (never 0)."""
         stream = self._make_base_stream()
         stream["avg_frame_rate"] = "0/0"
         stream["r_frame_rate"] = "0/0"
@@ -787,7 +728,6 @@ class TestParseVideoInfoFallbacks:
         assert vi.fps_den == 1
 
     def test_duration_zero_in_stream_fallback_to_format(self, tmp_path: Path) -> None:
-        """duration=0 in stream -> fallback to format duration."""
         stream = self._make_base_stream()
         stream["duration"] = "0"
         format_data = {"duration": "7200.5"}
@@ -800,7 +740,6 @@ class TestParseVideoInfoFallbacks:
         assert vi.duration_s == pytest.approx(7200.5)
 
     def test_no_duration_in_stream_fallback_to_format(self, tmp_path: Path) -> None:
-        """No duration key at all in stream -> fallback to format."""
         stream = self._make_base_stream()
         del stream["duration"]
         format_data = {"duration": "3600.0"}
@@ -813,7 +752,6 @@ class TestParseVideoInfoFallbacks:
         assert vi.duration_s == pytest.approx(3600.0)
 
     def test_bitrate_zero_in_stream_fallback_to_format(self, tmp_path: Path) -> None:
-        """bit_rate=0 in stream -> fallback to format bit_rate."""
         stream = self._make_base_stream()
         stream["bit_rate"] = "0"
         format_data = {"bit_rate": "5000000"}
@@ -826,7 +764,6 @@ class TestParseVideoInfoFallbacks:
         assert vi.bitrate == 5000000
 
     def test_bitrate_not_in_stream_fallback_to_format(self, tmp_path: Path) -> None:
-        """No bit_rate in stream at all -> fallback to format."""
         stream = self._make_base_stream()
         format_data = {"bit_rate": "8000000"}
         prober = MagicMock()
@@ -838,7 +775,6 @@ class TestParseVideoInfoFallbacks:
         assert vi.bitrate == 8000000
 
     def test_sar_parse_failure_defaults_to_1_1(self, tmp_path: Path) -> None:
-        """Invalid SAR string -> defaults to 1:1."""
         stream = self._make_base_stream()
         stream["sample_aspect_ratio"] = "bad:data"
         prober = MagicMock()
@@ -851,10 +787,8 @@ class TestParseVideoInfoFallbacks:
         assert vi.sar_den == 1
 
     def test_sample_rate_not_parseable(self, tmp_path: Path) -> None:
-        """sample_rate with unparseable value -> None."""
         scan_result = make_scan_result(tmp_path)
         probe_data = _h264_probe_data()
-        # Set a bad sample_rate on the first audio stream
         probe_data["streams"][1]["sample_rate"] = "invalid"
         prober = make_prober(probe_data=probe_data)
 
@@ -868,16 +802,8 @@ class TestParseVideoInfoFallbacks:
         assert eng_track.sample_rate is None
 
 
-# ---------------------------------------------------------------------------
-# idet path
-# ---------------------------------------------------------------------------
-
-
 class TestIdetPath:
-    """Cover interlace detection via idet."""
-
     def _interlaced_probe_data(self) -> dict[str, Any]:
-        """Probe data with field_order=tt and low FPS (needs idet)."""
         return {
             "streams": [
                 {
@@ -898,10 +824,8 @@ class TestIdetPath:
         }
 
     def test_idet_triggered_and_deinterlace_set(self, tmp_path: Path) -> None:
-        """field_order=tt, fps<48 -> needs_idet -> run_idet called -> interlaced set."""
         scan_result = make_scan_result(tmp_path)
         prober = make_prober(probe_data=self._interlaced_probe_data())
-        # idet returns high ratio -> should deinterlace
         prober.run_idet.return_value = 0.9
 
         with (
@@ -917,7 +841,6 @@ class TestIdetPath:
         prober.run_idet.assert_called_once()
 
     def test_idet_low_ratio_stays_progressive(self, tmp_path: Path) -> None:
-        """idet returns low ratio -> not interlaced."""
         scan_result = make_scan_result(tmp_path)
         prober = make_prober(probe_data=self._interlaced_probe_data())
         prober.run_idet.return_value = 0.01
@@ -934,7 +857,6 @@ class TestIdetPath:
         assert movie.video.interlaced is False
 
     def test_idet_exception_logged_and_continues(self, tmp_path: Path) -> None:
-        """run_idet raises -> warning logged, continues with progressive."""
         scan_result = make_scan_result(tmp_path)
         prober = make_prober(probe_data=self._interlaced_probe_data())
         prober.run_idet.side_effect = RuntimeError("idet crash")
@@ -948,11 +870,9 @@ class TestIdetPath:
         assert outcome.status is AnalyzeStatus.DONE
         movie = outcome.movie
         assert movie is not None
-        # idet failed with ratio=0.0, field_order=tt, fps=25 -> should_deinterlace(tt,25,0.0)=False
         assert movie.video.interlaced is False
 
     def test_r_frame_rate_non_fraction(self, tmp_path: Path) -> None:
-        """r_frame_rate as plain number (not fraction) -> parsed correctly for idet logic."""
         scan_result = make_scan_result(tmp_path)
         probe_data = self._interlaced_probe_data()
         probe_data["streams"][0]["r_frame_rate"] = "25"
@@ -971,7 +891,6 @@ class TestIdetPath:
         assert movie.video.interlaced is True
 
     def _interlaced_hd_probe_data(self) -> dict[str, Any]:
-        """1080i broadcast: field_order=tt, HD height, frame-rate (not field-rate) reported."""
         return {
             "streams": [
                 {
@@ -992,7 +911,6 @@ class TestIdetPath:
         }
 
     def test_hd_interlace_deinterlaces_without_idet(self, tmp_path: Path) -> None:
-        """1080i25 (tt, HD, fps<48) -> deinterlace without consulting idet."""
         scan_result = make_scan_result(tmp_path)
         prober = make_prober(probe_data=self._interlaced_hd_probe_data())
 
@@ -1009,13 +927,7 @@ class TestIdetPath:
         prober.run_idet.assert_not_called()
 
 
-# ---------------------------------------------------------------------------
-# Soft telecine (NTSC DVD pulldown) path
-# ---------------------------------------------------------------------------
-
-
 def _ntsc_dvd_probe_data(field_order: str = "tt") -> dict[str, Any]:
-    """NTSC DVD shape: SD MPEG-2 reporting the 30000/1001 display rate."""
     return {
         "streams": [
             {
@@ -1037,10 +949,6 @@ def _ntsc_dvd_probe_data(field_order: str = "tt") -> dict[str, Any]:
 
 
 class TestSoftTelecinePath:
-    """NTSC SD MPEG-2 sources are probed for soft telecine; on a 2:3 cadence
-    the plan carries the coded film rate instead of the display rate, so the
-    raw AV1 OBU gets muxed at the rate NVEncC actually encoded."""
-
     def test_soft_telecine_overrides_fps_to_film_rate(self, tmp_path: Path) -> None:
         scan_result = make_scan_result(tmp_path)
         prober = make_prober(probe_data=_ntsc_dvd_probe_data())
@@ -1054,13 +962,12 @@ class TestSoftTelecinePath:
         assert movie is not None
         assert (movie.video.fps_num, movie.video.fps_den) == (24000, 1001)
         prober.sample_repeat_pict.assert_called_once_with(
-            scan_result.main_file, 4889.0,
+            scan_result.main_file,
+            4889.0,
         )
-        # Summary reflects the corrected film rate (23fps by integer display).
         assert outcome.detail == "mpeg2video 720x480 23fps SDR, 0 audio, 0 subs"
 
     def test_no_rff_flags_keeps_display_rate(self, tmp_path: Path) -> None:
-        """Hard telecine / true interlace (no RFF) → display rate untouched."""
         scan_result = make_scan_result(tmp_path)
         prober = make_prober(probe_data=_ntsc_dvd_probe_data())
         prober.sample_repeat_pict.return_value = [0] * 500
@@ -1074,7 +981,6 @@ class TestSoftTelecinePath:
         assert (movie.video.fps_num, movie.video.fps_den) == (30000, 1001)
 
     def test_non_mpeg2_never_probed(self, tmp_path: Path) -> None:
-        """h264 at NTSC rate is outside the DVD domain → no pulldown probe."""
         scan_result = make_scan_result(tmp_path)
         probe_data = _ntsc_dvd_probe_data()
         probe_data["streams"][0]["codec_name"] = "h264"
@@ -1087,7 +993,6 @@ class TestSoftTelecinePath:
         prober.sample_repeat_pict.assert_not_called()
 
     def test_pal_dvd_never_probed(self, tmp_path: Path) -> None:
-        """PAL DVD (25 fps) has no pulldown → no probe."""
         scan_result = make_scan_result(tmp_path)
         probe_data = _ntsc_dvd_probe_data()
         probe_data["streams"][0]["height"] = 576
@@ -1102,7 +1007,6 @@ class TestSoftTelecinePath:
         prober.sample_repeat_pict.assert_not_called()
 
     def test_probe_failure_keeps_display_rate(self, tmp_path: Path) -> None:
-        """sample_repeat_pict raising → warning, display rate kept, DONE."""
         scan_result = make_scan_result(tmp_path)
         prober = make_prober(probe_data=_ntsc_dvd_probe_data())
         prober.sample_repeat_pict.side_effect = RuntimeError("ffprobe crash")
@@ -1116,8 +1020,6 @@ class TestSoftTelecinePath:
         assert (movie.video.fps_num, movie.video.fps_den) == (30000, 1001)
 
     def test_pulldown_probe_counts_as_progress_stage(self, tmp_path: Path) -> None:
-        """tt NTSC DVD: idet + pulldown + grain = three stages (the SD source
-        also gets a grain probe) → fractions 1/3, 2/3, 1.0, then a final 1.0."""
         scan_result = make_scan_result(tmp_path)
         prober = make_prober(probe_data=_ntsc_dvd_probe_data())
         prober.sample_repeat_pict.return_value = [0, 1] * 250
@@ -1130,9 +1032,6 @@ class TestSoftTelecinePath:
         assert fractions == pytest.approx([1 / 3, 2 / 3, 1.0, 1.0])
 
     def test_deinterlace_and_soft_telecine_can_coexist(self, tmp_path: Path) -> None:
-        """idet saying interlaced does not suppress the pulldown probe: the
-        encoder still emits one frame per coded frame (nnedi is single-rate),
-        so the coded film rate stays the right mux pin."""
         scan_result = make_scan_result(tmp_path)
         prober = make_prober(probe_data=_ntsc_dvd_probe_data())
         prober.run_idet.return_value = 0.9
@@ -1148,21 +1047,8 @@ class TestSoftTelecinePath:
         assert (movie.video.fps_num, movie.video.fps_den) == (24000, 1001)
 
 
-# ---------------------------------------------------------------------------
-# Grain probe (SD film sources) path
-# ---------------------------------------------------------------------------
-
-
 class TestGrainPath:
-    """SDR sources at ANY resolution are probed for film grain so the encoder can
-    preserve it; the boolean verdict lands on ``VideoInfo.grainy`` as advisory
-    metadata the file selector TUI can override. HDR skips the probe entirely (the
-    grain path cannot score PQ/HLG), and any probe error fails soft toward GRAINY
-    (wrongly-on costs bytes, wrongly-off smears real grain into wax)."""
-
     def test_grainy_source_flagged(self, tmp_path: Path) -> None:
-        """SD source whose flicker median clears the threshold → grainy=True,
-        probed once with the main file and its duration."""
         scan_result = make_scan_result(tmp_path)
         prober = make_prober(probe_data=_ntsc_dvd_probe_data())
         prober.sample_grain.return_value = [0.8, 0.9, 0.7, 0.8, 0.8]
@@ -1177,7 +1063,6 @@ class TestGrainPath:
         prober.sample_grain.assert_called_once_with(scan_result.main_file, 4889.0)
 
     def test_clean_source_not_flagged(self, tmp_path: Path) -> None:
-        """SD source whose flicker median sits below the threshold → grainy=False."""
         scan_result = make_scan_result(tmp_path)
         prober = make_prober(probe_data=_ntsc_dvd_probe_data())
         prober.sample_grain.return_value = [0.2, 0.2, 0.2, 0.2, 0.2]
@@ -1191,9 +1076,6 @@ class TestGrainPath:
         assert movie.video.grainy is False
 
     def test_hd_sdr_source_is_probed(self, tmp_path: Path) -> None:
-        """HD SDR is INSIDE the grain-probe domain: grainy HD/UHD film needs the
-        grain path too — NVEnc/QVBR at the non-grain target over-encodes grain and
-        balloons the output past a compact source."""
         scan_result = make_scan_result(tmp_path)
         prober = make_prober(probe_data=_h264_probe_data())
         prober.sample_grain.return_value = [0.8, 0.9, 0.7, 0.8, 0.8]
@@ -1208,9 +1090,6 @@ class TestGrainPath:
         prober.sample_grain.assert_called_once()
 
     def test_hdr_source_never_probed(self, tmp_path: Path) -> None:
-        """HDR is outside the grain-probe domain: the grain path scores with
-        SSIMULACRA2, which mis-scores PQ/HLG, so HDR stays on NVEnc/CVVDP →
-        sample_grain not called, grainy stays at its False default."""
         scan_result = make_scan_result(tmp_path)
         data = _h264_probe_data()
         data["streams"][0]["color_transfer"] = "smpte2084"
@@ -1226,7 +1105,6 @@ class TestGrainPath:
         prober.sample_grain.assert_not_called()
 
     def test_probe_failure_fails_soft_to_grainy(self, tmp_path: Path) -> None:
-        """sample_grain raising → warning, grainy=True (fail-soft), outcome DONE."""
         scan_result = make_scan_result(tmp_path)
         prober = make_prober(probe_data=_ntsc_dvd_probe_data())
         prober.sample_grain.side_effect = RuntimeError("ffmpeg crash")
@@ -1240,8 +1118,6 @@ class TestGrainPath:
         assert movie.video.grainy is True
 
     def test_grain_probe_counts_as_progress_stage(self, tmp_path: Path) -> None:
-        """tt NTSC DVD: idet + pulldown + grain = three stages →
-        fractions 1/3, 2/3, 1.0, then a final 1.0."""
         scan_result = make_scan_result(tmp_path)
         prober = make_prober(probe_data=_ntsc_dvd_probe_data())
         prober.sample_grain.return_value = [0.8, 0.9, 0.7, 0.8, 0.8]
@@ -1254,16 +1130,8 @@ class TestGrainPath:
         assert fractions == pytest.approx([1 / 3, 2 / 3, 1.0, 1.0])
 
 
-# ---------------------------------------------------------------------------
-# Satellite file processing
-# ---------------------------------------------------------------------------
-
-
 class TestExternalSubtitle:
-    """Cover _parse_external_subtitle."""
-
     def test_srt_satellite_language_from_filename(self, tmp_path: Path) -> None:
-        """SRT satellite with language code in filename -> parsed correctly."""
         srt_path = tmp_path / "movie.eng.srt"
         srt_path.write_text("1\n00:00:00,000 --> 00:00:01,000\nHello\n", encoding="utf-8")
 
@@ -1290,7 +1158,6 @@ class TestExternalSubtitle:
         assert outcome.status is AnalyzeStatus.DONE
         movie = outcome.movie
         assert movie is not None
-        # Should have original PGS sub + external SRT
         sat_subs = [t for t in movie.subtitle_tracks if t.source_file == srt_path]
         assert len(sat_subs) == 1
         sub = sat_subs[0]
@@ -1300,7 +1167,6 @@ class TestExternalSubtitle:
         assert sub.encoding == "utf-8"
 
     def test_forced_keyword_in_filename(self, tmp_path: Path) -> None:
-        """'forced' in filename -> is_forced=True."""
         srt_path = tmp_path / "movie.rus.forced.srt"
         srt_path.write_text("1\n00:00:00,000 --> 00:00:01,000\nTest\n", encoding="utf-8")
 
@@ -1332,7 +1198,6 @@ class TestExternalSubtitle:
         assert sat_subs[0].language == "rus"
 
     def test_sup_satellite_no_encoding_detection(self, tmp_path: Path) -> None:
-        """SUP (PGS) satellite -> no encoding detection (binary sub)."""
         sup_path = tmp_path / "movie.jpn.sup"
         sup_path.write_bytes(b"\x00" * 16)
 
@@ -1357,7 +1222,6 @@ class TestExternalSubtitle:
         assert sub.encoding is None
 
     def test_ass_satellite_encoding_detection(self, tmp_path: Path) -> None:
-        """ASS satellite -> encoding detection called."""
         ass_path = tmp_path / "movie.rus.ass"
         ass_path.write_text("[Script Info]\n", encoding="utf-8")
 
@@ -1389,10 +1253,7 @@ class TestExternalSubtitle:
 
 
 class TestExternalAudio:
-    """Cover _parse_external_audio."""
-
     def _audio_probe_data(self) -> dict[str, Any]:
-        """Probe data for an external audio file."""
         return {
             "streams": [
                 {
@@ -1412,7 +1273,6 @@ class TestExternalAudio:
         }
 
     def test_external_audio_satellite_parsed(self, tmp_path: Path) -> None:
-        """External .flac audio satellite -> probed and added to audio_tracks."""
         flac_path = tmp_path / "movie.eng.flac"
         flac_path.write_bytes(b"\x00" * 256)
 
@@ -1423,7 +1283,6 @@ class TestExternalAudio:
             output_path=main_scan.output_path,
         )
         prober = make_prober(probe_data=_h264_probe_data())
-        # Make prober.probe return different data depending on the path
         sat_probe = self._audio_probe_data()
 
         def probe_side_effect(path: Path) -> dict[str, Any]:
@@ -1444,11 +1303,9 @@ class TestExternalAudio:
         track = sat_audio[0]
         assert track.codec_name == "flac"
         assert track.channels == 6
-        # Index should be base_index = len(audio_tracks from main)
-        assert track.index == 2  # main has 2 audio tracks, so base_index=2
+        assert track.index == 2
 
     def test_external_audio_probe_fails(self, tmp_path: Path) -> None:
-        """External audio probe raises -> satellite skipped, no crash."""
         ac3_path = tmp_path / "movie.eng.ac3"
         ac3_path.write_bytes(b"\x00" * 256)
 
@@ -1477,11 +1334,9 @@ class TestExternalAudio:
         assert outcome.status is AnalyzeStatus.DONE
         movie = outcome.movie
         assert movie is not None
-        # Only the 2 audio tracks from main file
         assert len(movie.audio_tracks) == 2
 
     def test_external_audio_no_audio_streams(self, tmp_path: Path) -> None:
-        """External audio file with no audio streams -> returns None."""
         wav_path = tmp_path / "movie.eng.wav"
         wav_path.write_bytes(b"\x00" * 256)
 
@@ -1506,36 +1361,32 @@ class TestExternalAudio:
         assert outcome.status is AnalyzeStatus.DONE
         movie = outcome.movie
         assert movie is not None
-        assert len(movie.audio_tracks) == 2  # only main tracks
-
-
-# ---------------------------------------------------------------------------
-# Attachments
-# ---------------------------------------------------------------------------
+        assert len(movie.audio_tracks) == 2
 
 
 class TestAttachments:
-    """Cover _parse_attachments."""
-
     def test_attachments_parsed(self, tmp_path: Path) -> None:
-        """Probe data with attachment streams -> Attachment objects."""
         probe_data = _h264_probe_data()
-        probe_data["streams"].append({
-            "index": 4,
-            "codec_type": "attachment",
-            "tags": {
-                "filename": "Arial.ttf",
-                "mimetype": "application/x-truetype-font",
-            },
-        })
-        probe_data["streams"].append({
-            "index": 5,
-            "codec_type": "attachment",
-            "tags": {
-                "filename": "OpenSans.otf",
-                "mime_type": "font/otf",
-            },
-        })
+        probe_data["streams"].append(
+            {
+                "index": 4,
+                "codec_type": "attachment",
+                "tags": {
+                    "filename": "Arial.ttf",
+                    "mimetype": "application/x-truetype-font",
+                },
+            }
+        )
+        probe_data["streams"].append(
+            {
+                "index": 5,
+                "codec_type": "attachment",
+                "tags": {
+                    "filename": "OpenSans.otf",
+                    "mime_type": "font/otf",
+                },
+            }
+        )
         scan_result = make_scan_result(tmp_path)
         prober = make_prober(probe_data=probe_data)
 
@@ -1552,13 +1403,14 @@ class TestAttachments:
         assert movie.attachments[1].mime_type == "font/otf"
 
     def test_attachment_no_filename_skipped(self, tmp_path: Path) -> None:
-        """Attachment stream with no filename -> not added."""
         probe_data = _h264_probe_data()
-        probe_data["streams"].append({
-            "index": 4,
-            "codec_type": "attachment",
-            "tags": {"mimetype": "application/octet-stream"},
-        })
+        probe_data["streams"].append(
+            {
+                "index": 4,
+                "codec_type": "attachment",
+                "tags": {"mimetype": "application/octet-stream"},
+            }
+        )
         scan_result = make_scan_result(tmp_path)
         prober = make_prober(probe_data=probe_data)
 
@@ -1571,16 +1423,8 @@ class TestAttachments:
         assert len(movie.attachments) == 0
 
 
-# ---------------------------------------------------------------------------
-# Encoding detection
-# ---------------------------------------------------------------------------
-
-
 class TestTextEncodingDetection:
-    """Cover _detect_text_encoding."""
-
     def test_encoding_detected_successfully(self, tmp_path: Path) -> None:
-        """charset_normalizer returns a best result -> encoding string."""
         prober = MagicMock()
         analyzer = Analyzer(prober=prober)
         srt = tmp_path / "test.srt"
@@ -1597,7 +1441,6 @@ class TestTextEncodingDetection:
         assert result == "windows-1251"
 
     def test_encoding_detection_returns_none_when_best_is_none(self, tmp_path: Path) -> None:
-        """charset_normalizer best() returns None -> None."""
         prober = MagicMock()
         analyzer = Analyzer(prober=prober)
         srt = tmp_path / "test.srt"
@@ -1612,7 +1455,6 @@ class TestTextEncodingDetection:
         assert result is None
 
     def test_encoding_detection_os_error(self, tmp_path: Path) -> None:
-        """charset_normalizer raises OSError -> None."""
         prober = MagicMock()
         analyzer = Analyzer(prober=prober)
         srt = tmp_path / "test.srt"
@@ -1623,7 +1465,6 @@ class TestTextEncodingDetection:
         assert result is None
 
     def test_encoding_detection_value_error(self, tmp_path: Path) -> None:
-        """charset_normalizer raises ValueError -> None."""
         prober = MagicMock()
         analyzer = Analyzer(prober=prober)
         srt = tmp_path / "test.srt"
@@ -1634,19 +1475,10 @@ class TestTextEncodingDetection:
         assert result is None
 
 
-# ---------------------------------------------------------------------------
-# num_frames tag parsing
-# ---------------------------------------------------------------------------
-
-
 class TestNumFramesParsing:
-    """Cover NUMBER_OF_FRAMES tag parsing in subtitle tracks."""
-
     def test_number_of_frames_tag_parsed(self, tmp_path: Path) -> None:
-        """Subtitle stream with NUMBER_OF_FRAMES tag -> num_frames set."""
         scan_result = make_scan_result(tmp_path)
         probe_data = _h264_probe_data()
-        # The existing probe data already has NUMBER_OF_FRAMES: "120" on subtitle
         prober = make_prober(probe_data=probe_data)
 
         with patch("furnace.services.analyzer.should_skip_file", return_value=(False, "")):
@@ -1659,10 +1491,8 @@ class TestNumFramesParsing:
         assert sub.num_frames == 120
 
     def test_number_of_frames_eng_tag(self, tmp_path: Path) -> None:
-        """NUMBER_OF_FRAMES-eng tag -> parsed as num_frames."""
         scan_result = make_scan_result(tmp_path)
         probe_data = _h264_probe_data()
-        # Replace NUMBER_OF_FRAMES with NUMBER_OF_FRAMES-eng
         sub_stream = probe_data["streams"][3]
         del sub_stream["tags"]["NUMBER_OF_FRAMES"]
         sub_stream["tags"]["NUMBER_OF_FRAMES-eng"] = "250"
@@ -1678,7 +1508,6 @@ class TestNumFramesParsing:
         assert sub.num_frames == 250
 
     def test_number_of_frames_invalid_value(self, tmp_path: Path) -> None:
-        """Invalid NUMBER_OF_FRAMES value -> num_frames stays None."""
         scan_result = make_scan_result(tmp_path)
         probe_data = _h264_probe_data()
         probe_data["streams"][3]["tags"]["NUMBER_OF_FRAMES"] = "not_a_number"
@@ -1694,20 +1523,11 @@ class TestNumFramesParsing:
         assert sub.num_frames is None
 
 
-# ---------------------------------------------------------------------------
-# Audio bitrate parsing
-# ---------------------------------------------------------------------------
-
-
 class TestAudioBitrateParsing:
-    """Cover bitrate fallback logic in _parse_audio_tracks."""
-
     def test_bitrate_from_tags_bps(self, tmp_path: Path) -> None:
-        """Bitrate from tags.BPS when stream bit_rate is missing."""
         scan_result = make_scan_result(tmp_path)
         probe_data = _h264_probe_data()
-        # Remove bit_rate from stream, add BPS tag
-        audio_stream = probe_data["streams"][2]  # rus AC3
+        audio_stream = probe_data["streams"][2]
         audio_stream.pop("bit_rate", None)
         audio_stream["tags"]["BPS"] = "640000"
         prober = make_prober(probe_data=probe_data)
@@ -1722,30 +1542,15 @@ class TestAudioBitrateParsing:
         assert rus_track.bitrate == 640000
 
 
-# ---------------------------------------------------------------------------
-# _TEXT_SUBTITLE_CODECS import
-# ---------------------------------------------------------------------------
-
-
 class TestTextSubtitleCodecsSet:
-    """Verify the internal set is correctly defined."""
-
     def test_text_subtitle_codecs_contains_srt_and_ass(self) -> None:
         assert SubtitleCodecId.SRT in _TEXT_SUBTITLE_CODECS
         assert SubtitleCodecId.ASS in _TEXT_SUBTITLE_CODECS
         assert SubtitleCodecId.PGS not in _TEXT_SUBTITLE_CODECS
 
 
-# ---------------------------------------------------------------------------
-# Branch coverage: satellite file loop — unknown extensions ignored
-# ---------------------------------------------------------------------------
-
-
 class TestSatelliteUnknownExtension:
-    """Satellite files with unrecognised extensions are silently skipped."""
-
     def test_unknown_extension_satellite_skipped(self, tmp_path: Path) -> None:
-        """A .nfo satellite is neither subtitle nor audio -> silently ignored."""
         nfo_path = tmp_path / "movie.nfo"
         nfo_path.write_text("info", encoding="utf-8")
 
@@ -1763,19 +1568,11 @@ class TestSatelliteUnknownExtension:
         assert outcome.status is AnalyzeStatus.DONE
         movie = outcome.movie
         assert movie is not None
-        # Track counts unchanged from main file
         assert len(movie.audio_tracks) == 2
         assert len(movie.subtitle_tracks) == 1
 
 
-# ---------------------------------------------------------------------------
-# Branch coverage: SAR without colon -> skip parsing
-# ---------------------------------------------------------------------------
-
-
 class TestSarNoColon:
-    """SAR string without colon -> defaults kept at 1:1."""
-
     def test_sar_no_colon_defaults(self, tmp_path: Path) -> None:
         stream = {
             "index": 0,
@@ -1787,7 +1584,7 @@ class TestSarNoColon:
             "duration": "100.0",
             "field_order": "progressive",
             "pix_fmt": "yuv420p",
-            "sample_aspect_ratio": "1",  # no colon
+            "sample_aspect_ratio": "1",
         }
         prober = MagicMock()
         prober.probe_hdr_side_data.return_value = []
@@ -1798,7 +1595,6 @@ class TestSarNoColon:
         assert vi.sar_den == 1
 
     def test_sar_empty_string_defaults(self, tmp_path: Path) -> None:
-        """Empty SAR string -> defaults to 1:1."""
         stream = {
             "index": 0,
             "codec_type": "video",
@@ -1820,18 +1616,10 @@ class TestSarNoColon:
         assert vi.sar_den == 1
 
 
-# ---------------------------------------------------------------------------
-# Branch coverage: audio bitrate — none at all
-# ---------------------------------------------------------------------------
-
-
 class TestAudioNoBitrate:
-    """Audio stream with no bit_rate and no BPS tags -> bitrate is None."""
-
     def test_no_bitrate_anywhere(self, tmp_path: Path) -> None:
         scan_result = make_scan_result(tmp_path)
         probe_data = _h264_probe_data()
-        # Remove all bitrate sources from the eng AAC track
         audio_stream = probe_data["streams"][1]
         audio_stream.pop("bit_rate", None)
         audio_stream["tags"].pop("BPS", None)
@@ -1848,14 +1636,7 @@ class TestAudioNoBitrate:
         assert eng_track.bitrate is None
 
 
-# ---------------------------------------------------------------------------
-# Branch coverage: subtitle with no NUMBER_OF_FRAMES tags
-# ---------------------------------------------------------------------------
-
-
 class TestSubtitleNoFramesTags:
-    """Subtitle stream with neither NUMBER_OF_FRAMES nor NUMBER_OF_FRAMES-eng."""
-
     def test_no_frames_tags(self, tmp_path: Path) -> None:
         scan_result = make_scan_result(tmp_path)
         probe_data = _h264_probe_data()
@@ -1871,16 +1652,8 @@ class TestSubtitleNoFramesTags:
         assert movie.subtitle_tracks[0].num_frames is None
 
 
-# ---------------------------------------------------------------------------
-# Branch coverage: external subtitle language code not found
-# ---------------------------------------------------------------------------
-
-
 class TestExternalSubtitleNoLanguageCode:
-    """External subtitle with no valid 3-letter language code in filename."""
-
     def test_no_language_code_in_filename(self, tmp_path: Path) -> None:
-        """movie.srt (no language part) -> language='und'."""
         srt_path = tmp_path / "movie.srt"
         srt_path.write_text("1\n00:00:00,000 --> 00:00:01,000\nHi\n", encoding="utf-8")
 
@@ -1912,7 +1685,6 @@ class TestExternalSubtitleNoLanguageCode:
         assert sat_subs[0].language == "und"
 
     def test_non_alpha_part_in_filename(self, tmp_path: Path) -> None:
-        """movie.720p.srt -> no valid lang code -> und."""
         srt_path = tmp_path / "movie.720p.srt"
         srt_path.write_text("1\n00:00:00,000 --> 00:00:01,000\nHi\n", encoding="utf-8")
 
@@ -1944,23 +1716,14 @@ class TestExternalSubtitleNoLanguageCode:
         assert sat_subs[0].language == "und"
 
 
-# ---------------------------------------------------------------------------
-# Branch coverage: _parse_audio_tracks returns empty list (line 403)
-# ---------------------------------------------------------------------------
-
-
 class TestExternalAudioEmptyTracks:
-    """Cover the edge case where _parse_audio_tracks returns [] despite audio streams."""
-
     def test_parse_audio_tracks_returns_empty(self, tmp_path: Path) -> None:
-        """_parse_audio_tracks returning [] from satellite -> satellite skipped."""
         ac3_path = tmp_path / "movie.eng.ac3"
         ac3_path.write_bytes(b"\x00" * 256)
 
         prober = MagicMock()
         analyzer = Analyzer(prober=prober)
 
-        # Probe returns audio stream but we patch _parse_audio_tracks to return []
         prober.probe.return_value = {
             "streams": [{"index": 0, "codec_type": "audio", "codec_name": "ac3"}],
             "format": {},
@@ -1971,14 +1734,7 @@ class TestExternalAudioEmptyTracks:
         assert result is None
 
 
-# ---------------------------------------------------------------------------
-# Branch coverage: audio stream with no sample_rate key
-# ---------------------------------------------------------------------------
-
-
 class TestAudioNoSampleRate:
-    """Audio stream with no sample_rate key at all -> sample_rate is None."""
-
     def test_no_sample_rate_key(self, tmp_path: Path) -> None:
         scan_result = make_scan_result(tmp_path)
         probe_data: dict[str, Any] = {
@@ -2000,7 +1756,6 @@ class TestAudioNoSampleRate:
                     "codec_name": "aac",
                     "profile": "LC",
                     "channels": 2,
-                    # no sample_rate key at all
                     "tags": {"language": "eng"},
                     "disposition": {"default": 1, "forced": 0},
                 },
@@ -2023,16 +1778,8 @@ class TestAudioNoSampleRate:
         assert movie.audio_tracks[0].sample_rate is None
 
 
-# ---------------------------------------------------------------------------
-# Branch coverage: external subtitle returns None (mock)
-# ---------------------------------------------------------------------------
-
-
 class TestExternalSubtitleReturnsNone:
-    """Cover the 95->90 branch where _parse_external_subtitle returns None."""
-
     def test_external_subtitle_returns_none_skipped(self, tmp_path: Path) -> None:
-        """When _parse_external_subtitle returns None, the satellite is skipped."""
         srt_path = tmp_path / "movie.eng.srt"
         srt_path.write_text("sub", encoding="utf-8")
 
@@ -2052,41 +1799,51 @@ class TestExternalSubtitleReturnsNone:
         assert outcome.status is AnalyzeStatus.DONE
         movie = outcome.movie
         assert movie is not None
-        # Only the embedded PGS subtitle, no satellite
         assert len(movie.subtitle_tracks) == 1
 
 
-# ---------------------------------------------------------------------------
-# Audio profiling loop (Task 9)
-# ---------------------------------------------------------------------------
-
-
 def _real_5_1_metrics() -> AudioMetrics:
-    """Synthetic metrics that classify_audio maps to REAL."""
     return AudioMetrics(
         channels=6,
-        rms_l=-22.0, rms_r=-22.0, rms_c=-18.0, rms_lfe=-20.0,
-        rms_ls=-25.0, rms_rs=-25.0, rms_lb=None, rms_rb=None,
-        corr_lr=0.3, corr_ls_l=0.1, corr_rs_r=0.1, corr_ls_rs=0.4,
-        corr_lb_ls=None, corr_rb_rs=None,
+        rms_l=-22.0,
+        rms_r=-22.0,
+        rms_c=-18.0,
+        rms_lfe=-20.0,
+        rms_ls=-25.0,
+        rms_rs=-25.0,
+        rms_lb=None,
+        rms_rb=None,
+        corr_lr=0.3,
+        corr_ls_l=0.1,
+        corr_rs_r=0.1,
+        corr_ls_rs=0.4,
+        corr_lb_ls=None,
+        corr_rb_rs=None,
     )
 
 
 class TestAudioProfiling:
-    """Analyzer.analyze() profiles each audio track with channels in {2,6,8}."""
-
     def test_profiles_6ch_track_and_attaches_verdict(self, tmp_path: Path) -> None:
         scan_result = make_scan_result(tmp_path)
         probe_data: dict[str, Any] = {
             "streams": [
                 {
-                    "index": 0, "codec_type": "video", "codec_name": "h264",
-                    "width": 1920, "height": 1080, "avg_frame_rate": "24/1",
-                    "duration": "100.0", "field_order": "progressive", "pix_fmt": "yuv420p",
+                    "index": 0,
+                    "codec_type": "video",
+                    "codec_name": "h264",
+                    "width": 1920,
+                    "height": 1080,
+                    "avg_frame_rate": "24/1",
+                    "duration": "100.0",
+                    "field_order": "progressive",
+                    "pix_fmt": "yuv420p",
                 },
                 {
-                    "index": 1, "codec_type": "audio", "codec_name": "ac3",
-                    "channels": 6, "tags": {"language": "eng"},
+                    "index": 1,
+                    "codec_type": "audio",
+                    "codec_name": "ac3",
+                    "channels": 6,
+                    "tags": {"language": "eng"},
                     "disposition": {"default": 1, "forced": 0},
                 },
             ],
@@ -2109,7 +1866,10 @@ class TestAudioProfiling:
         assert movie.audio_tracks[0].audio_profile is not None
         assert movie.audio_tracks[0].audio_profile.verdict == Verdict.REAL
         prober.profile_audio_track.assert_called_once_with(
-            path=scan_result.main_file, stream_index=1, channels=6, duration_s=100.0,
+            path=scan_result.main_file,
+            stream_index=1,
+            channels=6,
+            duration_s=100.0,
         )
 
     def test_skips_1ch_track(self, tmp_path: Path) -> None:
@@ -2117,13 +1877,22 @@ class TestAudioProfiling:
         probe_data: dict[str, Any] = {
             "streams": [
                 {
-                    "index": 0, "codec_type": "video", "codec_name": "h264",
-                    "width": 1920, "height": 1080, "avg_frame_rate": "24/1",
-                    "duration": "100.0", "field_order": "progressive", "pix_fmt": "yuv420p",
+                    "index": 0,
+                    "codec_type": "video",
+                    "codec_name": "h264",
+                    "width": 1920,
+                    "height": 1080,
+                    "avg_frame_rate": "24/1",
+                    "duration": "100.0",
+                    "field_order": "progressive",
+                    "pix_fmt": "yuv420p",
                 },
                 {
-                    "index": 1, "codec_type": "audio", "codec_name": "aac",
-                    "channels": 1, "tags": {"language": "eng"},
+                    "index": 1,
+                    "codec_type": "audio",
+                    "codec_name": "aac",
+                    "channels": 1,
+                    "tags": {"language": "eng"},
                     "disposition": {"default": 1, "forced": 0},
                 },
             ],
@@ -2146,16 +1915,8 @@ class TestAudioProfiling:
         prober.profile_audio_track.assert_not_called()
 
 
-# ---------------------------------------------------------------------------
-# field-separated storage path
-# ---------------------------------------------------------------------------
-
-
 class TestFieldSeparatedPath:
-    """Cover the field-rate probe: a container that counts fields, not frames."""
-
     def _field_rate_probe_data(self) -> dict[str, Any]:
-        """1080i25 stored as separated fields — ffprobe reports tt at 50 fps."""
         return {
             "streams": [
                 {
@@ -2184,7 +1945,6 @@ class TestFieldSeparatedPath:
             return Analyzer(prober=prober).analyze(scan_result)
 
     def test_field_separated_source_carries_the_coded_frame_rate(self, tmp_path: Path) -> None:
-        """Two packets per decoded frame → the plan gets 25/1, not the field rate."""
         prober = make_prober(probe_data=self._field_rate_probe_data())
         prober.sample_field_pairing.return_value = (1500, 3000)
 
@@ -2194,13 +1954,10 @@ class TestFieldSeparatedPath:
         movie = outcome.movie
         assert movie is not None
         assert (movie.video.fps_num, movie.video.fps_den) == (25, 1)
-        # The whole point: it still deinterlaces, and single-rate nnedi/bwdif
-        # emit one frame per coded frame — which is what 25/1 now describes.
         assert movie.video.interlaced is True
         prober.sample_field_pairing.assert_called_once_with(tmp_path / "movie.mkv")
 
     def test_frame_coded_source_keeps_the_container_rate(self, tmp_path: Path) -> None:
-        """One packet per frame → nothing to undo, the rate stands."""
         prober = make_prober(probe_data=self._field_rate_probe_data())
         prober.sample_field_pairing.return_value = (1500, 1500)
 
@@ -2211,7 +1968,6 @@ class TestFieldSeparatedPath:
         assert (movie.video.fps_num, movie.video.fps_den) == (50, 1)
 
     def test_probe_skipped_for_ordinary_interlaced_source(self, tmp_path: Path) -> None:
-        """1080i25 that already reports 25 fps is never probed."""
         probe_data = self._field_rate_probe_data()
         probe_data["streams"][0]["avg_frame_rate"] = "25/1"
         probe_data["streams"][0]["r_frame_rate"] = "50/1"
@@ -2225,7 +1981,6 @@ class TestFieldSeparatedPath:
         prober.sample_field_pairing.assert_not_called()
 
     def test_probe_skipped_for_progressive_source(self, tmp_path: Path) -> None:
-        """Genuine 50p reports its true rate — halving it would play it slow."""
         probe_data = self._field_rate_probe_data()
         probe_data["streams"][0]["field_order"] = "progressive"
         prober = make_prober(probe_data=probe_data)
@@ -2238,7 +1993,6 @@ class TestFieldSeparatedPath:
         prober.sample_field_pairing.assert_not_called()
 
     def test_probe_exception_logged_and_keeps_container_rate(self, tmp_path: Path) -> None:
-        """The probe is fail-soft, like idet and the pulldown probe."""
         prober = make_prober(probe_data=self._field_rate_probe_data())
         prober.sample_field_pairing.side_effect = RuntimeError("ffprobe crash")
 
@@ -2250,11 +2004,6 @@ class TestFieldSeparatedPath:
         assert (movie.video.fps_num, movie.video.fps_den) == (50, 1)
 
     def test_probe_reports_progress(self, tmp_path: Path) -> None:
-        """The probe is a counted stage, so the batch bar advances across it.
-
-        Two stages run for this source: the field-rate probe and the grain
-        probe (SDR), so the field-rate probe lands the bar on half.
-        """
         prober = make_prober(probe_data=self._field_rate_probe_data())
         prober.sample_field_pairing.return_value = (1500, 3000)
         scan_result = make_scan_result(tmp_path)

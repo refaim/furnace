@@ -1,4 +1,3 @@
-"""Tests for NVEncCAdapter.probe — target-quality inline metric probing."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -20,12 +19,22 @@ def _make_vp(
     hdr: HdrMetadata | None = None,
 ) -> VideoParams:
     return VideoParams(
-        cq=cq, crop=crop, deinterlace=False,
-        color_matrix="bt2020nc", color_range="tv",
-        color_transfer="smpte2084", color_primaries="bt2020",
-        hdr=hdr, gop=120, fps_num=24000, fps_den=1001,
-        source_width=source_width, source_height=source_height, source_codec="hevc",
-        source_bitrate=80_000_000, dv_mode=dv_mode,
+        cq=cq,
+        crop=crop,
+        deinterlace=False,
+        color_matrix="bt2020nc",
+        color_range="tv",
+        color_transfer="smpte2084",
+        color_primaries="bt2020",
+        hdr=hdr,
+        gop=120,
+        fps_num=24000,
+        fps_den=1001,
+        source_width=source_width,
+        source_height=source_height,
+        source_codec="hevc",
+        source_bitrate=80_000_000,
+        dv_mode=dv_mode,
     )
 
 
@@ -36,8 +45,6 @@ def _adapter() -> Any:
 
 
 def _capture_probe_cmd(vp: VideoParams, *, qvbr: int, metric: str) -> list[str]:
-    """Run probe() with a run_tool stub that captures (and does not emit) the cmd,
-    then feeds a matching metric line so probe() returns without raising."""
     captured: list[str] = []
     _lines = {
         "cvvdp": "ssim/psnr/vmaf/vship: CVVDP Score 9.30",
@@ -58,7 +65,11 @@ def _capture_probe_cmd(vp: VideoParams, *, qvbr: int, metric: str) -> list[str]:
 
     with patch("furnace.adapters.nvencc.run_tool", side_effect=fake_run_tool):
         _adapter().probe(
-            Path("window.mkv"), Path("probe.obu"), vp, qvbr=qvbr, metric=metric,
+            Path("window.mkv"),
+            Path("probe.obu"),
+            vp,
+            qvbr=qvbr,
+            metric=metric,
         )
     return captured
 
@@ -90,24 +101,24 @@ class TestNVEncCProbeCommand:
 
     def test_probe_vmaf_single_metric_1080p_model(self) -> None:
         cmd = _capture_probe_cmd(
-            _make_vp(source_width=1920, source_height=1080), qvbr=30, metric="vmaf",
+            _make_vp(source_width=1920, source_height=1080),
+            qvbr=30,
+            metric="vmaf",
         )
         idx = cmd.index("--vmaf")
         assert "vmaf_v0.6.1" in cmd[idx + 1]
         assert "vmaf_4k" not in cmd[idx + 1]
 
     def test_probe_applies_geometry(self) -> None:
-        """Crop/color from the job are applied to the probe encode so the measured
-        quality reflects the real geometry pipeline."""
         cmd = _capture_probe_cmd(
-            _make_vp(crop=CropRect(w=3560, h=2160, x=140, y=0)), qvbr=30, metric="cvvdp",
+            _make_vp(crop=CropRect(w=3560, h=2160, x=140, y=0)),
+            qvbr=30,
+            metric="cvvdp",
         )
         assert cmd[cmd.index("--crop") + 1] == "140,0,140,0"
         assert cmd[cmd.index("--colormatrix") + 1] == "bt2020nc"
 
     def test_probe_never_emits_dv_flags(self) -> None:
-        """Probes skip Dolby Vision (metadata, irrelevant to the quality measure);
-        no RPU is threaded, so no DV flags appear even for a DV job."""
         cmd = _capture_probe_cmd(_make_vp(dv_mode=DvMode.COPY), qvbr=30, metric="cvvdp")
         assert "--dolby-vision-rpu" not in cmd
         assert "--dolby-vision-profile" not in cmd
@@ -133,7 +144,11 @@ class TestNVEncCProbeParsing:
 
         with patch("furnace.adapters.nvencc.run_tool", side_effect=fake_run_tool):
             return _adapter().probe(  # type: ignore[no-any-return]
-                Path("w.mkv"), Path("p.obu"), _make_vp(), qvbr=30, metric=metric,
+                Path("w.mkv"),
+                Path("p.obu"),
+                _make_vp(),
+                qvbr=30,
+                metric=metric,
             )
 
     def test_parses_cvvdp(self) -> None:
@@ -149,7 +164,6 @@ class TestNVEncCProbeParsing:
         assert abs(score - 99.236780) < 1e-4
 
     def test_parses_integer_valued_score(self) -> None:
-        """A score with no fractional part still parses (fractional part optional)."""
         score = self._run("cvvdp", "ssim/psnr/vmaf/vship: CVVDP Score 10")
         assert score == 10.0
 

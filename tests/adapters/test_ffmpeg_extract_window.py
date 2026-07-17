@@ -16,13 +16,24 @@ def _adapter(log_dir: Path | None = None) -> FFmpegAdapter:
 
 def _make_vp(*, crop: CropRect | None = None, deinterlace: bool = False) -> VideoParams:
     return VideoParams(
-        cq=23, crop=crop, deinterlace=deinterlace,
-        color_matrix="bt470bg", color_range="tv",
-        color_transfer="bt470bg", color_primaries="bt470bg",
-        hdr=None, gop=125, fps_num=25, fps_den=1,
-        source_width=720, source_height=576,
-        source_codec="mpeg2video", source_bitrate=6_000_000,
-        sar_num=16, sar_den=15, grain=True,
+        cq=23,
+        crop=crop,
+        deinterlace=deinterlace,
+        color_matrix="bt470bg",
+        color_range="tv",
+        color_transfer="bt470bg",
+        color_primaries="bt470bg",
+        hdr=None,
+        gop=125,
+        fps_num=25,
+        fps_den=1,
+        source_width=720,
+        source_height=576,
+        source_codec="mpeg2video",
+        source_bitrate=6_000_000,
+        sar_num=16,
+        sar_den=15,
+        grain=True,
     )
 
 
@@ -42,16 +53,11 @@ class TestExtractWindow:
 
         adapter = _adapter()
         with patch("furnace.adapters.ffmpeg.run_tool", side_effect=fake_run_tool):
-            rc = adapter.extract_window(
-                Path("movie.mkv"), Path("window.mkv"), start_s=612.5, frames=480
-            )
+            rc = adapter.extract_window(Path("movie.mkv"), Path("window.mkv"), start_s=612.5, frames=480)
         assert rc == 0
-        # `-ss` MUST precede `-i` (fast keyframe seek); `-frames:v` copies N packets.
         assert captured.index("-ss") < captured.index("-i")
         assert captured[captured.index("-ss") + 1] == "612.500"
         assert captured[captured.index("-i") + 1] == "movie.mkv"
-        # Pin the first video stream so a multi-video-stream source (cover art)
-        # can't make the window a different stream than the final encode.
         assert captured[captured.index("-map") + 1] == "0:v:0"
         assert captured[captured.index("-frames:v") + 1] == "480"
         assert captured[captured.index("-c:v") + 1] == "copy"
@@ -72,9 +78,7 @@ class TestExtractWindow:
 
         adapter = _adapter()
         with patch("furnace.adapters.ffmpeg.run_tool", side_effect=fake_run_tool):
-            rc = adapter.extract_window(
-                Path("movie.mkv"), Path("window.mkv"), start_s=0.0, frames=120
-            )
+            rc = adapter.extract_window(Path("movie.mkv"), Path("window.mkv"), start_s=0.0, frames=120)
         assert rc == 1
 
     def test_extract_window_log_path(self, tmp_path: Path) -> None:
@@ -92,9 +96,7 @@ class TestExtractWindow:
 
         adapter = _adapter(log_dir=tmp_path)
         with patch("furnace.adapters.ffmpeg.run_tool", side_effect=fake_run_tool):
-            adapter.extract_window(
-                Path("movie.mkv"), Path("window.mkv"), start_s=10.0, frames=48
-            )
+            adapter.extract_window(Path("movie.mkv"), Path("window.mkv"), start_s=10.0, frames=48)
         assert captured_kwargs["log_path"] == tmp_path / "ffmpeg_extract_window.log"
 
     def test_extract_window_no_log_dir(self) -> None:
@@ -112,17 +114,11 @@ class TestExtractWindow:
 
         adapter = _adapter()
         with patch("furnace.adapters.ffmpeg.run_tool", side_effect=fake_run_tool):
-            adapter.extract_window(
-                Path("movie.mkv"), Path("window.mkv"), start_s=10.0, frames=48
-            )
+            adapter.extract_window(Path("movie.mkv"), Path("window.mkv"), start_s=10.0, frames=48)
         assert captured_kwargs["log_path"] is None
 
 
 class TestBuildReference:
-    """``build_reference`` materialises a LOSSLESS (FFV1) reference at the encoded
-    geometry, using the SAME ``build_vf`` filtergraph the SVT-AV1 encode uses, so
-    the metric compares like-for-like (a crop cannot phase-shift it)."""
-
     @staticmethod
     def _capture(rc: int = 0) -> tuple[list[str], Any]:
         captured: list[str] = []
@@ -146,9 +142,7 @@ class TestBuildReference:
         with patch("furnace.adapters.ffmpeg.run_tool", side_effect=fake):
             rc = adapter.build_reference(Path("window.mkv"), Path("ref.mkv"), vp)
         assert rc == 0
-        # The reference filtergraph is byte-identical to the encode's -vf.
         assert captured[captured.index("-vf") + 1] == build_vf(vp)
-        # Lossless FFV1 (differs from the OBU only by AV1's lossy compression).
         assert captured[captured.index("-c:v") + 1] == "ffv1"
         assert captured[captured.index("-i") + 1] == "window.mkv"
         assert captured[captured.index("-map") + 1] == "0:v:0"
@@ -161,8 +155,6 @@ class TestBuildReference:
         adapter = _adapter()
         with patch("furnace.adapters.ffmpeg.run_tool", side_effect=fake):
             adapter.build_reference(Path("window.mkv"), Path("ref.mkv"), vp)
-        # Same colour description + coded frame rate the encode stamps, so
-        # BestSource reads the right matrix and the frames line up 1:1 with the OBU.
         assert captured[captured.index("-color_range") + 1] == "tv"
         assert captured[captured.index("-color_primaries") + 1] == "bt470bg"
         assert captured[captured.index("-color_trc") + 1] == "bt470bg"
@@ -220,18 +212,13 @@ class TestWindowBitrates:
         return subprocess.CompletedProcess(args=[], returncode=returncode, stdout=stdout, stderr="")
 
     def test_bins_packets_into_windows(self) -> None:
-        # ffprobe CSV is "pts_time,size" per video packet; window_s=10 -> bins at 0/10/20.
-        # packets: bin0 {0.0,5.0}, bin1 {12.0}, bin2 {25.0,28.0}.
         stdout = "0.0,1024\n5.0,1024\n12.0,2048\n25.0,512\n28.0,512"
         adapter = _adapter()
         with patch("furnace.adapters.ffmpeg.subprocess.run", return_value=self._run(0, stdout)):
             result = adapter.window_bitrates(Path("m.mkv"), 10.0)
-        # bin0 = 2048B = 2.0KB, bin1 = 2048B = 2.0KB, bin2 = 1024B = 1.0KB.
         assert result == [(0.0, 2.0), (10.0, 2.0), (20.0, 1.0)]
 
     def test_skips_unparseable_and_negative_pts(self) -> None:
-        # Lines, in order: unparseable pts, unparseable size, negative pts, a line
-        # with no comma, then the one real packet (-> bin 0).
         stdout = "N/A,1024\n1.0,notanint\n-1.0,1024\nnocomma\n5.0,2048"
         adapter = _adapter()
         with patch("furnace.adapters.ffmpeg.subprocess.run", return_value=self._run(0, stdout)):

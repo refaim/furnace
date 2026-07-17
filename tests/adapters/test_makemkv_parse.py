@@ -11,7 +11,6 @@ from furnace.adapters.makemkv import MakemkvAdapter, _parse_duration
 
 class TestParseMakemkvInfo:
     def test_parse_dvd_titles(self) -> None:
-        """Parse typical makemkvcon info output."""
         output = (
             "MakeMKV v1.18.3 win(x64-release) started\n"
             "Title #1 has length of 30 seconds which is less than minimum title length\n"
@@ -32,10 +31,7 @@ class TestParseMakemkvInfo:
         assert result == []
 
     def test_skipped_titles_not_included(self) -> None:
-        """Titles that were skipped by makemkv are not in the result."""
-        output = (
-            "Title #1 has length of 30 seconds which is less than minimum title length and was therefore skipped\n"
-        )
+        output = "Title #1 has length of 30 seconds which is less than minimum title length and was therefore skipped\n"
         result = MakemkvAdapter._parse_info_output(output)
         assert result == []
 
@@ -91,7 +87,6 @@ class TestListTitlesMakemkv:
 
 class TestDemuxTitleMakemkv:
     def test_demux_happy_path(self, tmp_path: Path) -> None:
-        """Happy path: list_titles returns the right title, demux creates an MKV file."""
         call_count = 0
 
         def fake_run_tool(
@@ -106,9 +101,7 @@ class TestDemuxTitleMakemkv:
             call_count += 1
             if "info" in str_cmd:
                 return 0, "Title #5 was added (3 cell(s), 1:00:00)\n"
-            # demux_title issues exactly two commands: info, then mkv.
             assert "mkv" in str_cmd
-            # Simulate makemkvcon creating an MKV
             mkv_file = tmp_path / "out" / "title_t05.mkv"
             mkv_file.parent.mkdir(parents=True, exist_ok=True)
             mkv_file.write_text("fake mkv")
@@ -152,7 +145,6 @@ class TestDemuxTitleMakemkv:
             str_cmd = [str(c) for c in cmd]
             if "info" in str_cmd:
                 return 0, "Title #3 was added (1 cell(s), 0:05:00)\n"
-            # Demux succeeds but creates no MKV files
             return 0, ""
 
         adapter = MakemkvAdapter(Path("makemkvcon.exe"))
@@ -177,7 +169,6 @@ class TestDemuxTitleMakemkv:
             str_cmd = [str(c) for c in cmd]
             if "info" in str_cmd:
                 return 0, "Title #3 was added (1 cell(s), 0:05:00)\n"
-            # Demux fails
             return 1, "demux error"
 
         adapter = MakemkvAdapter(Path("makemkvcon.exe"))

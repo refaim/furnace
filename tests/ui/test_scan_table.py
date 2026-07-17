@@ -1,11 +1,3 @@
-"""Renderer tests for ``furnace scan``'s redirect-safe inventory table.
-
-The table goes to stdout and must survive redirection to a file: ASCII box
-only (no Unicode box-drawing), no ANSI when stdout is not a TTY, and columns
-sized to content so long paths never truncate. Summary, warnings, and the
-"no video files found" note go to stderr, keeping the redirected file pure
-table.
-"""
 from __future__ import annotations
 
 import io
@@ -17,7 +9,6 @@ from furnace.core.outdated import Defect, Fix, Severity
 from furnace.core.scan import AudioTrackSummary, ScanRow, SubtitleTrackSummary, VideoSummary
 from furnace.ui.scan_table import render_scan_table
 
-# Unicode box-drawing characters that must never appear in redirect-safe output.
 _UNICODE_BOX = "─│┌┐└┘├┤┬┴┼━┃┏┓┗┛╔╗╚╝═║"
 
 
@@ -84,7 +75,7 @@ class TestRedirectSafe:
         rows = [_row(f"/movies/{long_name}", version=(1, 0, 0))]
         out, _ = _render(rows, root=root)
         assert long_name in out
-        assert "…" not in out  # no ellipsis from truncation
+        assert "…" not in out
 
 
 class TestColumns:
@@ -121,7 +112,6 @@ class TestColumns:
 
     def test_video_bare_codec_shown(self) -> None:
         root = Path("/movies")
-        # bit_depth None → the Video cell is just the bare codec, no "Nbit" suffix.
         rows = [_row("/movies/a.mkv", version=None, video="h264", bit_depth=None)]
         out, _ = _render(rows, root=root)
         assert "h264" in out
@@ -147,106 +137,121 @@ class TestColumns:
 
     def test_no_video_stream_shows_dash_in_video_and_hdr(self) -> None:
         root = Path("/movies")
-        # No video stream → both the Video and HDR columns are dashes.
-        rows = [_row(
-            "/movies/a.mka",
-            version=None,
-            video=None,
-            bit_depth=None,
-            hdr=None,
-            audio=(AudioTrackSummary(language="eng", codec="aac", channels=2),),
-            subtitles=(SubtitleTrackSummary(language="eng", codec="subrip"),),
-        )]
+        rows = [
+            _row(
+                "/movies/a.mka",
+                version=None,
+                video=None,
+                bit_depth=None,
+                hdr=None,
+                audio=(AudioTrackSummary(language="eng", codec="aac", channels=2),),
+                subtitles=(SubtitleTrackSummary(language="eng", codec="subrip"),),
+            )
+        ]
         out, _ = _render(rows, root=root)
-        assert out.count("—") == 2  # exactly the Video and HDR columns
+        assert out.count("—") == 2
 
     def test_audio_line_with_channels(self) -> None:
         root = Path("/movies")
-        rows = [_row(
-            "/movies/a.mkv",
-            version=None,
-            audio=(AudioTrackSummary(language="rus", codec="ac3", channels=2),),
-        )]
+        rows = [
+            _row(
+                "/movies/a.mkv",
+                version=None,
+                audio=(AudioTrackSummary(language="rus", codec="ac3", channels=2),),
+            )
+        ]
         out, _ = _render(rows, root=root)
         assert "rus ac3 2ch" in out
 
     def test_audio_missing_language_is_und(self) -> None:
         root = Path("/movies")
-        rows = [_row(
-            "/movies/a.mkv",
-            version=None,
-            audio=(AudioTrackSummary(language=None, codec="aac", channels=6),),
-        )]
+        rows = [
+            _row(
+                "/movies/a.mkv",
+                version=None,
+                audio=(AudioTrackSummary(language=None, codec="aac", channels=6),),
+            )
+        ]
         out, _ = _render(rows, root=root)
         assert "und aac 6ch" in out
 
     def test_audio_missing_channels_omits_ch(self) -> None:
         root = Path("/movies")
-        rows = [_row(
-            "/movies/a.mkv",
-            version=None,
-            audio=(AudioTrackSummary(language="eng", codec="aac", channels=None),),
-        )]
+        rows = [
+            _row(
+                "/movies/a.mkv",
+                version=None,
+                audio=(AudioTrackSummary(language="eng", codec="aac", channels=None),),
+            )
+        ]
         out, _ = _render(rows, root=root)
         assert "eng aac" in out
         assert "ch" not in out.split("eng aac")[1].split("\n")[0]
 
     def test_no_audio_shows_dash(self) -> None:
         root = Path("/movies")
-        # Video and subs are populated, so the lone dash must be the audio column.
-        rows = [_row(
-            "/movies/a.mkv",
-            version=None,
-            audio=(),
-            subtitles=(SubtitleTrackSummary(language="eng", codec="subrip"),),
-        )]
+        rows = [
+            _row(
+                "/movies/a.mkv",
+                version=None,
+                audio=(),
+                subtitles=(SubtitleTrackSummary(language="eng", codec="subrip"),),
+            )
+        ]
         out, _ = _render(rows, root=root)
-        assert out.count("—") == 1  # exactly the audio column
+        assert out.count("—") == 1
 
     def test_subtitle_line(self) -> None:
         root = Path("/movies")
-        rows = [_row(
-            "/movies/a.mkv",
-            version=None,
-            subtitles=(SubtitleTrackSummary(language="eng", codec="subrip"),),
-        )]
+        rows = [
+            _row(
+                "/movies/a.mkv",
+                version=None,
+                subtitles=(SubtitleTrackSummary(language="eng", codec="subrip"),),
+            )
+        ]
         out, _ = _render(rows, root=root)
         assert "eng subrip" in out
 
     def test_subtitle_missing_language_is_und(self) -> None:
         root = Path("/movies")
-        rows = [_row(
-            "/movies/a.mkv",
-            version=None,
-            subtitles=(SubtitleTrackSummary(language=None, codec="ass"),),
-        )]
+        rows = [
+            _row(
+                "/movies/a.mkv",
+                version=None,
+                subtitles=(SubtitleTrackSummary(language=None, codec="ass"),),
+            )
+        ]
         out, _ = _render(rows, root=root)
         assert "und ass" in out
 
     def test_no_subtitles_shows_dash(self) -> None:
         root = Path("/movies")
-        # Video and audio are populated, so the lone dash must be the subs column.
-        rows = [_row(
-            "/movies/a.mkv",
-            version=None,
-            audio=(AudioTrackSummary(language="eng", codec="aac", channels=2),),
-            subtitles=(),
-        )]
+        rows = [
+            _row(
+                "/movies/a.mkv",
+                version=None,
+                audio=(AudioTrackSummary(language="eng", codec="aac", channels=2),),
+                subtitles=(),
+            )
+        ]
         out, _ = _render(rows, root=root)
-        assert out.count("—") == 1  # exactly the subs column
+        assert out.count("—") == 1
 
 
 class TestMultiLineCells:
     def test_multiple_audio_tracks_each_on_own_line(self) -> None:
         root = Path("/movies")
-        rows = [_row(
-            "/movies/a.mkv",
-            version=None,
-            audio=(
-                AudioTrackSummary(language="rus", codec="ac3", channels=2),
-                AudioTrackSummary(language="eng", codec="dts", channels=6),
-            ),
-        )]
+        rows = [
+            _row(
+                "/movies/a.mkv",
+                version=None,
+                audio=(
+                    AudioTrackSummary(language="rus", codec="ac3", channels=2),
+                    AudioTrackSummary(language="eng", codec="dts", channels=6),
+                ),
+            )
+        ]
         out, _ = _render(rows, root=root)
         lines = out.splitlines()
         rus_line = next(line for line in lines if "rus ac3 2ch" in line)
@@ -255,14 +260,16 @@ class TestMultiLineCells:
 
     def test_multiple_subtitle_tracks_each_on_own_line(self) -> None:
         root = Path("/movies")
-        rows = [_row(
-            "/movies/a.mkv",
-            version=None,
-            subtitles=(
-                SubtitleTrackSummary(language="eng", codec="subrip"),
-                SubtitleTrackSummary(language="rus", codec="ass"),
-            ),
-        )]
+        rows = [
+            _row(
+                "/movies/a.mkv",
+                version=None,
+                subtitles=(
+                    SubtitleTrackSummary(language="eng", codec="subrip"),
+                    SubtitleTrackSummary(language="rus", codec="ass"),
+                ),
+            )
+        ]
         out, _ = _render(rows, root=root)
         lines = out.splitlines()
         eng_line = next(line for line in lines if "eng subrip" in line)
@@ -280,15 +287,16 @@ class TestUnreadableRow:
 
     def test_stream_columns_are_dashes(self) -> None:
         root = Path("/movies")
-        rows = [_row(
-            "/movies/broken.mkv",
-            unreadable=True,
-            video="hevc",  # ignored for unreadable rows
-            audio=(AudioTrackSummary(language="eng", codec="aac", channels=2),),
-            subtitles=(SubtitleTrackSummary(language="eng", codec="subrip"),),
-        )]
+        rows = [
+            _row(
+                "/movies/broken.mkv",
+                unreadable=True,
+                video="hevc",
+                audio=(AudioTrackSummary(language="eng", codec="aac", channels=2),),
+                subtitles=(SubtitleTrackSummary(language="eng", codec="subrip"),),
+            )
+        ]
         out, _ = _render(rows, root=root)
-        # Even though stream fields are populated, an unreadable row hides them.
         assert "hevc" not in out
         assert "eng aac 2ch" not in out
         assert "eng subrip" not in out
@@ -342,11 +350,6 @@ class TestDefaults:
         assert "1 of 1 shown" in captured.err
 
 
-# ---------------------------------------------------------------------------
-# --outdated mode
-# ---------------------------------------------------------------------------
-
-
 def _odrow(
     path: str,
     *,
@@ -388,7 +391,6 @@ class TestOutdatedMode:
         out, _ = _render_outdated(rows, root=root)
         for header in ("File", "Severity", "Fix", "Reason", "Video", "HDR"):
             assert header in out
-        # The normal-mode Status/Audio/Subs columns are gone.
         assert "Status" not in out
         assert "Audio" not in out
         assert "Subs" not in out
@@ -440,10 +442,8 @@ class TestOutdatedMode:
             )
         ]
         out, _ = _render_outdated(rows, root=root)
-        # Worst severity is SYNC; strongest fix is RE-ENCODE (beats REMUX).
         assert "SYNC" in out
         assert "RE-ENCODE" in out
-        # The dominated rollup values must NOT surface as the Severity/Fix cells.
         assert "QUALITY" not in out
         assert "REMUX" not in out
 
@@ -476,7 +476,6 @@ class TestOutdatedMode:
         assert "UNREADABLE" in out
         assert "unreadable" in out
         assert "broken.mkv" in out
-        # Fix "—" and Video/HDR dashes: three em-dashes on the row.
         assert out.count("—") == 3
 
     def test_video_and_hdr_cells_rendered(self) -> None:
@@ -503,7 +502,6 @@ class TestOutdatedMode:
     def test_no_outdated_files_note(self) -> None:
         root = Path("/movies")
         out, err = _render_outdated([], root=root, total=10)
-        # Header still prints; the "0 of 10 shown" summary reports nothing flagged.
         assert "Severity" in out
         assert "0 of 10 shown" in err
 
@@ -518,8 +516,6 @@ class TestOutdatedMode:
 
     def test_foreign_interleaved_sorts_between_sync_and_quality(self) -> None:
         root = Path("/movies")
-        # Insert QUALITY first, FOREIGN second, SYNC third; the worst-first sort
-        # must reorder to SYNC, FOREIGN (order=1, mid-rank), QUALITY.
         rows = [
             _odrow("/movies/q.mkv", defects=(Defect("grain loss", Severity.QUALITY, Fix.RE_ENCODE),)),
             _odrow("/movies/f.mkv", video="h264", defects=(Defect("h264", Severity.FOREIGN, Fix.RE_ENCODE),)),
@@ -537,8 +533,6 @@ class TestOutdatedMode:
         assert "…" not in out
 
     def test_empty_defects_row_does_not_crash(self) -> None:
-        # The renderer is a public entry point; a defensively-empty defects tuple
-        # falls back to UNREADABLE / — instead of raising.
         root = Path("/movies")
         rows = [_odrow("/movies/a.mkv", defects=())]
         out, _ = _render_outdated(rows, root=root)

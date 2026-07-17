@@ -1,5 +1,3 @@
-"""Pure-function tests for `_fmt_audio_track`."""
-
 from __future__ import annotations
 
 from pathlib import Path
@@ -9,21 +7,29 @@ from furnace.core.models import AudioCodecId, DownmixMode, Track, TrackType
 from furnace.ui.tui import TrackSelection, TrackSelectorScreen, _fmt_audio_track
 from tests.conftest import make_movie, make_track, make_video_info
 
-# ---------------------------------------------------------------------------
-# Audio-profile helpers used by detector-tag and auto-preselect tests
-# ---------------------------------------------------------------------------
-
 
 def _fake_profile(suggested: DownmixMode | None) -> AudioProfile:
     metrics = AudioMetrics(
         channels=6,
-        rms_l=-50.0, rms_r=-47.0, rms_c=-28.0, rms_lfe=-75.0,
-        rms_ls=-47.0, rms_rs=-49.0, rms_lb=None, rms_rb=None,
-        corr_lr=0.4, corr_ls_l=0.1, corr_rs_r=0.1, corr_ls_rs=0.2,
-        corr_lb_ls=None, corr_rb_rs=None,
+        rms_l=-50.0,
+        rms_r=-47.0,
+        rms_c=-28.0,
+        rms_lfe=-75.0,
+        rms_ls=-47.0,
+        rms_rs=-49.0,
+        rms_lb=None,
+        rms_rb=None,
+        corr_lr=0.4,
+        corr_ls_l=0.1,
+        corr_rs_r=0.1,
+        corr_ls_rs=0.2,
+        corr_lb_ls=None,
+        corr_rb_rs=None,
     )
     return AudioProfile(
-        verdict=Verdict.FAKE, score=2, suggested=suggested,
+        verdict=Verdict.FAKE,
+        score=2,
+        suggested=suggested,
         reasons=("LFE is dead", "center is way louder than everything else"),
         metrics=metrics,
     )
@@ -32,13 +38,25 @@ def _fake_profile(suggested: DownmixMode | None) -> AudioProfile:
 def _suspicious_profile() -> AudioProfile:
     metrics = AudioMetrics(
         channels=6,
-        rms_l=-44.0, rms_r=-42.5, rms_c=-40.6, rms_lfe=-59.7,
-        rms_ls=-50.8, rms_rs=-49.7, rms_lb=None, rms_rb=None,
-        corr_lr=0.956, corr_ls_l=-0.008, corr_rs_r=-0.003, corr_ls_rs=0.863,
-        corr_lb_ls=None, corr_rb_rs=None,
+        rms_l=-44.0,
+        rms_r=-42.5,
+        rms_c=-40.6,
+        rms_lfe=-59.7,
+        rms_ls=-50.8,
+        rms_rs=-49.7,
+        rms_lb=None,
+        rms_rb=None,
+        corr_lr=0.956,
+        corr_ls_l=-0.008,
+        corr_rs_r=-0.003,
+        corr_ls_rs=0.863,
+        corr_lb_ls=None,
+        corr_rb_rs=None,
     )
     return AudioProfile(
-        verdict=Verdict.SUSPICIOUS, score=1, suggested=DownmixMode.STEREO,
+        verdict=Verdict.SUSPICIOUS,
+        score=1,
+        suggested=DownmixMode.STEREO,
         reasons=("left and right surrounds carry the same signal",),
         metrics=metrics,
     )
@@ -47,14 +65,27 @@ def _suspicious_profile() -> AudioProfile:
 def _real_profile() -> AudioProfile:
     metrics = AudioMetrics(
         channels=6,
-        rms_l=-20.0, rms_r=-20.5, rms_c=-25.0, rms_lfe=-30.0,
-        rms_ls=-22.0, rms_rs=-22.5, rms_lb=None, rms_rb=None,
-        corr_lr=0.3, corr_ls_l=0.1, corr_rs_r=0.1, corr_ls_rs=0.2,
-        corr_lb_ls=None, corr_rb_rs=None,
+        rms_l=-20.0,
+        rms_r=-20.5,
+        rms_c=-25.0,
+        rms_lfe=-30.0,
+        rms_ls=-22.0,
+        rms_rs=-22.5,
+        rms_lb=None,
+        rms_rb=None,
+        corr_lr=0.3,
+        corr_ls_l=0.1,
+        corr_rs_r=0.1,
+        corr_ls_rs=0.2,
+        corr_lb_ls=None,
+        corr_rb_rs=None,
     )
     return AudioProfile(
-        verdict=Verdict.REAL, score=0, suggested=None,
-        reasons=(), metrics=metrics,
+        verdict=Verdict.REAL,
+        score=0,
+        suggested=None,
+        reasons=(),
+        metrics=metrics,
     )
 
 
@@ -93,11 +124,9 @@ class TestFmtAudioTrackDownmixTag:
     def test_unselected_still_formats(self) -> None:
         line = _fmt_audio_track(_t(), selected=False, downmix=DownmixMode.STEREO)
         assert "[-> 2.0]" in line
-        # Unselected marker: a space inside the leading [x/ ]
         assert line.startswith("\\[ ]")
 
     def test_codec_and_layout_still_present(self) -> None:
-        """Existing content (codec, layout, bitrate, title) still renders."""
         line = _fmt_audio_track(_t(), selected=True, downmix=DownmixMode.STEREO)
         assert "DTS" in line
         assert "5.1" in line
@@ -105,7 +134,6 @@ class TestFmtAudioTrackDownmixTag:
         assert "Main" in line
 
     def test_fmt_audio_track_no_channel_layout(self) -> None:
-        """Track with no channel_layout renders codec without layout suffix."""
         track = make_track(
             index=1,
             track_type=TrackType.AUDIO,
@@ -118,16 +146,12 @@ class TestFmtAudioTrackDownmixTag:
             bitrate=128_000,
         )
         line = _fmt_audio_track(track, selected=True, downmix=None)
-        # Codec still present, but no layout (no "5.1" or trailing layout token).
         assert "AAC" in line
-        # Bitrate still shown, so "128 kbps" should appear.
         assert "128 kbps" in line
-        # No parenthesised or dotted layout token.
         assert "5.1" not in line
         assert "7.1" not in line
 
     def test_fmt_audio_track_no_bitrate(self) -> None:
-        """Track with no bitrate renders without the kbps suffix."""
         track = make_track(
             index=1,
             track_type=TrackType.AUDIO,
@@ -162,24 +186,17 @@ class TestTrackSelection:
 
 
 class TestTrackSelectorDownmixLogic:
-    """Pure-logic tests that exercise action_set_downmix without a running Textual app.
-
-    This instantiates the class but calls the action method directly. Because the
-    method touches self.query_one() via _refresh_item(), we monkeypatch _refresh_item
-    to be a no-op for the duration of the test.
-    """
-
     def make_screen(self, tracks: list[Track]) -> TrackSelectorScreen:
         movie = make_movie(
             video=make_video_info(
-                codec_name="hevc", pix_fmt="yuv420p10le",
-                duration_s=120.0, bitrate=10_000_000,
+                codec_name="hevc",
+                pix_fmt="yuv420p10le",
+                duration_s=120.0,
+                bitrate=10_000_000,
             ),
             audio_tracks=tracks,
         )
         screen = TrackSelectorScreen(movie, tracks, TrackType.AUDIO)
-        # Monkeypatch the method to a no-op for pure-logic tests; mypy can't model
-        # method reassignment on an instance, so silence [method-assign] here.
         screen._refresh_item = lambda index: None  # type: ignore[method-assign]
         return screen
 
@@ -253,13 +270,13 @@ class TestTrackSelectorDownmixLogic:
 
 
 class TestTrackSelectorClearDownmix:
-    """action_clear_downmix wipes any active downmix regardless of current mode."""
-
     def make_screen(self, tracks: list[Track]) -> TrackSelectorScreen:
         movie = make_movie(
             video=make_video_info(
-                codec_name="hevc", pix_fmt="yuv420p10le",
-                duration_s=120.0, bitrate=10_000_000,
+                codec_name="hevc",
+                pix_fmt="yuv420p10le",
+                duration_s=120.0,
+                bitrate=10_000_000,
             ),
             audio_tracks=tracks,
         )
@@ -296,14 +313,11 @@ class TestTrackSelectorClearDownmix:
 
 
 class TestFmtAudioTrackDetectorTag:
-    """Detector plaque rendering: [FAKE]/[SUSP], independent of the downmix tag."""
-
     def test_fake_verdict_shows_plain_fake_plaque(self) -> None:
         track = _t()
         track.audio_profile = _fake_profile(DownmixMode.STEREO)
         line = _fmt_audio_track(track, selected=True, downmix=None)
         assert "[FAKE]" in line
-        # Informational plaque only — no action arrow when no downmix is set.
         assert "->" not in line
 
     def test_fake_plaque_ignores_suggested_mode(self) -> None:
@@ -311,7 +325,6 @@ class TestFmtAudioTrackDetectorTag:
         track.audio_profile = _fake_profile(DownmixMode.MONO)
         line = _fmt_audio_track(track, selected=True, downmix=None)
         assert "[FAKE]" in line
-        # Suggested mode is not encoded into the row plaque.
         assert "->" not in line
 
     def test_suspicious_verdict_shows_susp_plaque(self) -> None:
@@ -343,13 +356,11 @@ class TestFmtAudioTrackDetectorTag:
 
     def test_fmt_audio_track_no_profile_shows_no_tag(self) -> None:
         track = _t()
-        # audio_profile defaults to None
         line = _fmt_audio_track(track, selected=True, downmix=None)
         assert "FAKE" not in line
         assert "SUSP" not in line
 
     def test_fmt_audio_track_fake_without_suggested_still_shows_plaque(self) -> None:
-        """The FAKE plaque reflects the verdict and does not depend on `suggested`."""
         track = _t()
         track.audio_profile = _fake_profile(None)
         line = _fmt_audio_track(track, selected=True, downmix=None)
@@ -357,13 +368,13 @@ class TestFmtAudioTrackDetectorTag:
 
 
 class TestTrackSelectorAutoPreselect:
-    """Auto-preselection of detector-suggested downmix on FAKE tracks."""
-
     def make_screen(self, tracks: list[Track]) -> TrackSelectorScreen:
         movie = make_movie(
             video=make_video_info(
-                codec_name="hevc", pix_fmt="yuv420p10le",
-                duration_s=120.0, bitrate=10_000_000,
+                codec_name="hevc",
+                pix_fmt="yuv420p10le",
+                duration_s=120.0,
+                bitrate=10_000_000,
             ),
             audio_tracks=tracks,
         )
@@ -411,21 +422,18 @@ class TestTrackSelectorAutoPreselect:
         assert screen._downmix[0] is None
 
     def test_fake_stereo_on_stereo_track_skipped_by_channel_guard(self) -> None:
-        """FAKE + suggested STEREO on a 2-channel track: guard skips preselect."""
         track = _t(channels=2, layout="stereo")
         track.audio_profile = _fake_profile(DownmixMode.STEREO)
         screen = self.make_screen([track])
         assert screen._downmix[0] is None
 
     def test_fake_mono_on_mono_track_skipped_by_channel_guard(self) -> None:
-        """FAKE + suggested MONO on a 1-channel track: guard skips preselect."""
         track = _t(channels=1, layout="mono")
         track.audio_profile = _fake_profile(DownmixMode.MONO)
         screen = self.make_screen([track])
         assert screen._downmix[0] is None
 
     def test_fake_down6_on_5_1_skipped_by_channel_guard(self) -> None:
-        """FAKE + suggested DOWN6 on a 5.1 track: guard skips preselect."""
         track = _t(channels=6)
         track.audio_profile = _fake_profile(DownmixMode.DOWN6)
         screen = self.make_screen([track])
@@ -438,7 +446,6 @@ class TestTrackSelectorAutoPreselect:
         assert screen._downmix[0] is None
 
     def test_subtitle_track_type_skips_auto_preselect(self) -> None:
-        """Non-AUDIO track_type never auto-preselects (and never touches _downmix)."""
         sub = make_track(
             index=2,
             track_type=TrackType.SUBTITLE,
@@ -448,12 +455,12 @@ class TestTrackSelectorAutoPreselect:
             channel_layout=None,
             bitrate=None,
         )
-        # Even if somehow a subtitle had an audio_profile (shouldn't happen),
-        # track_type=SUBTITLE must bypass the preselect loop entirely.
         movie = make_movie(
             video=make_video_info(
-                codec_name="hevc", pix_fmt="yuv420p10le",
-                duration_s=120.0, bitrate=10_000_000,
+                codec_name="hevc",
+                pix_fmt="yuv420p10le",
+                duration_s=120.0,
+                bitrate=10_000_000,
             ),
             subtitle_tracks=[sub],
         )
@@ -461,35 +468,35 @@ class TestTrackSelectorAutoPreselect:
         assert screen._downmix == [None]
 
 
-# ---------------------------------------------------------------------------
-# Detector detail panel (Task 17)
-# ---------------------------------------------------------------------------
-
-
 class TestBarAndWord:
     def test_silent_floor(self) -> None:
         from furnace.ui.tui import _bar_and_word
+
         bar, word = _bar_and_word(-80.0)
         assert word == "silent"
         assert bar.count("#") == 0
 
     def test_very_quiet(self) -> None:
         from furnace.ui.tui import _bar_and_word
+
         _, word = _bar_and_word(-58.0)
         assert word == "very quiet"
 
     def test_quiet(self) -> None:
         from furnace.ui.tui import _bar_and_word
+
         _, word = _bar_and_word(-45.0)
         assert word == "quiet"
 
     def test_loud(self) -> None:
         from furnace.ui.tui import _bar_and_word
+
         _, word = _bar_and_word(-30.0)
         assert word == "loud"
 
     def test_full_clamps_at_zero(self) -> None:
         from furnace.ui.tui import _bar_and_word
+
         bar, word = _bar_and_word(5.0)
         assert word == "full"
         assert bar.count("#") == 20
@@ -498,23 +505,32 @@ class TestBarAndWord:
 class TestRenderDetectorPanel:
     def test_none_track(self) -> None:
         from furnace.ui.tui import _render_detector_panel
+
         assert "---" in _render_detector_panel(None)
 
     def test_subtitle_track_bypass(self) -> None:
         from furnace.ui.tui import _render_detector_panel
+
         sub = make_track(
-            index=0, track_type=TrackType.SUBTITLE, codec_name="subrip", codec_id=None,
-            channels=None, channel_layout=None, bitrate=None,
+            index=0,
+            track_type=TrackType.SUBTITLE,
+            codec_name="subrip",
+            codec_id=None,
+            channels=None,
+            channel_layout=None,
+            bitrate=None,
         )
         assert "---" in _render_detector_panel(sub)
 
     def test_not_analyzed(self) -> None:
         from furnace.ui.tui import _render_detector_panel
+
         track = _t()
         assert "not analyzed" in _render_detector_panel(track)
 
     def test_real_surround(self) -> None:
         from furnace.ui.tui import _render_detector_panel
+
         track = _t()
         track.audio_profile = _real_profile()
         panel = _render_detector_panel(track)
@@ -524,15 +540,29 @@ class TestRenderDetectorPanel:
 
     def test_real_stereo(self) -> None:
         from furnace.ui.tui import _render_detector_panel
+
         track = _t(channels=2, layout="stereo")
         track.audio_profile = AudioProfile(
-            verdict=Verdict.REAL, score=0, suggested=None, reasons=(),
+            verdict=Verdict.REAL,
+            score=0,
+            suggested=None,
+            reasons=(),
             metrics=AudioMetrics(
-                channels=2, rms_l=-20.0, rms_r=-20.5,
-                rms_c=None, rms_lfe=None, rms_ls=None, rms_rs=None,
-                rms_lb=None, rms_rb=None,
-                corr_lr=0.3, corr_ls_l=None, corr_rs_r=None,
-                corr_ls_rs=None, corr_lb_ls=None, corr_rb_rs=None,
+                channels=2,
+                rms_l=-20.0,
+                rms_r=-20.5,
+                rms_c=None,
+                rms_lfe=None,
+                rms_ls=None,
+                rms_rs=None,
+                rms_lb=None,
+                rms_rb=None,
+                corr_lr=0.3,
+                corr_ls_l=None,
+                corr_rs_r=None,
+                corr_ls_rs=None,
+                corr_lb_ls=None,
+                corr_rb_rs=None,
             ),
         )
         panel = _render_detector_panel(track)
@@ -540,9 +570,12 @@ class TestRenderDetectorPanel:
 
     def test_fake_surround_with_annotations(self) -> None:
         from furnace.ui.tui import _render_detector_panel
+
         track = _t()
         track.audio_profile = AudioProfile(
-            verdict=Verdict.FAKE, score=3, suggested=DownmixMode.STEREO,
+            verdict=Verdict.FAKE,
+            score=3,
+            suggested=DownmixMode.STEREO,
             reasons=(
                 "both surrounds are silent (Ls=-55, Rs=-55 dB)",
                 "LFE is dead (-80 dB)",
@@ -550,10 +583,20 @@ class TestRenderDetectorPanel:
             ),
             metrics=AudioMetrics(
                 channels=6,
-                rms_l=-40.0, rms_r=-40.0, rms_c=-25.0, rms_lfe=-80.0,
-                rms_ls=-55.0, rms_rs=-55.0, rms_lb=None, rms_rb=None,
-                corr_lr=0.5, corr_ls_l=0.1, corr_rs_r=0.1, corr_ls_rs=0.2,
-                corr_lb_ls=None, corr_rb_rs=None,
+                rms_l=-40.0,
+                rms_r=-40.0,
+                rms_c=-25.0,
+                rms_lfe=-80.0,
+                rms_ls=-55.0,
+                rms_rs=-55.0,
+                rms_lb=None,
+                rms_rb=None,
+                corr_lr=0.5,
+                corr_ls_l=0.1,
+                corr_rs_r=0.1,
+                corr_ls_rs=0.2,
+                corr_lb_ls=None,
+                corr_rb_rs=None,
             ),
         )
         panel = _render_detector_panel(track)
@@ -565,16 +608,29 @@ class TestRenderDetectorPanel:
 
     def test_fake_stereo(self) -> None:
         from furnace.ui.tui import _render_detector_panel
+
         track = _t(channels=2, layout="stereo")
         track.audio_profile = AudioProfile(
-            verdict=Verdict.FAKE, score=2, suggested=DownmixMode.MONO,
+            verdict=Verdict.FAKE,
+            score=2,
+            suggested=DownmixMode.MONO,
             reasons=("left and right are identical (mono) - corr=0.999, diff=0.0 dB",),
             metrics=AudioMetrics(
-                channels=2, rms_l=-22.0, rms_r=-22.0,
-                rms_c=None, rms_lfe=None, rms_ls=None, rms_rs=None,
-                rms_lb=None, rms_rb=None,
-                corr_lr=1.0, corr_ls_l=None, corr_rs_r=None,
-                corr_ls_rs=None, corr_lb_ls=None, corr_rb_rs=None,
+                channels=2,
+                rms_l=-22.0,
+                rms_r=-22.0,
+                rms_c=None,
+                rms_lfe=None,
+                rms_ls=None,
+                rms_rs=None,
+                rms_lb=None,
+                rms_rb=None,
+                corr_lr=1.0,
+                corr_ls_l=None,
+                corr_rs_r=None,
+                corr_ls_rs=None,
+                corr_lb_ls=None,
+                corr_rb_rs=None,
             ),
         )
         panel = _render_detector_panel(track)
@@ -584,6 +640,7 @@ class TestRenderDetectorPanel:
 
     def test_suspicious(self) -> None:
         from furnace.ui.tui import _render_detector_panel
+
         track = _t()
         track.audio_profile = _suspicious_profile()
         panel = _render_detector_panel(track)
@@ -592,16 +649,29 @@ class TestRenderDetectorPanel:
 
     def test_suspicious_no_suggested(self) -> None:
         from furnace.ui.tui import _render_detector_panel
+
         track = _t()
         track.audio_profile = AudioProfile(
-            verdict=Verdict.SUSPICIOUS, score=1, suggested=None,
+            verdict=Verdict.SUSPICIOUS,
+            score=1,
+            suggested=None,
             reasons=("something fishy",),
             metrics=AudioMetrics(
                 channels=6,
-                rms_l=-22.0, rms_r=-22.0, rms_c=-18.0, rms_lfe=-25.0,
-                rms_ls=-25.0, rms_rs=-25.0, rms_lb=None, rms_rb=None,
-                corr_lr=0.3, corr_ls_l=0.1, corr_rs_r=0.1, corr_ls_rs=0.2,
-                corr_lb_ls=None, corr_rb_rs=None,
+                rms_l=-22.0,
+                rms_r=-22.0,
+                rms_c=-18.0,
+                rms_lfe=-25.0,
+                rms_ls=-25.0,
+                rms_rs=-25.0,
+                rms_lb=None,
+                rms_rb=None,
+                corr_lr=0.3,
+                corr_ls_l=0.1,
+                corr_rs_r=0.1,
+                corr_ls_rs=0.2,
+                corr_lb_ls=None,
+                corr_rb_rs=None,
             ),
         )
         panel = _render_detector_panel(track)
@@ -609,16 +679,29 @@ class TestRenderDetectorPanel:
 
     def test_7_1_with_back_surround_annotations(self) -> None:
         from furnace.ui.tui import _render_detector_panel
+
         track = _t(channels=8, layout="7.1")
         track.audio_profile = AudioProfile(
-            verdict=Verdict.FAKE, score=3, suggested=DownmixMode.STEREO,
+            verdict=Verdict.FAKE,
+            score=3,
+            suggested=DownmixMode.STEREO,
             reasons=("surrounds are a copy of fronts",),
             metrics=AudioMetrics(
                 channels=8,
-                rms_l=-20.0, rms_r=-20.0, rms_c=-18.0, rms_lfe=-25.0,
-                rms_ls=-22.0, rms_rs=-22.0, rms_lb=-22.0, rms_rb=-22.0,
-                corr_lr=0.5, corr_ls_l=0.99, corr_rs_r=0.99, corr_ls_rs=0.3,
-                corr_lb_ls=0.4, corr_rb_rs=0.4,
+                rms_l=-20.0,
+                rms_r=-20.0,
+                rms_c=-18.0,
+                rms_lfe=-25.0,
+                rms_ls=-22.0,
+                rms_rs=-22.0,
+                rms_lb=-22.0,
+                rms_rb=-22.0,
+                corr_lr=0.5,
+                corr_ls_l=0.99,
+                corr_rs_r=0.99,
+                corr_ls_rs=0.3,
+                corr_lb_ls=0.4,
+                corr_rb_rs=0.4,
             ),
         )
         panel = _render_detector_panel(track)
@@ -630,16 +713,29 @@ class TestRenderDetectorPanel:
 
     def test_ls_rs_identical_annotation(self) -> None:
         from furnace.ui.tui import _render_detector_panel
+
         track = _t()
         track.audio_profile = AudioProfile(
-            verdict=Verdict.SUSPICIOUS, score=1, suggested=DownmixMode.STEREO,
+            verdict=Verdict.SUSPICIOUS,
+            score=1,
+            suggested=DownmixMode.STEREO,
             reasons=("left and right surrounds carry the same signal",),
             metrics=AudioMetrics(
                 channels=6,
-                rms_l=-22.0, rms_r=-22.0, rms_c=-18.0, rms_lfe=-25.0,
-                rms_ls=-25.0, rms_rs=-25.0, rms_lb=None, rms_rb=None,
-                corr_lr=0.3, corr_ls_l=0.1, corr_rs_r=0.1, corr_ls_rs=0.9,
-                corr_lb_ls=None, corr_rb_rs=None,
+                rms_l=-22.0,
+                rms_r=-22.0,
+                rms_c=-18.0,
+                rms_lfe=-25.0,
+                rms_ls=-25.0,
+                rms_rs=-25.0,
+                rms_lb=None,
+                rms_rb=None,
+                corr_lr=0.3,
+                corr_ls_l=0.1,
+                corr_rs_r=0.1,
+                corr_ls_rs=0.9,
+                corr_lb_ls=None,
+                corr_rb_rs=None,
             ),
         )
         panel = _render_detector_panel(track)
@@ -647,6 +743,7 @@ class TestRenderDetectorPanel:
 
     def test_fake_with_downmix_shows_applied(self) -> None:
         from furnace.ui.tui import _render_detector_panel
+
         track = _t()
         track.audio_profile = _fake_profile(DownmixMode.STEREO)
         panel = _render_detector_panel(track, DownmixMode.STEREO)
@@ -655,15 +752,16 @@ class TestRenderDetectorPanel:
 
     def test_fake_without_downmix_shows_not_applied(self) -> None:
         from furnace.ui.tui import _render_detector_panel
+
         track = _t()
         track.audio_profile = _fake_profile(DownmixMode.STEREO)
         panel = _render_detector_panel(track, None)
         assert "no downmix applied" in panel
-        # Old wording must be gone — the panel no longer claims auto-application.
         assert "auto-applied" not in panel
 
     def test_suspicious_with_downmix_shows_applied(self) -> None:
         from furnace.ui.tui import _render_detector_panel
+
         track = _t()
         track.audio_profile = _suspicious_profile()
         panel = _render_detector_panel(track, DownmixMode.STEREO)
@@ -674,35 +772,44 @@ class TestRenderDetectorPanel:
 class TestModeLabel:
     def test_stereo(self) -> None:
         from furnace.ui.tui import _mode_label
+
         assert _mode_label(DownmixMode.STEREO) == "STEREO"
 
     def test_mono(self) -> None:
         from furnace.ui.tui import _mode_label
+
         assert _mode_label(DownmixMode.MONO) == "MONO"
 
     def test_down6(self) -> None:
         from furnace.ui.tui import _mode_label
+
         assert _mode_label(DownmixMode.DOWN6) == "DOWN6"
 
     def test_none(self) -> None:
         from furnace.ui.tui import _mode_label
+
         assert _mode_label(None) == "(none)"
 
 
 class TestRefreshDetectorPanelOnSubtitle:
     def test_subtitle_track_type_short_circuits(self) -> None:
-        """_refresh_detector_panel returns early for non-audio screens."""
         sub = make_track(
-            index=2, track_type=TrackType.SUBTITLE, codec_name="subrip", codec_id=None,
-            channels=None, channel_layout=None, bitrate=None,
+            index=2,
+            track_type=TrackType.SUBTITLE,
+            codec_name="subrip",
+            codec_id=None,
+            channels=None,
+            channel_layout=None,
+            bitrate=None,
         )
         movie = make_movie(
             video=make_video_info(
-                codec_name="hevc", pix_fmt="yuv420p10le",
-                duration_s=120.0, bitrate=10_000_000,
+                codec_name="hevc",
+                pix_fmt="yuv420p10le",
+                duration_s=120.0,
+                bitrate=10_000_000,
             ),
             subtitle_tracks=[sub],
         )
         screen = TrackSelectorScreen(movie, [sub], TrackType.SUBTITLE)
-        # No panel widget exists for subtitle screens; method must not raise.
         screen._refresh_detector_panel()

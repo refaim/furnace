@@ -1,10 +1,3 @@
-"""Unit tests for ``AnalysisPipeline``.
-
-The pipeline fans per-file analysis (``analyze`` + cropdetect) out across a
-thread pool. Workers do I/O only; the reporter is driven solely from the main
-thread. Results are reassembled in input order regardless of completion order.
-"""
-
 from __future__ import annotations
 
 from collections.abc import Callable
@@ -25,15 +18,9 @@ from furnace.services.analyzer import Analyzer
 from tests.conftest import make_movie, make_video_info
 from tests.fakes.recording_reporter import Event, RecordingPlanReporter
 
-# ---------------------------------------------------------------------------
-# Fakes / factories
-# ---------------------------------------------------------------------------
-
 
 @dataclass(frozen=True)
 class _CropCall:
-    """One recorded ``detect_crop`` invocation."""
-
     path: Path
     duration_s: float
     interlaced: bool
@@ -43,12 +30,6 @@ class _CropCall:
 
 
 class _FakeAnalyzer:
-    """Returns a canned ``AnalysisOutcome`` keyed by the scan's main file.
-
-    When given an ``on_progress`` callback it drives it through a mid-run and a
-    final value, exercising the pipeline's analyze-progress wiring.
-    """
-
     def __init__(self, outcomes: dict[Path, AnalysisOutcome]) -> None:
         self._outcomes = outcomes
 
@@ -65,12 +46,6 @@ class _FakeAnalyzer:
 
 
 class _FakeProber:
-    """Returns a canned crop (or raises) keyed by the movie's main file.
-
-    Every call is captured in ``calls`` so tests can assert which files had
-    cropdetect run, and that the per-call arguments were threaded correctly.
-    """
-
     def __init__(
         self,
         crops: dict[Path, CropRect | None] | None = None,
@@ -94,8 +69,8 @@ class _FakeProber:
             _CropCall(path, duration_s, interlaced, is_dvd, hdr_transfer, on_progress),
         )
         assert on_progress is not None
-        on_progress(ProgressSample(fraction=0.5))  # forwarded to the file slot
-        on_progress(ProgressSample(fraction=None))  # no fraction -> ignored
+        on_progress(ProgressSample(fraction=0.5))
+        on_progress(ProgressSample(fraction=None))
         exc = self._raises.get(path)
         if exc is not None:
             raise exc
@@ -103,7 +78,6 @@ class _FakeProber:
 
 
 def _sr(tmp_path: Path, name: str) -> ScanResult:
-    """A ScanResult whose output_path is a sibling of the source."""
     return ScanResult(
         main_file=tmp_path / name,
         satellite_files=[],
@@ -120,7 +94,6 @@ def _done(
     color_transfer: str | None = "bt709",
     detail: str = "summary",
 ) -> AnalysisOutcome:
-    """A DONE outcome whose Movie's main_file matches the scan's main_file."""
     video = make_video_info(
         width=width,
         height=height,
@@ -139,7 +112,6 @@ def _build_pipeline(
     *,
     max_workers: int = 1,
 ) -> AnalysisPipeline:
-    """Construct the pipeline, casting the structural fakes to the real ports."""
     return AnalysisPipeline(
         cast("Analyzer", analyzer),
         cast("Prober", prober),
@@ -151,17 +123,13 @@ def _build_pipeline(
 _FULL_FRAME = CropRect(w=1920, h=1080, x=0, y=0)
 
 
-# ---------------------------------------------------------------------------
-# Deterministic single-worker batch
-# ---------------------------------------------------------------------------
-
-
 def test_two_done_input_order_with_crop_and_fullframe(tmp_path: Path) -> None:
-    """Both DONE movies appear in input order; only the cropped file gets a crop."""
     sr_a = _sr(tmp_path, "a.mkv")
     sr_b = _sr(tmp_path, "b.mkv")
-    outcomes = {sr_a.main_file: _done(sr_a.main_file, detail="a summary"),
-                sr_b.main_file: _done(sr_b.main_file, detail="b summary")}
+    outcomes = {
+        sr_a.main_file: _done(sr_a.main_file, detail="a summary"),
+        sr_b.main_file: _done(sr_b.main_file, detail="b summary"),
+    }
     crop_a = CropRect(w=1920, h=800, x=0, y=140)
     prober = _FakeProber(crops={sr_a.main_file: crop_a, sr_b.main_file: _FULL_FRAME})
     reporter = RecordingPlanReporter()
@@ -185,7 +153,6 @@ def test_two_done_input_order_with_crop_and_fullframe(tmp_path: Path) -> None:
 
 
 def test_dry_run_skips_crop_detection(tmp_path: Path) -> None:
-    """dry_run never calls detect_crop; the movie still appears with no crop."""
     sr = _sr(tmp_path, "a.mkv")
     outcomes = {sr.main_file: _done(sr.main_file)}
     prober = _FakeProber(crops={sr.main_file: CropRect(w=1920, h=800, x=0, y=140)})
@@ -199,7 +166,6 @@ def test_dry_run_skips_crop_detection(tmp_path: Path) -> None:
 
 
 def test_copy_video_passthrough_skips_crop(tmp_path: Path) -> None:
-    """A passthrough-eligible movie under copy_video never runs cropdetect."""
     sr = _sr(tmp_path, "a.mkv")
     outcomes = {sr.main_file: _done(sr.main_file)}
     prober = _FakeProber(crops={sr.main_file: CropRect(w=1920, h=800, x=0, y=140)})
@@ -213,7 +179,6 @@ def test_copy_video_passthrough_skips_crop(tmp_path: Path) -> None:
 
 
 def test_skipped_and_failed_excluded_but_reported(tmp_path: Path) -> None:
-    """movie=None outcomes are dropped from movies/crops yet still reported."""
     sr_a = _sr(tmp_path, "a.mkv")
     sr_b = _sr(tmp_path, "b.mkv")
     outcomes = {
@@ -237,11 +202,10 @@ def test_skipped_and_failed_excluded_but_reported(tmp_path: Path) -> None:
 
 
 def test_detect_crop_branches(tmp_path: Path) -> None:
-    """All four _detect_crop outcomes: real crop, full-frame, None, raise."""
-    real = _sr(tmp_path, "real.mkv")     # (a) real crop -> kept
-    full = _sr(tmp_path, "full.mkv")     # (b) full-frame -> None
-    none = _sr(tmp_path, "none.mkv")     # (c) detect returns None
-    boom = _sr(tmp_path, "boom.mkv")     # (d) raises RuntimeError
+    real = _sr(tmp_path, "real.mkv")
+    full = _sr(tmp_path, "full.mkv")
+    none = _sr(tmp_path, "none.mkv")
+    boom = _sr(tmp_path, "boom.mkv")
     srs = [real, full, none, boom]
     outcomes = {s.main_file: _done(s.main_file) for s in srs}
     real_crop = CropRect(w=1920, h=816, x=0, y=132)
@@ -253,16 +217,12 @@ def test_detect_crop_branches(tmp_path: Path) -> None:
 
     result = pipeline.run(srs, copy_video=False, dry_run=False)
 
-    # Every file is DONE -> all present, in input order, even the one that raised.
     assert [m.main_file for m, _ in result.movies] == [s.main_file for s in srs]
-    # Only the genuine crop survives.
     assert result.crops == {real.main_file: real_crop}
-    # cropdetect was attempted for the file that raised.
     assert any(call.path == boom.main_file for call in prober.calls)
 
 
 def test_detect_crop_threads_arguments(tmp_path: Path) -> None:
-    """SD interlaced HDR source -> is_dvd True, interlaced True, hdr_transfer set."""
     sr = _sr(tmp_path, "dvd.mkv")
     outcomes = {
         sr.main_file: _done(
@@ -284,17 +244,10 @@ def test_detect_crop_threads_arguments(tmp_path: Path) -> None:
     assert call.is_dvd is True
     assert call.interlaced is True
     assert call.hdr_transfer == "smpte2084"
-    # The pipeline forwards cropdetect progress to the file's slot.
     assert callable(call.on_progress)
 
 
 def test_process_applies_analyze_and_crop_weights(tmp_path: Path) -> None:
-    """``_process`` maps analyze progress into [0, 0.7] and crop into [0.7, 1.0].
-
-    The fakes read the worker's progress slot synchronously right after each
-    ``on_progress`` call, so the 0.7/0.3 weight split is asserted deterministically
-    (no thread timing involved).
-    """
     sr = _sr(tmp_path, "a.mkv")
     file_progress = [0.0]
     seen: list[tuple[str, float]] = []
@@ -324,7 +277,7 @@ def test_process_applies_analyze_and_crop_weights(tmp_path: Path) -> None:
             hdr_transfer: str | None = None,
             on_progress: Callable[[ProgressSample], None] | None = None,
         ) -> CropRect | None:
-            _ = (path, duration_s, interlaced, is_dvd, hdr_transfer)  # signature parity
+            _ = (path, duration_s, interlaced, is_dvd, hdr_transfer)
             assert on_progress is not None
             on_progress(ProgressSample(fraction=0.5))
             seen.append(("crop", file_progress[0]))
@@ -337,18 +290,12 @@ def test_process_applies_analyze_and_crop_weights(tmp_path: Path) -> None:
     assert outcome.status is AnalyzeStatus.DONE
     assert crop is None
     assert [label for label, _ in seen] == ["analyze", "analyze", "crop"]
-    expected = [0.35, 0.70, 0.85]  # 0.5*0.7, 1.0*0.7, 0.7 + 0.5*0.3
+    expected = [0.35, 0.70, 0.85]
     assert all(abs(value - exp) < 1e-9 for (_, value), exp in zip(seen, expected, strict=True))
-    assert file_progress[0] == 1.0  # forced to complete when the worker returns
-
-
-# ---------------------------------------------------------------------------
-# Parallel (max_workers=3) — correctness only, no reporter line-order asserts
-# ---------------------------------------------------------------------------
+    assert file_progress[0] == 1.0
 
 
 def test_parallel_preserves_input_order_and_crop_keys(tmp_path: Path) -> None:
-    """With several workers, results reassemble in input order, crops keyed right."""
     n = 5
     srs = [_sr(tmp_path, f"m{i}.mkv") for i in range(n)]
     outcomes = {s.main_file: _done(s.main_file, detail=f"summary {i}") for i, s in enumerate(srs)}
@@ -369,7 +316,6 @@ def test_parallel_preserves_input_order_and_crop_keys(tmp_path: Path) -> None:
     assert [m.main_file for m, _ in result.movies] == [s.main_file for s in srs]
     assert [out for _, out in result.movies] == [s.output_path for s in srs]
     assert result.crops == expected
-    # Reporter framing is present (order is nondeterministic under parallelism).
     assert reporter.events[0] == Event("analyze_batch_start", (n,), ())
     assert reporter.events[-1] == Event("analyze_batch_finish", (), ())
     items = [e for e in reporter.events if e.method == "analyze_batch_item"]

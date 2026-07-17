@@ -6,14 +6,12 @@ from furnace.core.detect import VideoSystem, detect_video_system
 
 
 class TestDetectVideoSystem:
-    # PAL standard heights
     def test_pal_576(self) -> None:
         assert detect_video_system(576) == VideoSystem.PAL
 
     def test_pal_288(self) -> None:
         assert detect_video_system(288) == VideoSystem.PAL
 
-    # NTSC standard heights
     def test_ntsc_480(self) -> None:
         assert detect_video_system(480) == VideoSystem.NTSC
 
@@ -23,7 +21,6 @@ class TestDetectVideoSystem:
     def test_ntsc_240(self) -> None:
         assert detect_video_system(240) == VideoSystem.NTSC
 
-    # HD heights
     def test_hd_720(self) -> None:
         assert detect_video_system(720) == VideoSystem.HD
 
@@ -33,7 +30,6 @@ class TestDetectVideoSystem:
     def test_hd_2160(self) -> None:
         assert detect_video_system(2160) == VideoSystem.HD
 
-    # Non-standard SD -> ValueError
     def test_unknown_sd_544(self) -> None:
         with pytest.raises(ValueError, match="Unknown SD height"):
             detect_video_system(544)

@@ -35,19 +35,16 @@ class TestEncodeResult:
         assert r.encoder_settings == "av1_nvenc / main"
 
     def test_ssim_score_is_gone(self) -> None:
-        """The legacy SSIM field was removed in favour of SSIMULACRA2."""
         r = EncodeResult(return_code=0, encoder_settings="x")
         assert not hasattr(r, "ssim_score")
 
 
 class TestVideoParamsPassthrough:
     def test_default_is_false(self) -> None:
-        """VideoParams.passthrough defaults to False."""
         vp = make_video_params()
         assert vp.passthrough is False
 
     def test_can_be_set_true(self) -> None:
-        """VideoParams.passthrough can be set to True."""
         vp = make_video_params(passthrough=True)
         assert vp.passthrough is True
 
@@ -68,6 +65,7 @@ class TestDownmixMode:
 
 def test_analyze_status_values() -> None:
     from furnace.core.models import AnalyzeStatus
+
     assert AnalyzeStatus.DONE.value == "done"
     assert AnalyzeStatus.SKIPPED.value == "skipped"
     assert AnalyzeStatus.FAILED.value == "failed"
@@ -75,7 +73,8 @@ def test_analyze_status_values() -> None:
 
 def test_analysis_outcome_done_carries_movie() -> None:
     from furnace.core.models import AnalysisOutcome, AnalyzeStatus
-    movie = object()  # placeholder; real Movie not needed for the dataclass test
+
+    movie = object()
     outcome = AnalysisOutcome(movie=movie, status=AnalyzeStatus.DONE, detail="summary")  # type: ignore[arg-type]
     assert outcome.movie is movie
     assert outcome.status is AnalyzeStatus.DONE

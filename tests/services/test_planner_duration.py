@@ -10,7 +10,8 @@ from tests.conftest import make_movie, make_track, make_video_info
 def _make_movie_dur(duration_s: float = 1234.5) -> Movie:
     return make_movie(
         video=make_video_info(
-            fps_num=24000, fps_den=1001,
+            fps_num=24000,
+            fps_den=1001,
             duration_s=duration_s,
             bitrate=20_000_000,
         ),
@@ -21,7 +22,6 @@ def _make_movie_dur(duration_s: float = 1234.5) -> Movie:
 
 class TestJobDurationS:
     def test_duration_s_populated_from_movie_video(self) -> None:
-        """Job.duration_s must be set from movie.video.duration_s."""
         movie = _make_movie_dur(duration_s=1234.5)
         output_path = Path("/out/movie.mkv")
 
@@ -36,7 +36,6 @@ class TestJobDurationS:
         assert plan.jobs[0].duration_s == 1234.5
 
     def test_duration_s_zero_when_video_duration_zero(self) -> None:
-        """Job.duration_s == 0.0 when source video duration is unknown."""
         movie = _make_movie_dur(duration_s=0.0)
         output_path = Path("/out/movie.mkv")
 

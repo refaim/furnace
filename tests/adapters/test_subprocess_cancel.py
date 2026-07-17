@@ -35,9 +35,6 @@ def test_no_cancel_event_runs_to_completion() -> None:
 
 
 def test_cancel_event_unset_lets_process_finish_naturally() -> None:
-    # cancel_event provided but never set: the polled-wait loop must exit
-    # when the child completes on its own (covers the `while ... is None`
-    # False-branch through to the trailing `process.wait()`).
     cancel = threading.Event()
     rc, output = run_tool(
         [sys.executable, "-c", "print('done')"],

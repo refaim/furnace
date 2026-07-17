@@ -30,15 +30,11 @@ class TestCopyVideo:
         with patch("furnace.adapters.ffmpeg.run_tool", side_effect=fake_run_tool):
             rc = adapter.copy_video(Path("video.mkv"), Path("video_out.mkv"))
         assert rc == 0
-        # Flag/value pairs must be adjacent and in the right order — a regression
-        # that swapped tokens (e.g. `-map copy -c:v 0:v:0`) would still satisfy a
-        # membership check, so assert the pairing explicitly.
         assert captured[captured.index("-loglevel") + 1] == "fatal"
         assert captured[captured.index("-i") + 1] == "video.mkv"
         assert captured[captured.index("-map") + 1] == "0:v:0"
         assert captured[captured.index("-c:v") + 1] == "copy"
         assert captured[captured.index("-progress") + 1] == "pipe:1"
-        # Output is the final positional token, written after -y.
         assert captured[-1] == "video_out.mkv"
         assert captured[captured.index("-y") + 1] == "video_out.mkv"
 
@@ -79,7 +75,6 @@ class TestCopyVideo:
         assert abs(samples[0].processed_s - 60.0) < 0.01  # type: ignore[operator]
 
     def test_copy_video_non_progress_line(self) -> None:
-        """Lines without '=' are not consumed."""
         results: list[bool] = []
 
         def fake_run_tool(
@@ -98,7 +93,6 @@ class TestCopyVideo:
         assert results == [False]
 
     def test_copy_video_without_on_progress_skips_callback(self) -> None:
-        """Progress block is parsed but callback skipped when on_progress is None."""
         def fake_run_tool(
             cmd: Any,
             on_output: Any = None,

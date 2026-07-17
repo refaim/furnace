@@ -49,7 +49,6 @@ class TestParseFfmpegProgressBlock:
         assert sample == ProgressSample(processed_s=30.0, speed=None)
 
     def test_speed_malformed_just_x(self) -> None:
-        """speed='x' means empty-before-x → float('') fails ValueError."""
         kv = {"out_time_us": "1000000", "speed": "x", "progress": "continue"}
         sample = _parse_ffmpeg_progress_block(kv)
         assert sample == ProgressSample(processed_s=1.0, speed=None)
@@ -88,12 +87,9 @@ class TestProbe:
 class TestDetectCrop:
     def test_detect_crop_returns_rect(self) -> None:
         adapter = _adapter()
-        # Simulate all crop samples returning the same crop: "crop=1920:800:0:140"
         mock_result = MagicMock()
         mock_result.returncode = 0
-        mock_result.stderr = (
-            "[Parsed_cropdetect] crop=1920:800:0:140\n"
-        )
+        mock_result.stderr = "[Parsed_cropdetect] crop=1920:800:0:140\n"
         with patch("furnace.adapters.ffmpeg.subprocess.run", return_value=mock_result):
             crop = adapter.detect_crop(Path("v.mkv"), duration_s=100.0)
         assert crop is not None
@@ -110,7 +106,6 @@ class TestDetectCrop:
         assert crop is None
 
     def test_detect_crop_dvd_uses_larger_batches(self) -> None:
-        """DVD batches are 15 points; a constant crop converges after two."""
         adapter = _adapter()
         call_count = 0
 
@@ -124,11 +119,9 @@ class TestDetectCrop:
 
         with patch("furnace.adapters.ffmpeg.subprocess.run", side_effect=counting_run):
             adapter.detect_crop(Path("v.mkv"), duration_s=100.0, is_dvd=True)
-        # 2 batches x 15 = 30 (vs 2 x 10 = 20 for HD), proving DVD samples denser.
         assert call_count == 30
 
     def test_detect_crop_interlaced_uses_yadif(self) -> None:
-        """Interlaced sources add yadif before cropdetect."""
         captured_cmds: list[list[str]] = []
         mock_result = MagicMock()
         mock_result.returncode = 0
@@ -141,7 +134,6 @@ class TestDetectCrop:
         adapter = _adapter()
         with patch("furnace.adapters.ffmpeg.subprocess.run", side_effect=capturing_run):
             adapter.detect_crop(Path("v.mkv"), duration_s=100.0, interlaced=True)
-        # Check that yadif is prepended
         for cmd in captured_cmds:
             vf_idx = cmd.index("-vf")
             assert "yadif" in cmd[vf_idx + 1]
@@ -149,23 +141,15 @@ class TestDetectCrop:
 
 class TestDetectCropAggregation:
     def test_detect_crop_converges_on_dominant_cluster(self) -> None:
-        """Dark-episode samples: the plurality true crop beats the median.
-
-        Each 10-sample batch is 5 true crops + 5 scattered over-crops (stable
-        left/right, dark top/bottom). The median top edge would be a dark
-        over-crop (y=180); the dominant-cluster pick recovers the true y=140.
-        The aggregate is identical across both batches, so it converges after
-        2 batches (20 invocations) rather than running the full cap of 40.
-        """
         adapter = _adapter()
         call_count = 0
         pattern = [
-            "crop=1600:800:160:140",  # true (x5)
             "crop=1600:800:160:140",
             "crop=1600:800:160:140",
             "crop=1600:800:160:140",
             "crop=1600:800:160:140",
-            "crop=1600:760:160:160",  # scattered over-crops (x5)
+            "crop=1600:800:160:140",
+            "crop=1600:760:160:160",
             "crop=1600:720:160:180",
             "crop=1600:680:160:200",
             "crop=1600:640:160:220",
@@ -183,25 +167,16 @@ class TestDetectCropAggregation:
         with patch("furnace.adapters.ffmpeg.subprocess.run", side_effect=cycling_run):
             crop = adapter.detect_crop(Path("v.mkv"), duration_s=100.0)
         assert crop == CropRect(w=1600, h=800, x=160, y=140)
-        assert call_count == 20  # converged after the minimum two batches
+        assert call_count == 20
 
     def test_detect_crop_runs_to_cap_when_never_converging(self) -> None:
-        """Aggregate that shifts every batch runs the full cap, keeps the last.
-
-        Each batch contributes a strictly larger dominant cluster on the bottom
-        edge (counts 5, 6, 7, 8), so the aggregate changes after every batch and
-        never converges. Detection must sample the whole cap (4 x 10 = 40) and
-        return the final estimate rather than None -- the fallback for the
-        hardest, never-settling episodes.
-        """
         adapter = _adapter()
-        # x=0,w=100,y=0 throughout -> only the bottom edge (=h) moves.
-        batch_dominant = [1000, 1100, 1200, 1300]  # counts 5,6,7,8 per batch
+        batch_dominant = [1000, 1100, 1200, 1300]
         batch_fillers = [
-            [10, 20, 30, 40, 50],   # 5 dominant + 5 fillers = 10
-            [60, 70, 80, 90],       # 6 + 4
-            [110, 120, 130],        # 7 + 3
-            [140, 150],             # 8 + 2
+            [10, 20, 30, 40, 50],
+            [60, 70, 80, 90],
+            [110, 120, 130],
+            [140, 150],
         ]
         heights: list[int] = []
         for b, dom in enumerate(batch_dominant):
@@ -219,8 +194,8 @@ class TestDetectCropAggregation:
 
         with patch("furnace.adapters.ffmpeg.subprocess.run", side_effect=shifting_run):
             crop = adapter.detect_crop(Path("v.mkv"), duration_s=100.0)
-        assert call_count == 40  # never converged -> sampled the full cap
-        assert crop == CropRect(w=100, h=1300, x=0, y=0)  # last batch's estimate
+        assert call_count == 40
+        assert crop == CropRect(w=100, h=1300, x=0, y=0)
 
 
 class TestGetEncoderTag:
@@ -269,9 +244,6 @@ class TestRunIdet:
         )
         with patch("furnace.adapters.ffmpeg.subprocess.run", return_value=mock_result):
             ratio = adapter.run_idet(Path("v.mkv"), duration_s=100.0)
-        # 5 sample points, each returns TFF:100, BFF:50, Progressive:850
-        # total_interlaced = 5 * 150 = 750, total_prog = 5 * 850 = 4250
-        # ratio = 750 / (750+4250) = 0.15
         assert abs(ratio - 0.15) < 0.01
 
     def test_idet_no_match_returns_zero(self) -> None:
@@ -379,7 +351,6 @@ class TestExtractTrack:
         assert abs(samples[0].processed_s - 60.0) < 0.01  # type: ignore[operator]
 
     def test_extract_track_non_progress_line(self) -> None:
-        """Lines without '=' are not consumed."""
         results: list[bool] = []
 
         def fake_run_tool(
@@ -398,7 +369,6 @@ class TestExtractTrack:
         assert results == [False]
 
     def test_extract_track_without_on_progress_skips_callback(self) -> None:
-        """Progress block is parsed but callback is skipped when on_progress is None."""
         def fake_run_tool(
             cmd: Any,
             on_output: Any = None,
@@ -406,8 +376,6 @@ class TestExtractTrack:
             log_path: Any = None,
             cwd: Any = None,
         ) -> tuple[int, str]:
-            # Drive a full progress block through the closure. Without
-            # on_progress, the inner False branch of the guard fires.
             assert on_progress_line("out_time_us=1000000") is True
             assert on_progress_line("speed=1.5x") is True
             assert on_progress_line("progress=continue") is True
@@ -415,7 +383,6 @@ class TestExtractTrack:
 
         adapter = _adapter()
         with patch("furnace.adapters.ffmpeg.run_tool", side_effect=fake_run_tool):
-            # No on_progress passed — closure's `on_progress is None` branch hits.
             rc = adapter.extract_track(Path("v.mkv"), 2, Path("out.thd"))
         assert rc == 0
 
@@ -423,7 +390,6 @@ class TestExtractTrack:
 class TestFfmpegToWav:
     @staticmethod
     def _run(input_name: str = "audio.thd") -> tuple[int, list[str]]:
-        """Invoke ffmpeg_to_wav with run_tool patched; return (rc, argv)."""
         captured: list[str] = []
 
         def fake_run_tool(
@@ -451,27 +417,10 @@ class TestFfmpegToWav:
         assert "0:1" in captured
 
     def test_ffmpeg_to_wav_asks_for_24_bit(self) -> None:
-        """The WAV muxer's default sample format is pcm_s16le. This WAV is not
-        a deliverable -- on the DECODE_ENCODE routes it is what eac3to downmixes
-        from, so truncating the decoder's float output to 16 bits here would
-        throw away precision before the mix and sum six channels' worth of
-        quantisation noise. eac3to reads 24-bit natively (it reports "24 bits"
-        on the way in) and mixes at 64-bit internally.
-
-        Asserted as an adjacent (flag, value) pair rather than mere membership:
-        a bare `"pcm_s24le" in captured` would also pass if the string only
-        turned up in, say, an input path.
-        """
         _rc, captured = self._run(input_name="audio.m4a")
         assert ("-c:a", "pcm_s24le") in pairwise(captured)
 
     def test_ffmpeg_to_wav_does_not_downmix(self) -> None:
-        """Standing guard on a contract this function has always honoured: it
-        DECODES only. The downmix belongs to eac3to (-downStereo / -down6) and
-        its matrix is the one furnace ships -- an -ac here would silently
-        substitute ffmpeg's, which is exactly the regression the AAC routing
-        change must not tempt anyone into.
-        """
         _rc, captured = self._run(input_name="audio.m4a")
         assert "-ac" not in captured
 
@@ -514,7 +463,6 @@ class TestFfmpegToWav:
         assert results == [False]
 
     def test_ffmpeg_to_wav_without_on_progress_skips_callback(self) -> None:
-        """Progress block is parsed but callback skipped when on_progress is None."""
         def fake_run_tool(
             cmd: Any,
             on_output: Any = None,
@@ -529,7 +477,6 @@ class TestFfmpegToWav:
 
         adapter = _adapter()
         with patch("furnace.adapters.ffmpeg.run_tool", side_effect=fake_run_tool):
-            # No on_progress passed — closure's `on_progress is None` branch hits.
             rc = adapter.ffmpeg_to_wav(Path("a.thd"), 1, Path("out.wav"))
         assert rc == 0
 

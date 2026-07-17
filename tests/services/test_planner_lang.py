@@ -74,7 +74,6 @@ class TestAudioLangFilter:
         assert [t.language for t in result] == ["jpn", "eng"]
 
     def test_order_follows_lang_filter(self) -> None:
-        """Tracks are sorted by lang_filter order, not source order."""
         tracks = [_audio_track("eng"), _audio_track("jpn"), _audio_track("rus")]
         planner = PlannerService(previewer=None)
         result = planner._filter_audio_tracks_by_lang(tracks, ["rus", "jpn", "eng"])
@@ -107,7 +106,6 @@ class TestSubLangFilter:
         assert [t.language for t in result] == ["rus"]
 
     def test_order_follows_lang_filter(self) -> None:
-        """Subs sorted by lang_filter order, not source order."""
         tracks = [_sub_track("eng"), _sub_track("rus"), _sub_track("jpn")]
         planner = PlannerService(previewer=None)
         result = planner._filter_sub_tracks_by_lang(tracks, ["jpn", "rus", "eng"])
@@ -189,13 +187,9 @@ def _make_movie_with_subs(
 
 
 class TestSubtitleAutoSelectFallback:
-    """When _auto_select_from_candidates returns None for subs."""
-
     def test_track_selector_called_for_ambiguous_subs(self, tmp_path: Path) -> None:
-        """Multiple subs per language -> track_selector callback is called for SUBTITLE."""
         main = tmp_path / "movie.mkv"
         main.write_bytes(b"")
-        # Two subs with same language -> ambiguity
         subs = [
             _sub_track("eng", index=3),
             _sub_track("eng", index=4),
@@ -217,7 +211,6 @@ class TestSubtitleAutoSelectFallback:
         assert len(sub_calls) == 1
 
     def test_headless_includes_all_subs_when_ambiguous(self, tmp_path: Path) -> None:
-        """Without track_selector (headless), all ambiguous subs are included."""
         main = tmp_path / "movie.mkv"
         main.write_bytes(b"")
         subs = [
@@ -228,7 +221,6 @@ class TestSubtitleAutoSelectFallback:
             s.source_file = main
 
         movie = _make_movie_with_subs(tmp_path, subs=subs)
-        # No track_selector: headless mode
         planner = PlannerService(previewer=None)
 
         plan = planner.create_plan(
@@ -242,10 +234,7 @@ class TestSubtitleAutoSelectFallback:
 
 
 class TestUndResolverIntegration:
-    """und_resolver integration: called for audio and sub tracks in _build_job."""
-
     def test_und_resolver_called_for_audio_tracks(self, tmp_path: Path) -> None:
-        """und_resolver is invoked for audio tracks with language 'und'."""
         main = tmp_path / "movie.mkv"
         main.write_bytes(b"")
         audio = [
@@ -277,7 +266,6 @@ class TestUndResolverIntegration:
         assert plan.jobs[0].audio[0].language == "eng"
 
     def test_und_resolver_called_for_sub_tracks(self, tmp_path: Path) -> None:
-        """und_resolver is invoked for subtitle tracks with language 'und'."""
         main = tmp_path / "movie.mkv"
         main.write_bytes(b"")
         audio = [
@@ -313,7 +301,6 @@ class TestUndResolverIntegration:
         assert plan.jobs[0].subtitles[0].language == "eng"
 
     def test_und_resolver_single_lang_auto_assigns_in_build_job(self, tmp_path: Path) -> None:
-        """Single lang in filter -> und auto-assigned without calling resolver callback."""
         main = tmp_path / "movie.mkv"
         main.write_bytes(b"")
         audio = [
@@ -341,6 +328,5 @@ class TestUndResolverIntegration:
             sub_lang_filter=["eng"],
         )
 
-        # Single lang auto-assigns, so callback should NOT be called
         und_resolver.assert_not_called()
         assert plan.jobs[0].audio[0].language == "eng"

@@ -1,8 +1,3 @@
-"""Planner threads a precomputed crop map into each Job's VideoParams.
-
-The planner no longer runs cropdetect itself (the prober dependency is gone);
-it just looks up ``movie.main_file`` in the supplied ``precomputed_crops`` map.
-"""
 from __future__ import annotations
 
 from pathlib import Path
@@ -46,7 +41,6 @@ def _make_movie(tmp_path: Path, name: str = "movie.mkv", *, width: int = 1920, h
 
 class TestPrecomputedCropMap:
     def test_real_crop_from_map_applied(self, tmp_path: Path) -> None:
-        """A crop entry keyed by main_file is written into VideoParams verbatim."""
         movie = _make_movie(tmp_path)
         planner = PlannerService(previewer=None)
 
@@ -63,7 +57,6 @@ class TestPrecomputedCropMap:
         assert (vp.crop.w, vp.crop.h, vp.crop.x, vp.crop.y) == (1920, 804, 0, 138)
 
     def test_crop_applied_only_to_matching_movie(self, tmp_path: Path) -> None:
-        """In a multi-movie plan, each job gets only its own file's crop."""
         movie_a = _make_movie(tmp_path, "a.mkv")
         movie_b = _make_movie(tmp_path, "b.mkv")
         planner = PlannerService(previewer=None)
@@ -79,11 +72,9 @@ class TestPrecomputedCropMap:
         crop_a = plan.jobs[0].video_params.crop
         assert crop_a is not None
         assert (crop_a.w, crop_a.h) == (1920, 816)
-        # movie_b has no entry in the map -> no crop
         assert plan.jobs[1].video_params.crop is None
 
     def test_empty_map_means_no_crop(self, tmp_path: Path) -> None:
-        """An empty crop map -> crop is None (no entry for the file)."""
         movie = _make_movie(tmp_path)
         planner = PlannerService(previewer=None)
 
@@ -97,7 +88,6 @@ class TestPrecomputedCropMap:
         assert plan.jobs[0].video_params.crop is None
 
     def test_none_map_means_no_crop(self, tmp_path: Path) -> None:
-        """precomputed_crops=None (default) -> crop is None."""
         movie = _make_movie(tmp_path)
         planner = PlannerService(previewer=None)
 

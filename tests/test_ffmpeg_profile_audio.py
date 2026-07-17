@@ -1,5 +1,3 @@
-"""Integration test for FFmpegAdapter.profile_audio_track with a synthetic WAV."""
-
 from __future__ import annotations
 
 import math
@@ -15,8 +13,6 @@ from furnace.config import ToolPaths, load_config
 
 
 def _resolve_ffmpeg_paths() -> tuple[Path, Path]:
-    """Return (ffmpeg, ffprobe) paths. Hard-fail if neither furnace.toml
-    nor PATH yields working binaries — these tools are always required."""
     try:
         cfg = load_config()
     except (FileNotFoundError, KeyError):
@@ -26,14 +22,11 @@ def _resolve_ffmpeg_paths() -> tuple[Path, Path]:
     which_ffmpeg = shutil.which("ffmpeg")
     which_ffprobe = shutil.which("ffprobe")
     if which_ffmpeg is None or which_ffprobe is None:
-        raise RuntimeError(
-            "ffmpeg/ffprobe not found via furnace.toml or PATH; these are required"
-        )
+        raise RuntimeError("ffmpeg/ffprobe not found via furnace.toml or PATH; these are required")
     return Path(which_ffmpeg), Path(which_ffprobe)
 
 
 def _tool_paths(ffmpeg: Path, ffprobe: Path) -> ToolPaths:
-    """A ToolPaths carrying the two binaries under test; the rest are unused here."""
     unused = Path("unused")
     return ToolPaths(
         ffmpeg=ffmpeg,
@@ -50,10 +43,7 @@ def _tool_paths(ffmpeg: Path, ffprobe: Path) -> ToolPaths:
     )
 
 
-def test_resolve_ffmpeg_paths_prefers_config(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """furnace.toml wins over PATH when its binaries exist on disk."""
+def test_resolve_ffmpeg_paths_prefers_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     ffmpeg = tmp_path / "ffmpeg"
     ffprobe = tmp_path / "ffprobe"
     ffmpeg.touch()
@@ -62,7 +52,7 @@ def test_resolve_ffmpeg_paths_prefers_config(
         "tests.test_ffmpeg_profile_audio.load_config",
         lambda: _tool_paths(ffmpeg, ffprobe),
     )
-    monkeypatch.setattr(shutil, "which", lambda _name: None)  # PATH must not be consulted
+    monkeypatch.setattr(shutil, "which", lambda _name: None)
 
     assert _resolve_ffmpeg_paths() == (ffmpeg, ffprobe)
 
@@ -70,7 +60,6 @@ def test_resolve_ffmpeg_paths_prefers_config(
 def test_resolve_ffmpeg_paths_hard_fails_when_tools_are_absent(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """No usable config and nothing on PATH -> loud failure, never a silent skip."""
 
     def _no_config() -> ToolPaths:
         raise FileNotFoundError("no furnace.toml")
@@ -83,20 +72,13 @@ def test_resolve_ffmpeg_paths_hard_fails_when_tools_are_absent(
 
 
 def _write_synthetic_5_1_wav(path: Path, seconds: float = 2.0, sample_rate: int = 48000) -> None:
-    """Write a tiny 5.1 WAV where only the center channel carries a 1 kHz tone.
-
-    Other channels are digital silence. Exactly the pattern our detector
-    should flag as a fake upmix.
-    """
     n = int(seconds * sample_rate)
-    # WAV channel order for 6-channel: L, R, C, LFE, Ls, Rs (standard extensible)
     with wave.open(str(path), "wb") as w:
         w.setnchannels(6)
-        w.setsampwidth(2)  # 16-bit
+        w.setsampwidth(2)
         w.setframerate(sample_rate)
         frames = bytearray()
         for i in range(n):
-            # Center channel: 1 kHz tone at -12 dBFS
             tone = int(0.25 * 32767 * math.sin(2 * math.pi * 1000 * i / sample_rate))
             samples = [0, 0, tone, 0, 0, 0]
             for s in samples:
@@ -122,14 +104,11 @@ def test_profile_audio_track_5_1_synthetic_wav(tmp_path: Path, adapter: FFmpegAd
     )
 
     assert metrics.channels == 6
-    # Center has the tone → not silent
     assert metrics.rms_c is not None
     assert metrics.rms_c > -30, f"expected loud center, got {metrics.rms_c}"
-    # Surrounds are digital zero → clamped at -120 dB floor
     assert metrics.rms_ls is not None
     assert metrics.rms_ls < -80, f"expected silent Ls, got {metrics.rms_ls}"
     assert metrics.rms_rs is not None
     assert metrics.rms_rs < -80
-    # LFE is silent
     assert metrics.rms_lfe is not None
     assert metrics.rms_lfe < -80

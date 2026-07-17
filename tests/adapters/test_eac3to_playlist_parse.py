@@ -25,10 +25,7 @@ class TestParsePlaylistOutput:
         assert result[2].duration_s == pytest.approx(1870.0)
 
     def test_parse_dvd_playlists(self) -> None:
-        output = (
-            "1) 01 - Title 1, 1:32:05\n"
-            "2) 02 - Title 2, 0:05:30\n"
-        )
+        output = "1) 01 - Title 1, 1:32:05\n2) 02 - Title 2, 0:05:30\n"
         result = Eac3toAdapter._parse_playlist_output(output)
         assert len(result) == 2
         assert result[0].number == 1
@@ -41,11 +38,7 @@ class TestParsePlaylistOutput:
         assert result == []
 
     def test_parse_lines_without_playlist_numbers(self) -> None:
-        output = (
-            "M2TS, 1 video track\n"
-            "\n"
-            "1) 00800.mpls, 1:00:00\n"
-        )
+        output = "M2TS, 1 video track\n\n1) 00800.mpls, 1:00:00\n"
         result = Eac3toAdapter._parse_playlist_output(output)
         assert len(result) == 1
 

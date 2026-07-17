@@ -1,9 +1,3 @@
-"""Test double for ``furnace.core.ports.PlanReporter``.
-
-Captures every method call as ``Event(method, args, kwargs)`` in a list,
-in invocation order. Use to assert event sequences from services.
-"""
-
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -20,28 +14,18 @@ class Event:
 
 
 class RecordingPlanReporter:
-    """Records every method call as an ``Event``. Returns ``None`` from all calls.
-
-    Every ``PlanReporter`` method is defined explicitly so that ``mypy
-    --strict`` sees the attributes and ``inspect.getattr_static`` (used by
-    CPython 3.13's runtime ``isinstance`` against ``@runtime_checkable``
-    Protocols) finds them on the class.
-    """
-
     def __init__(self) -> None:
         self.events: list[Event] = []
 
     def _record(self, name: str, args: tuple[object, ...], kwargs: dict[str, object]) -> None:
         self.events.append(Event(name, args, tuple(sorted(kwargs.items()))))
 
-    # Detect
     def detect_disc(self, disc_type: DiscType, rel_path: str) -> None:
         self._record("detect_disc", (disc_type, rel_path), {})
 
     def detect_disc_titles_done(self, n_titles: int) -> None:
         self._record("detect_disc_titles_done", (n_titles,), {})
 
-    # Demux
     def demux_disc_cached(self, label: str) -> None:
         self._record("demux_disc_cached", (label,), {})
 
@@ -63,14 +47,12 @@ class RecordingPlanReporter:
     def demux_title_failed(self, reason: str) -> None:
         self._record("demux_title_failed", (reason,), {})
 
-    # Scan
     def scan_file(self, name: str) -> None:
         self._record("scan_file", (name,), {})
 
     def scan_skipped(self, name: str, reason: str) -> None:
         self._record("scan_skipped", (name, reason), {})
 
-    # Analyze
     def analyze_batch_start(self, total: int) -> None:
         self._record("analyze_batch_start", (total,), {})
 
@@ -83,21 +65,18 @@ class RecordingPlanReporter:
     def analyze_batch_finish(self) -> None:
         self._record("analyze_batch_finish", (), {})
 
-    # Plan
     def plan_file_start(self, name: str) -> None:
         self._record("plan_file_start", (name,), {})
 
     def plan_file_done(self, summary: str) -> None:
         self._record("plan_file_done", (summary,), {})
 
-    # Final
     def plan_saved(self, path: Path, n_jobs: int) -> None:
         self._record("plan_saved", (path, n_jobs), {})
 
     def interrupted(self) -> None:
         self._record("interrupted", (), {})
 
-    # Lifecycle
     def pause(self) -> None:
         self._record("pause", (), {})
 

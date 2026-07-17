@@ -8,7 +8,7 @@ from tests.fakes.recording_reporter import RecordingPlanReporter
 def test_scan_emits_one_scan_file_per_video(tmp_path: Path) -> None:
     (tmp_path / "Inception.mkv").touch()
     (tmp_path / "Tenet.mkv").touch()
-    (tmp_path / "notes.txt").touch()  # not a video, must be skipped
+    (tmp_path / "notes.txt").touch()
 
     reporter = RecordingPlanReporter()
     scanner = Scanner(prober=MagicMock(), reporter=reporter)
@@ -22,9 +22,9 @@ def test_scan_emits_one_scan_file_per_video(tmp_path: Path) -> None:
 
 def test_scan_without_reporter_is_silent(tmp_path: Path) -> None:
     (tmp_path / "x.mkv").touch()
-    scanner = Scanner(prober=MagicMock())  # no reporter
+    scanner = Scanner(prober=MagicMock())
     results = scanner.scan(tmp_path, tmp_path / "out")
-    assert len(results) == 1  # still works
+    assert len(results) == 1
 
 
 def test_scan_single_file_emits_scan_file(tmp_path: Path) -> None:
@@ -45,7 +45,7 @@ def test_scan_single_file_without_reporter_is_silent(tmp_path: Path) -> None:
     video = tmp_path / "Movie.mkv"
     video.touch()
 
-    scanner = Scanner(prober=MagicMock())  # no reporter
+    scanner = Scanner(prober=MagicMock())
     results = scanner.scan(video, tmp_path / "out")
 
     assert len(results) == 1

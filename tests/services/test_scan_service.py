@@ -10,10 +10,6 @@ from furnace.core.outdated import EncoderFamily, Fix, Severity
 from furnace.core.scan import AudioTrackSummary, ScanRow, SubtitleTrackSummary, VideoSummary
 from furnace.services.scan_service import ScanService
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
 
 def make_probe(
     *,
@@ -27,7 +23,6 @@ def make_probe(
     audios: tuple[tuple[str | None, str, int | None], ...] = (),
     subs: tuple[tuple[str | None, str], ...] = (),
 ) -> dict[str, Any]:
-    """Build a minimal ffprobe-style JSON payload."""
     streams: list[dict[str, Any]] = []
     if video is not None:
         vs: dict[str, Any] = {"codec_type": "video", "codec_name": video}
@@ -64,11 +59,6 @@ def make_service(probe_map: dict[Path, dict[str, Any]] | None = None) -> tuple[S
     if probe_map is not None:
         prober.probe.side_effect = lambda p: probe_map[p]
     return ScanService(prober=prober), prober
-
-
-# ---------------------------------------------------------------------------
-# Row building
-# ---------------------------------------------------------------------------
 
 
 class TestRowBuilding:
@@ -115,7 +105,6 @@ class TestRowBuilding:
         assert rows[0].video.codec == "h264"
 
     def test_lowercase_encoder_tag_is_parsed(self, tmp_path: Path) -> None:
-        """A Furnace tag under the lowercase ``encoder`` key is still detected."""
         movie = tmp_path / "movie.mkv"
         movie.touch()
         probe = {
@@ -129,7 +118,6 @@ class TestRowBuilding:
         assert rows[0].furnace_version == (1, 19, 3)
 
     def test_uppercase_encoder_takes_precedence_over_lowercase(self, tmp_path: Path) -> None:
-        """When both keys exist, the uppercase ``ENCODER`` value wins."""
         movie = tmp_path / "movie.mkv"
         movie.touch()
         probe = {
@@ -151,11 +139,6 @@ class TestRowBuilding:
         rows, _ = service.scan(movie)
 
         assert rows[0].video == VideoSummary(None, None, None)
-
-
-# ---------------------------------------------------------------------------
-# Discovery: recursion + single-file root + ordering
-# ---------------------------------------------------------------------------
 
 
 class TestDiscovery:
@@ -190,7 +173,6 @@ class TestDiscovery:
 
         rows, _ = service.scan(tmp_path)
 
-        # sorted(rglob) → "Action/a.mkv" sorts before "b.mp4"
         assert [r.path for r in rows] == [a, b]
 
     def test_non_video_files_skipped_in_walk(self, tmp_path: Path) -> None:
@@ -205,7 +187,6 @@ class TestDiscovery:
         assert [r.path for r in rows] == [movie]
 
     def test_directory_entries_skipped(self, tmp_path: Path) -> None:
-        # A sub-directory whose name has a video extension must not be probed.
         weird_dir = tmp_path / "season.mkv"
         weird_dir.mkdir()
         movie = tmp_path / "movie.mkv"
@@ -227,11 +208,6 @@ class TestDiscovery:
         rows, _ = service.scan(tmp_path)
 
         assert [r.path for r in rows] == [movie]
-
-
-# ---------------------------------------------------------------------------
-# Filtering
-# ---------------------------------------------------------------------------
 
 
 class TestFiltering:
@@ -275,14 +251,12 @@ class TestFiltering:
         assert [r.path.name for r in rows] == ["a_plain.mkv", "b_old.mkv"]
 
     def test_total_counts_all_files_regardless_of_filter(self, tmp_path: Path) -> None:
-        """``total`` (M) is every discovered file even when a filter trims rows (N)."""
         service = self._three_file_service(tmp_path)
         rows, total = service.scan(tmp_path, not_encoded=True)
         assert len(rows) == 1
         assert total == 3
 
     def test_total_includes_unreadable_files(self, tmp_path: Path) -> None:
-        """A probe failure still counts toward the discovered total."""
         good = tmp_path / "a_good.mkv"
         bad = tmp_path / "b_bad.mkv"
         good.touch()
@@ -301,11 +275,6 @@ class TestFiltering:
 
         assert total == 2
         assert len(rows) == 2
-
-
-# ---------------------------------------------------------------------------
-# Unreadable handling
-# ---------------------------------------------------------------------------
 
 
 class TestUnreadable:
@@ -344,17 +313,10 @@ class TestUnreadable:
         prober.probe.side_effect = probe
         service = ScanService(prober=prober)
 
-        # encoded filter would normally exclude an unversioned row, but the
-        # unreadable row must still appear.
         rows, _ = service.scan(tmp_path, encoded=True)
 
         assert [r.path.name for r in rows] == ["a_good.mkv", "b_bad.mkv"]
         assert rows[1].unreadable is True
-
-
-# ---------------------------------------------------------------------------
-# Encoder family (ENCODER_SETTINGS)
-# ---------------------------------------------------------------------------
 
 
 class TestEncoderFamily:
@@ -410,11 +372,6 @@ class TestEncoderFamily:
         assert rows[0].encoder_family is EncoderFamily.AV1_NVENC
 
 
-# ---------------------------------------------------------------------------
-# --outdated filtering
-# ---------------------------------------------------------------------------
-
-
 class TestOutdated:
     def test_keeps_only_flagged_files(self, tmp_path: Path) -> None:
         clean = tmp_path / "a_clean.mkv"
@@ -423,7 +380,6 @@ class TestOutdated:
         for p in (clean, foreign, old):
             p.touch()
         probe_map = {
-            # Current Furnace AV1, HD, matrix present, stereo → no defect.
             clean: make_probe(
                 encoder="Furnace v2.9.0",
                 encoder_settings="av1_nvenc / main",
@@ -432,9 +388,7 @@ class TestOutdated:
                 color_space="bt709",
                 audios=(("eng", "aac", 2),),
             ),
-            # Non-Furnace file → FOREIGN defect.
             foreign: make_probe(encoder="Lavf60", video="h264", height=1080, color_space="bt709"),
-            # Old NVENC AV1 → crop 4px / fps drift.
             old: make_probe(
                 encoder="Furnace v2.1.0",
                 encoder_settings="av1_nvenc / main",
@@ -474,7 +428,6 @@ class TestOutdated:
         def probe(p: Path) -> dict[str, Any]:
             if p == bad:
                 raise OSError("boom")
-            # A current, clean Furnace file that would otherwise be dropped.
             return make_probe(
                 encoder="Furnace v2.9.0",
                 encoder_settings="av1_nvenc / main",
@@ -497,8 +450,6 @@ class TestOutdated:
     def test_stacked_defects_sorted_worst_first(self, tmp_path: Path) -> None:
         movie = tmp_path / "old.mkv"
         movie.touch()
-        # Early NVENC AV1, NTSC SD, missing matrix → fps drift + crop 4px +
-        # grain loss + color tags.
         probe = make_probe(
             encoder="Furnace v2.0.5",
             encoder_settings="av1_nvenc / main",

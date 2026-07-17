@@ -27,7 +27,6 @@ def _write_config(
     tools_override: dict[str, str] | None = None,
     omit_keys: tuple[str, ...] = (),
 ) -> Path:
-    """Write a valid furnace.toml with real files backing each tool path."""
     tool_dir = tmp_path / "tools"
     tool_dir.mkdir(exist_ok=True)
     paths: dict[str, str] = {}
@@ -47,9 +46,6 @@ def _write_config(
     return config
 
 
-# ── 1. Valid explicit path ─────────────────────────────────────────────
-
-
 class TestExplicitPath:
     def test_valid_config_returns_tool_paths(self, tmp_path: Path) -> None:
         config = _write_config(tmp_path)
@@ -64,18 +60,12 @@ class TestExplicitPath:
             load_config(missing)
 
 
-# ── 2. Missing mandatory key ──────────────────────────────────────────
-
-
 class TestMissingMandatoryKey:
     @pytest.mark.parametrize("omit", _MANDATORY)
     def test_missing_key_raises(self, tmp_path: Path, omit: str) -> None:
         config = _write_config(tmp_path, omit_keys=(omit,))
         with pytest.raises(KeyError, match=f"\\[tools\\]\\.{omit}"):
             load_config(config)
-
-
-# ── 3. Tool path doesn't exist on disk ───────────────────────────────
 
 
 class TestToolPathMissing:
@@ -86,54 +76,31 @@ class TestToolPathMissing:
             load_config(config)
 
 
-# ── 4. CWD search ────────────────────────────────────────────────────
-
-
 class TestCwdSearch:
-    def test_finds_config_in_cwd(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_finds_config_in_cwd(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         _write_config(tmp_path)
         monkeypatch.chdir(tmp_path)
-        # Remove APPDATA to avoid interference
         monkeypatch.delenv("APPDATA", raising=False)
         tp = load_config()
         assert isinstance(tp, ToolPaths)
         assert tp.ffmpeg == tmp_path / "tools" / "ffmpeg.exe"
 
 
-# ── 5. Not found anywhere ────────────────────────────────────────────
-
-
 class TestNotFoundAnywhere:
-    def test_no_config_raises(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        # CWD has no furnace.toml
+    def test_no_config_raises(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.chdir(tmp_path)
         monkeypatch.delenv("APPDATA", raising=False)
-        # Redirect project-root fallback to an empty directory so the real
-        # furnace.toml in the repo checkout is not picked up.
         fake_pkg = tmp_path / "fake_pkg"
         fake_pkg.mkdir()
-        monkeypatch.setattr(
-            furnace.config, "__file__", str(fake_pkg / "config.py")
-        )
+        monkeypatch.setattr(furnace.config, "__file__", str(fake_pkg / "config.py"))
         with pytest.raises(FileNotFoundError, match=r"No furnace\.toml config found"):
             load_config()
-
-
-# ── 6. Optional dovi_tool ────────────────────────────────────────────
 
 
 class TestDoviTool:
     def test_present(self, tmp_path: Path) -> None:
         dovi = tmp_path / "tools" / "dovi_tool.exe"
-        # _write_config creates the tools dir & touches mandatory files
-        config = _write_config(
-            tmp_path, tools_override={"dovi_tool": str(dovi)}
-        )
-        # Need the file to exist for validation
+        config = _write_config(tmp_path, tools_override={"dovi_tool": str(dovi)})
         dovi.touch()
         tp = load_config(config)
         assert tp.dovi_tool == dovi
@@ -155,7 +122,8 @@ class TestVapourSynthPlugins:
         bs = tmp_path / "tools" / "BestSource.dll"
         vs = tmp_path / "tools" / "libvship.dll"
         config = _write_config(
-            tmp_path, tools_override={"bestsource": str(bs), "vship": str(vs)},
+            tmp_path,
+            tools_override={"bestsource": str(bs), "vship": str(vs)},
         )
         bs.touch()
         vs.touch()
@@ -176,15 +144,8 @@ class TestVapourSynthPlugins:
             load_config(config)
 
 
-# ── 7. APPDATA fallback ──────────────────────────────────────────────
-
-
 class TestAppdataFallback:
-    def test_finds_config_in_appdata(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        # Write tools + config in a sub-directory so project-root
-        # fallback does not accidentally find furnace.toml.
+    def test_finds_config_in_appdata(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         data_dir = tmp_path / "data"
         data_dir.mkdir()
         config = _write_config(data_dir)
@@ -193,16 +154,12 @@ class TestAppdataFallback:
         appdata_dir.mkdir(parents=True)
         (appdata_dir / "furnace.toml").write_bytes(config.read_bytes())
 
-        # CWD with no config
         empty_dir = tmp_path / "empty"
         empty_dir.mkdir()
         monkeypatch.chdir(empty_dir)
-        # Redirect project-root fallback to a directory without furnace.toml
         fake_root = tmp_path / "fake_root" / "pkg"
         fake_root.mkdir(parents=True)
-        monkeypatch.setattr(
-            furnace.config, "__file__", str(fake_root / "config.py")
-        )
+        monkeypatch.setattr(furnace.config, "__file__", str(fake_root / "config.py"))
         monkeypatch.setenv("APPDATA", str(tmp_path / "appdata"))
         tp = load_config()
         assert isinstance(tp, ToolPaths)

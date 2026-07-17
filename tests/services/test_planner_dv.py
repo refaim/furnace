@@ -14,11 +14,15 @@ from tests.conftest import make_video_info
 
 def _make_video(hdr: HdrMetadata | None = None) -> VideoInfo:
     return make_video_info(
-        codec_name="hevc", width=3840, height=2160,
-        fps_num=24000, fps_den=1001,
+        codec_name="hevc",
+        width=3840,
+        height=2160,
+        fps_num=24000,
+        fps_den=1001,
         duration_s=7200.0,
         color_matrix_raw="bt2020nc",
-        color_transfer="smpte2084", color_primaries="bt2020",
+        color_transfer="smpte2084",
+        color_primaries="bt2020",
         pix_fmt="yuv420p10le",
         hdr=hdr if hdr is not None else HdrMetadata(),
         bitrate=80_000_000,
@@ -32,33 +36,51 @@ class TestPlannerDvMode:
         video = _make_video(hdr=hdr)
         planner = PlannerService(previewer=None)
         vp = planner._build_video_params(
-            video, crop=None, source_file=video.source_file, sar_overrides=set(), grain_overrides={},
+            video,
+            crop=None,
+            source_file=video.source_file,
+            sar_overrides=set(),
+            grain_overrides={},
         )
         assert vp.dv_mode is None
 
     def test_dv_profile8_mode_copy(self) -> None:
         _md = "G(0.265,0.690)B(0.150,0.060)R(0.680,0.320)WP(0.3127,0.3290)L(1000,0.005)"
         hdr = HdrMetadata(
-            mastering_display=_md, content_light="MaxCLL=1000,MaxFALL=400",
-            is_dolby_vision=True, dv_profile=8, dv_bl_compatibility=DvBlCompatibility.HDR10,
+            mastering_display=_md,
+            content_light="MaxCLL=1000,MaxFALL=400",
+            is_dolby_vision=True,
+            dv_profile=8,
+            dv_bl_compatibility=DvBlCompatibility.HDR10,
         )
         video = _make_video(hdr=hdr)
         planner = PlannerService(previewer=None)
         vp = planner._build_video_params(
-            video, crop=None, source_file=video.source_file, sar_overrides=set(), grain_overrides={},
+            video,
+            crop=None,
+            source_file=video.source_file,
+            sar_overrides=set(),
+            grain_overrides={},
         )
         assert vp.dv_mode == DvMode.COPY
 
     def test_dv_profile7_mode_to_8_1(self) -> None:
         _md = "G(0.265,0.690)B(0.150,0.060)R(0.680,0.320)WP(0.3127,0.3290)L(1000,0.005)"
         hdr = HdrMetadata(
-            mastering_display=_md, content_light="MaxCLL=1000,MaxFALL=400",
-            is_dolby_vision=True, dv_profile=7, dv_bl_compatibility=DvBlCompatibility.HDR10,
+            mastering_display=_md,
+            content_light="MaxCLL=1000,MaxFALL=400",
+            is_dolby_vision=True,
+            dv_profile=7,
+            dv_bl_compatibility=DvBlCompatibility.HDR10,
         )
         video = _make_video(hdr=hdr)
         planner = PlannerService(previewer=None)
         vp = planner._build_video_params(
-            video, crop=None, source_file=video.source_file, sar_overrides=set(), grain_overrides={},
+            video,
+            crop=None,
+            source_file=video.source_file,
+            sar_overrides=set(),
+            grain_overrides={},
         )
         assert vp.dv_mode == DvMode.TO_8_1
 
@@ -67,7 +89,11 @@ class TestPlannerDvMode:
         video = _make_video(hdr=hdr)
         planner = PlannerService(previewer=None)
         vp = planner._build_video_params(
-            video, crop=None, source_file=video.source_file, sar_overrides=set(), grain_overrides={},
+            video,
+            crop=None,
+            source_file=video.source_file,
+            sar_overrides=set(),
+            grain_overrides={},
         )
         assert vp.dv_mode == DvMode.COPY
 
@@ -77,5 +103,9 @@ class TestPlannerDvMode:
         planner = PlannerService(previewer=None)
         with pytest.raises(ValueError, match="HDR10\\+"):
             planner._build_video_params(
-                video, crop=None, source_file=video.source_file, sar_overrides=set(), grain_overrides={},
+                video,
+                crop=None,
+                source_file=video.source_file,
+                sar_overrides=set(),
+                grain_overrides={},
             )

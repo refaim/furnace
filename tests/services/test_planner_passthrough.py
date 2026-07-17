@@ -1,15 +1,3 @@
-"""Tests for planner passthrough behaviour and fallback.
-
-The ``--copy-video`` flow asks the planner to copy a source video stream
-verbatim instead of re-encoding it. Eligibility is decided per source video by
-``furnace.core.detect.classify_passthrough`` (unit-tested in core); these tests
-cover how the planner *acts* on that verdict end-to-end:
-
-- progressive, non-DV-P7-FEL, non-HDR10+ -> passthrough (crop forced off)
-- interlaced -> fall back to encode (deinterlace on)
-- Dolby Vision Profile 7 FEL -> fall back to encode (dv_mode TO_8_1)
-- HDR10+ -> rejected with ValueError (unchanged)
-"""
 from __future__ import annotations
 
 from pathlib import Path
@@ -61,7 +49,6 @@ def _make_video(
 def _make_movie(tmp_path: Path, video: VideoInfo) -> Movie:
     main = tmp_path / "movie.mkv"
     main.write_bytes(b"")
-    # rebind the video's source_file to the on-disk main file
     video.source_file = main
     return make_movie(
         main_file=main,
@@ -93,8 +80,6 @@ def _dv_hdr(profile: int) -> HdrMetadata:
 
 
 class TestBuildVideoParamsPassthrough:
-    """`passthrough=True` makes crop/deinterlace inert, keeps color/HDR/SAR."""
-
     def test_passthrough_sets_flag_and_inert_fields(self) -> None:
         planner = PlannerService(previewer=None)
         video = _make_video(hdr=_dv_hdr(8))
@@ -109,12 +94,10 @@ class TestBuildVideoParamsPassthrough:
         assert vp.passthrough is True
         assert vp.crop is None
         assert vp.deinterlace is False
-        # color/HDR/SAR still populated for container flags
         assert vp.color_transfer == "smpte2084"
         assert vp.hdr is not None
         assert vp.sar_num == 4
         assert vp.sar_den == 3
-        # DV P8 still maps to COPY
         assert vp.dv_mode == DvMode.COPY
 
     def test_passthrough_forces_deinterlace_false_even_if_interlaced(self) -> None:
@@ -145,8 +128,6 @@ class TestBuildVideoParamsPassthrough:
 
 
 class TestCreatePlanCopyVideo:
-    """End-to-end through create_plan with the copy_video flag."""
-
     def test_progressive_passthrough(self, tmp_path: Path) -> None:
         movie = _make_movie(tmp_path, _make_video())
         planner = PlannerService(previewer=None)
@@ -163,7 +144,6 @@ class TestCreatePlanCopyVideo:
         assert vp.crop is None
 
     def test_passthrough_forces_crop_none_even_with_precomputed_crop(self, tmp_path: Path) -> None:
-        """A passthrough job drops any crop the map supplies for its file."""
         movie = _make_movie(tmp_path, _make_video())
         planner = PlannerService(previewer=None)
 
@@ -187,7 +167,6 @@ class TestCreatePlanCopyVideo:
             [(movie, tmp_path / "out.mkv")],
             audio_lang_filter=["eng"],
             sub_lang_filter=["eng"],
-            # interlaced is an encode, so a precomputed crop IS honoured
             precomputed_crops={movie.main_file: CropRect(w=3840, h=1600, x=0, y=280)},
             copy_video=True,
         )

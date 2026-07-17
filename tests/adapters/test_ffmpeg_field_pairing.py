@@ -1,10 +1,3 @@
-"""Tests for ``FFmpegAdapter.sample_field_pairing`` (field-separated probing).
-
-The adapter counts decoded frames against demuxed packets over one window via
-``ffprobe -count_frames -count_packets``; the pure ratio math lives in
-``core.detect``.
-"""
-
 from __future__ import annotations
 
 import json
@@ -37,8 +30,6 @@ def test_sample_field_pairing_returns_frame_and_packet_counts() -> None:
 
 
 def test_sample_field_pairing_command_shape() -> None:
-    """One window from the start: a seek would strand packets before the first
-    keyframe with no decoded frame to pair them against and skew the ratio."""
     adapter = FFmpegAdapter(Path("ffmpeg"), Path("ffprobe"))
 
     with patch(
@@ -89,7 +80,6 @@ def test_sample_field_pairing_no_streams_is_empty() -> None:
 
 
 def test_sample_field_pairing_missing_keys_is_empty() -> None:
-    """ffprobe omits the counters when it cannot decode the stream at all."""
     adapter = FFmpegAdapter(Path("ffmpeg"), Path("ffprobe"))
     payload: dict[str, Any] = {"streams": [{}]}
 
@@ -101,7 +91,6 @@ def test_sample_field_pairing_missing_keys_is_empty() -> None:
 
 
 def test_sample_field_pairing_non_integer_counter_is_empty() -> None:
-    """ffprobe reports an unknown counter as "N/A", not a number."""
     adapter = FFmpegAdapter(Path("ffmpeg"), Path("ffprobe"))
 
     with patch(

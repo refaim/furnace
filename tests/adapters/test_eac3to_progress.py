@@ -30,7 +30,6 @@ class TestParseEac3toProgressLine:
         assert _parse_eac3to_progress_line("process: 50") is None
 
     def test_analyze_not_captured(self) -> None:
-        # Only `process:` is captured; executor handles phase transitions explicitly
         assert _parse_eac3to_progress_line("analyze: 25%") is None
 
     def test_plain_text(self) -> None:
@@ -62,18 +61,15 @@ class TestExtForTrack:
         assert _ext_for_track("PGS subtitles") == ".sup"
 
     def test_dts_hd_master(self) -> None:
-        # "dts-hd" starts with "dts" in the ordered map, so matches ".dts" first
         assert _ext_for_track("DTS-HD Master Audio, [eng], 5.1 channels") == ".dts"
 
     def test_chapters(self) -> None:
         assert _ext_for_track("Chapters, 5 chapters") == ".txt"
 
     def test_pgs_not_at_start(self) -> None:
-        """PGS in middle of description (not matching map key at start)."""
         assert _ext_for_track("Subtitle PGS, [eng]") == ".sup"
 
     def test_chapters_not_at_start(self) -> None:
-        """Chapters in middle of description."""
         assert _ext_for_track("Some chapters data") == ".txt"
 
     def test_ac3(self) -> None:
@@ -98,7 +94,7 @@ class TestParseTrackListing:
         assert tracks[0].extension == ".mkv"
         assert tracks[0].language is None
         assert tracks[1].number == 2
-        assert tracks[1].extension == ".dts"  # "dts" matches first in ordered map
+        assert tracks[1].extension == ".dts"
         assert tracks[1].language == "eng"
         assert tracks[2].number == 3
         assert tracks[2].extension == ".ac3"
@@ -114,11 +110,7 @@ class TestParseTrackListing:
         assert Eac3toAdapter._parse_track_listing("") == []
 
     def test_non_matching_lines_skipped(self) -> None:
-        output = (
-            "M2TS, 1 video track\n"
-            "  duration: 1:23:45\n"
-            "3: AC3, [eng], 5.1 channels\n"
-        )
+        output = "M2TS, 1 video track\n  duration: 1:23:45\n3: AC3, [eng], 5.1 channels\n"
         tracks = Eac3toAdapter._parse_track_listing(output)
         assert len(tracks) == 1
         assert tracks[0].number == 3
@@ -176,7 +168,6 @@ class TestDenormalize:
         assert "+50ms" in captured
 
     def test_denormalize_progress(self) -> None:
-        """Progress callback is wired through _run."""
         samples: list[ProgressSample] = []
 
         def fake_run_tool(
@@ -195,7 +186,6 @@ class TestDenormalize:
         assert len(samples) == 1
 
     def test_denormalize_analyze_line_suppressed(self) -> None:
-        """analyze: lines are suppressed (return True) but don't emit samples."""
         samples: list[ProgressSample] = []
         progress_returns: list[bool] = []
 
@@ -212,12 +202,10 @@ class TestDenormalize:
         adapter = Eac3toAdapter(Path("eac3to.exe"))
         with patch("furnace.adapters.eac3to.run_tool", side_effect=fake_run_tool):
             adapter.denormalize(Path("/src/a.ac3"), Path("/out/a.ac3"), delay_ms=0, on_progress=samples.append)
-        # analyze lines are consumed (return True) but no sample emitted
         assert progress_returns == [True]
         assert len(samples) == 0
 
     def test_non_progress_line_not_consumed(self) -> None:
-        """Plain text lines are not consumed by the progress closure."""
         progress_returns: list[bool] = []
 
         def fake_run_tool(

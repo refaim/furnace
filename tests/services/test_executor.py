@@ -1,10 +1,3 @@
-"""Comprehensive tests for furnace/services/executor.py.
-
-Covers per-step methods (_process_audio_track, _process_subtitle_track,
-_extract_chapters_file, _set_adapters_log_dir, _make_progress_callback,
-DoviProcessor in constructor) and full integration tests (_run_pipeline,
-run, graceful_shutdown).
-"""
 from __future__ import annotations
 
 from pathlib import Path
@@ -34,16 +27,9 @@ from tests.conftest import (
     make_video_params,
 )
 
-# ---------------------------------------------------------------------------
-# Shared fixture
-# ---------------------------------------------------------------------------
 
 @pytest.fixture
 def executor_with_mocks() -> tuple[Executor, SimpleNamespace]:
-    """Construct Executor with all adapter ports mocked.
-
-    Returns (executor, mocks) namespace.
-    """
     mocks = SimpleNamespace(
         encoder=MagicMock(),
         audio_extractor=MagicMock(),
@@ -82,7 +68,6 @@ def executor_with_mocks() -> tuple[Executor, SimpleNamespace]:
 
 
 def _minimal_job(**kwargs: Any) -> Any:
-    """Build a Job with sane defaults suitable for executor tests."""
     defaults: dict[str, Any] = {
         "job_id": "test-job",
         "audio": [],
@@ -95,14 +80,7 @@ def _minimal_job(**kwargs: Any) -> Any:
     return make_job(**defaults)
 
 
-# =========================================================================
-# Task 14 — Per-Step Tests
-# =========================================================================
-
-
 class TestProcessAudioTrackCopy:
-    """Test 1: AudioAction.COPY branch."""
-
     def test_copy_success_returns_path(
         self,
         executor_with_mocks: tuple[Executor, SimpleNamespace],
@@ -135,8 +113,6 @@ class TestProcessAudioTrackCopy:
 
 
 class TestProcessAudioTrackDenorm:
-    """Test 2: AudioAction.DENORM branch."""
-
     def test_denorm_success(
         self,
         executor_with_mocks: tuple[Executor, SimpleNamespace],
@@ -154,7 +130,7 @@ class TestProcessAudioTrackDenorm:
         mocks.audio_extractor.extract_track.assert_called_once()
         mocks.audio_decoder.denormalize.assert_called_once()
         denorm_call = mocks.audio_decoder.denormalize.call_args
-        assert denorm_call[0][2] == 500  # delay_ms positional
+        assert denorm_call[0][2] == 500
 
     def test_denorm_extract_failure(
         self,
@@ -188,8 +164,6 @@ class TestProcessAudioTrackDenorm:
 
 
 class TestProcessAudioTrackFfmpegEncode:
-    """Test 3: AudioAction.FFMPEG_ENCODE branch."""
-
     def test_ffmpeg_encode_success(
         self,
         executor_with_mocks: tuple[Executor, SimpleNamespace],
@@ -238,8 +212,6 @@ class TestProcessAudioTrackFfmpegEncode:
 
 
 class TestProcessAudioTrackDecodeEncodeNonEac3to:
-    """Test 4: DECODE_ENCODE with non-eac3to codec (e.g., 'opus')."""
-
     def test_opus_uses_ffmpeg_to_wav_then_decode_then_encode(
         self,
         executor_with_mocks: tuple[Executor, SimpleNamespace],
@@ -320,8 +292,6 @@ class TestProcessAudioTrackDecodeEncodeNonEac3to:
 
 
 class TestProcessAudioTrackUnknownAction:
-    """Unknown action raises ValueError."""
-
     def test_unknown_action_raises(
         self,
         executor_with_mocks: tuple[Executor, SimpleNamespace],
@@ -329,15 +299,12 @@ class TestProcessAudioTrackUnknownAction:
     ) -> None:
         executor, _mocks = executor_with_mocks
         instr = make_audio_instruction(action=AudioAction.COPY, stream_index=1)
-        # Monkey-patch the action to an invalid value
         object.__setattr__(instr, "action", "BOGUS")
         with pytest.raises(ValueError, match="Unknown AudioAction"):
             executor._process_audio_track(instr, tmp_path, _minimal_job())
 
 
 class TestProcessAudioTrackCodecExtensionMapping:
-    """Verify correct file extension for various codec names."""
-
     def test_unknown_codec_gets_audio_ext(
         self,
         executor_with_mocks: tuple[Executor, SimpleNamespace],
@@ -353,20 +320,12 @@ class TestProcessAudioTrackCodecExtensionMapping:
         assert result == tmp_path / "audio_5.audio"
 
 
-# ---------------------------------------------------------------------------
-# Subtitle tests
-# ---------------------------------------------------------------------------
-
-
 class TestProcessSubtitleTrackCopy:
-    """Tests 5-6: COPY satellite and container."""
-
     def test_copy_satellite_srt_returns_path_as_is(
         self,
         executor_with_mocks: tuple[Executor, SimpleNamespace],
         tmp_path: Path,
     ) -> None:
-        """Test 5: external .srt → no extraction, returned as-is."""
         executor, mocks = executor_with_mocks
         srt_path = tmp_path / "subs.srt"
         srt_path.write_text("1\n00:00:01,000 --> 00:00:02,000\nHello\n")
@@ -402,7 +361,6 @@ class TestProcessSubtitleTrackCopy:
         executor_with_mocks: tuple[Executor, SimpleNamespace],
         tmp_path: Path,
     ) -> None:
-        """Test 6: .mkv source → extract_track called."""
         executor, mocks = executor_with_mocks
         instr = make_subtitle_instruction(
             source_file="/src/movie.mkv",
@@ -432,14 +390,11 @@ class TestProcessSubtitleTrackCopy:
 
 
 class TestProcessSubtitleTrackCopyRecode:
-    """Tests 7-9: COPY_RECODE branches."""
-
     def test_recode_satellite_cp1251_to_utf8(
         self,
         executor_with_mocks: tuple[Executor, SimpleNamespace],
         tmp_path: Path,
     ) -> None:
-        """Test 7: cp1251 → UTF-8 recode."""
         executor, mocks = executor_with_mocks
         srt_path = tmp_path / "subs.srt"
         text = "Привет мир"
@@ -454,7 +409,6 @@ class TestProcessSubtitleTrackCopyRecode:
         result = executor._process_subtitle_track(instr, tmp_path, _minimal_job())
         assert result.name == "sub_2_utf8.srt"
         assert result.read_text(encoding="utf-8") == text
-        # No extract_track because it's a satellite file
         assert not mocks.audio_extractor.extract_track.called
 
     def test_recode_utf8_source_copies_as_is(
@@ -462,7 +416,6 @@ class TestProcessSubtitleTrackCopyRecode:
         executor_with_mocks: tuple[Executor, SimpleNamespace],
         tmp_path: Path,
     ) -> None:
-        """Test 8: UTF-8 source → plain copy (no decode/encode)."""
         executor, _mocks = executor_with_mocks
         srt_path = tmp_path / "subs.srt"
         srt_path.write_text("Hello world", encoding="utf-8")
@@ -481,7 +434,6 @@ class TestProcessSubtitleTrackCopyRecode:
         executor_with_mocks: tuple[Executor, SimpleNamespace],
         tmp_path: Path,
     ) -> None:
-        """source_encoding=None defaults to utf-8, so copy as-is."""
         executor, _mocks = executor_with_mocks
         srt_path = tmp_path / "subs.srt"
         srt_path.write_text("Fallback", encoding="utf-8")
@@ -500,10 +452,8 @@ class TestProcessSubtitleTrackCopyRecode:
         executor_with_mocks: tuple[Executor, SimpleNamespace],
         tmp_path: Path,
     ) -> None:
-        """Test 9: decode error → copy as-is."""
         executor, _mocks = executor_with_mocks
         srt_path = tmp_path / "subs.srt"
-        # Write invalid bytes for cp1251 that will still fail to decode as shift_jis
         srt_path.write_bytes(b"\x80\x81\x82\x83")
         instr = make_subtitle_instruction(
             source_file=str(srt_path),
@@ -512,10 +462,8 @@ class TestProcessSubtitleTrackCopyRecode:
             stream_index=2,
             source_encoding="shift_jis",
         )
-        # Should not raise — falls back to copy
         result = executor._process_subtitle_track(instr, tmp_path, _minimal_job())
         assert result.exists()
-        # Content should be the raw bytes (copied)
         assert result.read_bytes() == b"\x80\x81\x82\x83"
 
     def test_recode_container_extracts_first(
@@ -523,7 +471,6 @@ class TestProcessSubtitleTrackCopyRecode:
         executor_with_mocks: tuple[Executor, SimpleNamespace],
         tmp_path: Path,
     ) -> None:
-        """COPY_RECODE from .mkv: extract_track first, then recode."""
         executor, mocks = executor_with_mocks
         instr = make_subtitle_instruction(
             source_file="/src/movie.mkv",
@@ -532,6 +479,7 @@ class TestProcessSubtitleTrackCopyRecode:
             stream_index=2,
             source_encoding="utf-8",
         )
+
         def fake_extract(src: Any, idx: Any, out: Any, on_progress: Any = None) -> int:
             Path(out).write_text("Hello from container", encoding="utf-8")
             return 0
@@ -539,7 +487,6 @@ class TestProcessSubtitleTrackCopyRecode:
         mocks.audio_extractor.extract_track.side_effect = fake_extract
         result = executor._process_subtitle_track(instr, tmp_path, _minimal_job())
         mocks.audio_extractor.extract_track.assert_called_once()
-        # Result should be the utf8 copy
         assert result == tmp_path / "sub_2_utf8.srt"
 
     def test_recode_container_extract_failure(
@@ -561,8 +508,6 @@ class TestProcessSubtitleTrackCopyRecode:
 
 
 class TestProcessSubtitleUnknownAction:
-    """Unknown subtitle action raises ValueError."""
-
     def test_unknown_action_raises(
         self,
         executor_with_mocks: tuple[Executor, SimpleNamespace],
@@ -576,8 +521,6 @@ class TestProcessSubtitleUnknownAction:
 
 
 class TestProcessSubtitleCodecExtension:
-    """Verify correct file extension for subtitle codecs."""
-
     def test_unknown_codec_gets_sub_ext(
         self,
         executor_with_mocks: tuple[Executor, SimpleNamespace],
@@ -594,20 +537,12 @@ class TestProcessSubtitleCodecExtension:
         assert result == tmp_path / "sub_5.sub"
 
 
-# ---------------------------------------------------------------------------
-# _extract_chapters_file
-# ---------------------------------------------------------------------------
-
-
 class TestExtractChaptersFile:
-    """Tests 10-12."""
-
     def test_chapters_present_writes_ogm(
         self,
         executor_with_mocks: tuple[Executor, SimpleNamespace],
         tmp_path: Path,
     ) -> None:
-        """Test 10: prober returns chapters → OGM file written."""
         executor, mocks = executor_with_mocks
         mocks.prober.probe.return_value = {
             "chapters": [
@@ -635,7 +570,6 @@ class TestExtractChaptersFile:
         executor_with_mocks: tuple[Executor, SimpleNamespace],
         tmp_path: Path,
     ) -> None:
-        """Test 11: empty chapters → None."""
         executor, mocks = executor_with_mocks
         mocks.prober.probe.return_value = {"chapters": []}
         result = executor._extract_chapters_file(Path("/src/movie.mkv"), tmp_path)
@@ -646,28 +580,21 @@ class TestExtractChaptersFile:
         executor_with_mocks: tuple[Executor, SimpleNamespace],
         tmp_path: Path,
     ) -> None:
-        """Test 12: probe raises RuntimeError → None."""
         executor, mocks = executor_with_mocks
         mocks.prober.probe.side_effect = RuntimeError("probe failed")
         result = executor._extract_chapters_file(Path("/src/movie.mkv"), tmp_path)
         assert result is None
 
 
-# ---------------------------------------------------------------------------
-# _set_adapters_log_dir
-# ---------------------------------------------------------------------------
-
-
 class TestSetAdaptersLogDir:
-    """Test 13."""
-
     def test_creates_subdir_and_calls_set_log_dir(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         adapter1 = MagicMock()
         adapter2 = MagicMock()
-        adapter2.set_log_dir = None  # simulate no set_log_dir attribute
-        del adapter2.set_log_dir  # make getattr return None
+        adapter2.set_log_dir = None
+        del adapter2.set_log_dir
         executor = Executor(
             encoder=adapter1,
             audio_extractor=MagicMock(),
@@ -682,7 +609,6 @@ class TestSetAdaptersLogDir:
         executor._set_adapters_log_dir("TestMovie")
         expected_dir = tmp_path / "TestMovie"
         assert expected_dir.is_dir()
-        # adapter1 has set_log_dir → called with the job dir
         adapter1.set_log_dir.assert_called_once_with(expected_dir)
 
     def test_no_log_dir_does_nothing(self) -> None:
@@ -697,18 +623,10 @@ class TestSetAdaptersLogDir:
             prober=MagicMock(),
             log_dir=None,
         )
-        # Should not raise
         executor._set_adapters_log_dir("Whatever")
 
 
-# ---------------------------------------------------------------------------
-# _make_progress_callback
-# ---------------------------------------------------------------------------
-
-
 class TestMakeProgressCallback:
-    """Test 14."""
-
     def test_returns_tracker_and_callback(
         self,
         executor_with_mocks: tuple[Executor, SimpleNamespace],
@@ -716,7 +634,6 @@ class TestMakeProgressCallback:
         executor, _mocks = executor_with_mocks
         tracker, callback = executor._make_progress_callback(total_s=100.0)
         assert callable(callback)
-        # Callback should add samples to tracker
         sample = ProgressSample(fraction=0.5, speed=2.0)
         callback(sample)
         snap = tracker.snapshot()
@@ -745,20 +662,11 @@ class TestMakeProgressCallback:
         executor_with_mocks: tuple[Executor, SimpleNamespace],
     ) -> None:
         executor, _mocks = executor_with_mocks
-        # executor._progress is None by default
         _, callback = executor._make_progress_callback()
-        # Should not raise
         callback(ProgressSample(fraction=0.5))
 
 
-# ---------------------------------------------------------------------------
-# DoviProcessor in constructor
-# ---------------------------------------------------------------------------
-
-
 class TestDoviProcessorInConstructor:
-    """Test 15: dovi_processor appended to _adapters."""
-
     def test_dovi_processor_appended(self) -> None:
         dovi = MagicMock()
         executor = Executor(
@@ -773,7 +681,7 @@ class TestDoviProcessorInConstructor:
             dovi_processor=dovi,
         )
         assert dovi in executor._adapters
-        assert len(executor._adapters) == 8  # 7 base + 1 dovi
+        assert len(executor._adapters) == 8
 
     def test_no_dovi_processor_not_appended(self) -> None:
         executor = Executor(
@@ -790,11 +698,6 @@ class TestDoviProcessorInConstructor:
         assert len(executor._adapters) == 7
 
 
-# =========================================================================
-# Task 15 — Integration Tests
-# =========================================================================
-
-
 def _pipeline_job(
     tmp_path: Path,
     *,
@@ -806,7 +709,6 @@ def _pipeline_job(
     attachments: list[dict[str, str]] | None = None,
     duration_s: float = 5400.0,
 ) -> Any:
-    """Create a Job for pipeline tests with output inside tmp_path."""
     return make_job(
         job_id="pipeline-job",
         source_files=["/src/movie.mkv"],
@@ -823,8 +725,6 @@ def _pipeline_job(
 
 
 class TestRunPipelineHappyPath:
-    """Test 16: full pipeline with 1 audio COPY + 1 subtitle COPY."""
-
     def test_full_pipeline(
         self,
         executor_with_mocks: tuple[Executor, SimpleNamespace],
@@ -844,7 +744,6 @@ class TestRunPipelineHappyPath:
         )
         job = _pipeline_job(tmp_path, audio=[audio_instr], subtitles=[sub_instr])
 
-        # Create the cleaned output so move succeeds
         def fake_clean(input_path: Any, output_path: Any, on_progress: Any = None) -> int:
             Path(output_path).write_bytes(b"CLEAN_MKV_DATA")
             return 0
@@ -856,19 +755,15 @@ class TestRunPipelineHappyPath:
 
         executor._run_pipeline(job, output_path, tmp_path)
 
-        # Verify all adapters called
-        mocks.audio_extractor.extract_track.assert_called()  # audio COPY + sub COPY
+        mocks.audio_extractor.extract_track.assert_called()
         mocks.encoder.encode.assert_called_once()
         mocks.muxer.mux.assert_called_once()
         mocks.tagger.set_encoder_tag.assert_called_once()
         mocks.cleaner.clean.assert_called_once()
-        # Output file should exist
         assert output_path.exists()
 
 
 class TestRunPipelineWithDvRpu:
-    """Test 17: DV RPU extraction before encode."""
-
     def test_dv_rpu_extraction(
         self,
         tmp_path: Path,
@@ -918,7 +813,6 @@ class TestRunPipelineWithDvRpu:
         call_kwargs = dovi_mock.extract_rpu.call_args.kwargs
         assert call_kwargs["mode"] == DvMode.TO_8_1
 
-        # Verify rpu_path was passed to encode
         encode_kwargs = mocks.encoder.encode.call_args.kwargs
         assert encode_kwargs["rpu_path"] is not None
 
@@ -959,8 +853,6 @@ class TestRunPipelineWithDvRpu:
 
 
 class TestRunPipelineShutdown:
-    """Test 18: shutdown_event stops pipeline early."""
-
     def test_shutdown_before_audio(
         self,
         executor_with_mocks: tuple[Executor, SimpleNamespace],
@@ -983,7 +875,6 @@ class TestRunPipelineShutdown:
         audio1 = make_audio_instruction(action=AudioAction.COPY, codec_name="aac", stream_index=1)
         audio2 = make_audio_instruction(action=AudioAction.COPY, codec_name="aac", stream_index=2)
 
-        # After first extract, set shutdown
         call_count = 0
 
         def extract_and_shutdown(src: Any, idx: Any, out: Any, on_progress: Any = None) -> int:
@@ -997,7 +888,6 @@ class TestRunPipelineShutdown:
         output_path = Path(job.output_file)
         output_path.parent.mkdir(parents=True, exist_ok=True)
         executor._run_pipeline(job, output_path, tmp_path)
-        # Only first audio processed, encoder not called
         assert call_count == 1
         assert not mocks.encoder.encode.called
 
@@ -1006,7 +896,6 @@ class TestRunPipelineShutdown:
         executor_with_mocks: tuple[Executor, SimpleNamespace],
         tmp_path: Path,
     ) -> None:
-        """Shutdown set via side_effect on encoder.encode → pipeline stops after encode."""
         executor, mocks = executor_with_mocks
 
         def encode_and_shutdown(**kwargs: Any) -> EncodeResult:
@@ -1019,7 +908,6 @@ class TestRunPipelineShutdown:
         output_path.parent.mkdir(parents=True, exist_ok=True)
         executor._run_pipeline(job, output_path, tmp_path)
         mocks.encoder.encode.assert_called_once()
-        # Mux should NOT be called because shutdown was set
         assert not mocks.muxer.mux.called
 
     def test_shutdown_between_subtitles(
@@ -1146,8 +1034,6 @@ class TestRunPipelineShutdown:
 
 
 class TestRunPipelineEncodeFailure:
-    """Encode returns nonzero → RuntimeError."""
-
     def test_encode_failure(
         self,
         executor_with_mocks: tuple[Executor, SimpleNamespace],
@@ -1163,8 +1049,6 @@ class TestRunPipelineEncodeFailure:
 
 
 class TestRunPipelineMuxFailure:
-    """Mux returns nonzero → RuntimeError."""
-
     def test_mux_failure(
         self,
         executor_with_mocks: tuple[Executor, SimpleNamespace],
@@ -1180,8 +1064,6 @@ class TestRunPipelineMuxFailure:
 
 
 class TestRunPipelineTaggerWarning:
-    """Tagger returns nonzero → warning logged, no exception."""
-
     def test_tagger_nonzero_continues(
         self,
         executor_with_mocks: tuple[Executor, SimpleNamespace],
@@ -1198,7 +1080,6 @@ class TestRunPipelineTaggerWarning:
         job = _pipeline_job(tmp_path)
         output_path = Path(job.output_file)
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        # Should not raise
         executor._run_pipeline(job, output_path, tmp_path)
         assert output_path.exists()
 
@@ -1213,8 +1094,6 @@ def _fake_clean_writing(input_path: Any, output_path: Any, on_progress: Any = No
 
 
 class TestRunPipelineTargetQuality:
-    """The NVEnc path searches the target-quality QVBR before the final encode."""
-
     def test_search_sets_cq_override_and_drops_final_metrics(
         self,
         executor_with_mocks: tuple[Executor, SimpleNamespace],
@@ -1261,11 +1140,10 @@ class TestRunPipelineTargetQuality:
         executor_with_mocks: tuple[Executor, SimpleNamespace],
         tmp_path: Path,
     ) -> None:
-        """A grain job now searches its CRF via the service (SVT path)."""
         executor, mocks = executor_with_mocks
         svc = MagicMock()
         svc.can_search.return_value = True
-        svc.search.return_value = _tq_result(knob=20, hit=True)  # a CRF
+        svc.search.return_value = _tq_result(knob=20, hit=True)
         executor._target_quality = svc
         mocks.cleaner.clean.side_effect = _fake_clean_writing
         job = _pipeline_job(tmp_path)
@@ -1284,8 +1162,6 @@ class TestRunPipelineTargetQuality:
         executor_with_mocks: tuple[Executor, SimpleNamespace],
         tmp_path: Path,
     ) -> None:
-        """A grain job whose service lacks SVT/metrics deps falls back to the
-        fixed CRF recipe (no search)."""
         executor, mocks = executor_with_mocks
         svc = MagicMock()
         svc.can_search.return_value = False
@@ -1325,7 +1201,6 @@ class TestRunPipelineTargetQuality:
         executor_with_mocks: tuple[Executor, SimpleNamespace],
         tmp_path: Path,
     ) -> None:
-        """No target-quality service configured -> legacy fixed-QVBR encode."""
         executor, mocks = executor_with_mocks
         mocks.cleaner.clean.side_effect = _fake_clean_writing
         job = _pipeline_job(tmp_path)
@@ -1342,7 +1217,6 @@ class TestRunPipelineTargetQuality:
         executor_with_mocks: tuple[Executor, SimpleNamespace],
         tmp_path: Path,
     ) -> None:
-        """A job already carrying chosen_cq (prior run) reuses it, no re-search."""
         executor, mocks = executor_with_mocks
         svc = MagicMock()
         executor._target_quality = svc
@@ -1363,7 +1237,6 @@ class TestRunPipelineTargetQuality:
         executor_with_mocks: tuple[Executor, SimpleNamespace],
         tmp_path: Path,
     ) -> None:
-        """An unknown duration skips the search LOUDLY through the progress object."""
         executor, mocks = executor_with_mocks
         progress = MagicMock()
         executor._progress = progress
@@ -1381,7 +1254,6 @@ class TestRunPipelineTargetQuality:
         assert any("unknown duration" in line.lower() for line in tool_lines)
 
     def test_chosen_cq_persisted_on_error_path(self, tmp_path: Path) -> None:
-        """A QVBR chosen before a later-step failure is persisted for the re-run."""
         mocks = SimpleNamespace(
             encoder=MagicMock(),
             audio_extractor=MagicMock(),
@@ -1393,7 +1265,7 @@ class TestRunPipelineTargetQuality:
             prober=MagicMock(),
         )
         mocks.encoder.encode.return_value = EncodeResult(return_code=0, encoder_settings="test")
-        mocks.muxer.mux.return_value = 1  # mux fails AFTER the search runs
+        mocks.muxer.mux.return_value = 1
         svc = MagicMock()
         svc.search.return_value = _tq_result(knob=31, hit=True)
 
@@ -1414,8 +1286,12 @@ class TestRunPipelineTargetQuality:
         job = make_job(
             job_id="tq-err-job",
             output_file=str(output_dir / "movie.mkv"),
-            audio=[], subtitles=[], attachments=[],
-            copy_chapters=False, source_size=0, duration_s=100.0,
+            audio=[],
+            subtitles=[],
+            attachments=[],
+            copy_chapters=False,
+            source_size=0,
+            duration_s=100.0,
         )
         plan = make_plan(jobs=[job])
         plan_path = tmp_path / "plan.json"
@@ -1432,7 +1308,6 @@ class TestRunPipelineTargetQuality:
         executor_with_mocks: tuple[Executor, SimpleNamespace],
         tmp_path: Path,
     ) -> None:
-        """A hit reports the chosen QVBR through the progress object."""
         executor, mocks = executor_with_mocks
         progress = MagicMock()
         executor._progress = progress
@@ -1454,7 +1329,6 @@ class TestRunPipelineTargetQuality:
         executor_with_mocks: tuple[Executor, SimpleNamespace],
         tmp_path: Path,
     ) -> None:
-        """A miss emits a loud warning line through the progress object."""
         executor, mocks = executor_with_mocks
         progress = MagicMock()
         executor._progress = progress
@@ -1476,8 +1350,6 @@ class TestRunPipelineTargetQuality:
         executor_with_mocks: tuple[Executor, SimpleNamespace],
         tmp_path: Path,
     ) -> None:
-        """The raw per-probe ffmpeg/nvencc output is muted for the duration of the
-        search (mute before, unmute after) and a narration callback is wired in."""
         executor, _mocks = executor_with_mocks
         progress = MagicMock()
         executor._progress = progress
@@ -1506,7 +1378,6 @@ class TestRunPipelineTargetQuality:
         executor_with_mocks: tuple[Executor, SimpleNamespace],
         tmp_path: Path,
     ) -> None:
-        """A probe blowing up mid-search still restores the raw-output channel."""
         executor, _mocks = executor_with_mocks
         progress = MagicMock()
         executor._progress = progress
@@ -1524,7 +1395,6 @@ class TestRunPipelineTargetQuality:
         self,
         executor_with_mocks: tuple[Executor, SimpleNamespace],
     ) -> None:
-        """Narration is prefixed and routed through the never-muted furnace channel."""
         executor, _mocks = executor_with_mocks
         progress = MagicMock()
         executor._progress = progress
@@ -1535,10 +1405,9 @@ class TestRunPipelineTargetQuality:
         self,
         executor_with_mocks: tuple[Executor, SimpleNamespace],
     ) -> None:
-        """With no progress object the narration sink is a silent no-op."""
         executor, _mocks = executor_with_mocks
         executor._progress = None
-        executor._search_narration("ignored")  # must not raise
+        executor._search_narration("ignored")
 
     def test_chosen_cq_persisted_by_run(self, tmp_path: Path) -> None:
         mocks = SimpleNamespace(
@@ -1575,8 +1444,12 @@ class TestRunPipelineTargetQuality:
         job = make_job(
             job_id="tq-run-job",
             output_file=str(output_dir / "movie.mkv"),
-            audio=[], subtitles=[], attachments=[],
-            copy_chapters=False, source_size=0, duration_s=100.0,
+            audio=[],
+            subtitles=[],
+            attachments=[],
+            copy_chapters=False,
+            source_size=0,
+            duration_s=100.0,
         )
         plan = make_plan(jobs=[job])
         plan_path = tmp_path / "plan.json"
@@ -1589,8 +1462,6 @@ class TestRunPipelineTargetQuality:
 
 
 class TestRunPipelineChapters:
-    """Chapters extraction integration."""
-
     def test_chapters_passed_to_mux(
         self,
         executor_with_mocks: tuple[Executor, SimpleNamespace],
@@ -1625,8 +1496,6 @@ class TestRunPipelineChapters:
 
 
 class TestRunPipelineAttachments:
-    """Attachments passed to muxer."""
-
     def test_attachments_forwarded(
         self,
         executor_with_mocks: tuple[Executor, SimpleNamespace],
@@ -1653,8 +1522,6 @@ class TestRunPipelineAttachments:
 
 
 class TestRunPipelineVideoMeta:
-    """Verify video_meta dict built from video_params."""
-
     def test_hdr_metadata_in_video_meta(
         self,
         tmp_path: Path,
@@ -1725,9 +1592,6 @@ class TestRunPipelineVideoMeta:
         assert video_meta["hdr_max_fall"] == "400"
 
     def test_fps_in_video_meta_for_reencode(self, tmp_path: Path) -> None:
-        """A re-encode writes a raw AV1 OBU (no container frame rate), so the
-        source fps must reach the muxer or mkvmerge defaults the track to 25
-        fps and drifts out of sync with the audio."""
         mocks = SimpleNamespace(
             encoder=MagicMock(),
             audio_extractor=MagicMock(),
@@ -1780,8 +1644,6 @@ class TestRunPipelineVideoMeta:
         assert video_meta["fps_den"] == 1001
 
     def test_no_fps_in_video_meta_for_passthrough(self, tmp_path: Path) -> None:
-        """Passthrough writes an MKV that already carries timing, so no fps
-        override is emitted (forcing one could re-time the verbatim copy)."""
         mocks = SimpleNamespace(
             encoder=MagicMock(),
             audio_extractor=MagicMock(),
@@ -1832,16 +1694,12 @@ class TestRunPipelineVideoMeta:
         executor._run_pipeline(job, output_path, tmp_path)
 
         video_meta = mocks.muxer.mux.call_args.kwargs["video_meta"]
-        # Default color metadata is present, so video_meta is a non-None dict;
-        # the key point is that passthrough adds no fps override.
         assert video_meta is not None
         assert "fps_num" not in video_meta
         assert "fps_den" not in video_meta
 
 
 class TestRunPipelineProgressWiring:
-    """Pipeline with progress mock: verify status/size updates."""
-
     def test_progress_updates(
         self,
         tmp_path: Path,
@@ -1895,14 +1753,11 @@ class TestRunPipelineProgressWiring:
         output_path.parent.mkdir(parents=True, exist_ok=True)
         executor._run_pipeline(job, output_path, tmp_path)
 
-        # Progress should have received update_status calls
         assert progress_mock.update_status.called
         assert progress_mock.add_tool_line.called
 
 
 class TestRunPipelineMuxedSizeUpdate:
-    """After mux, progress gets output size update."""
-
     def test_muxed_size_updated(
         self,
         tmp_path: Path,
@@ -1921,7 +1776,6 @@ class TestRunPipelineMuxedSizeUpdate:
         mocks.encoder.encode.return_value = EncodeResult(return_code=0, encoder_settings="test")
         mocks.tagger.set_encoder_tag.return_value = 0
 
-        # Mux creates a file so the size check works
         def fake_mux(**kwargs: Any) -> int:
             Path(kwargs["output_path"]).write_bytes(b"X" * 100)
             return 0
@@ -1952,14 +1806,7 @@ class TestRunPipelineMuxedSizeUpdate:
         progress_mock.update_output_size.assert_called()
 
 
-# ---------------------------------------------------------------------------
-# run() lifecycle tests
-# ---------------------------------------------------------------------------
-
-
 class TestRunLifecycleHappyPath:
-    """Test 19: Plan with one pending job → DONE in JSON."""
-
     def test_happy_path(
         self,
         tmp_path: Path,
@@ -2057,13 +1904,10 @@ class TestRunLifecycleHappyPath:
 
         executor.run(plan, plan_path)
 
-        # Encoder should never be called for DONE jobs
         assert not mocks.encoder.encode.called
 
 
 class TestRunLifecycleError:
-    """Test 20: encoder raises → ERROR in plan JSON."""
-
     def test_encoder_raises_marks_error(
         self,
         tmp_path: Path,
@@ -2115,8 +1959,6 @@ class TestRunLifecycleError:
 
 
 class TestMkcleanFailureFallback:
-    """Test 21: cleaner returns nonzero → uses muxed file."""
-
     def test_cleaner_failure_uses_muxed(
         self,
         executor_with_mocks: tuple[Executor, SimpleNamespace],
@@ -2124,26 +1966,22 @@ class TestMkcleanFailureFallback:
     ) -> None:
         executor, mocks = executor_with_mocks
 
-        # Mux creates the muxed file
         def fake_mux(**kwargs: Any) -> int:
             Path(kwargs["output_path"]).write_bytes(b"MUXED_DATA")
             return 0
 
         mocks.muxer.mux.side_effect = fake_mux
-        mocks.cleaner.clean.return_value = 1  # mkclean failure
+        mocks.cleaner.clean.return_value = 1
 
         job = _pipeline_job(tmp_path)
         output_path = Path(job.output_file)
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        # Should not raise
         executor._run_pipeline(job, output_path, tmp_path)
         assert output_path.exists()
         assert output_path.read_bytes() == b"MUXED_DATA"
 
 
 class TestMkcleanProgressUpdate:
-    """mkclean with progress: cleaned size update."""
-
     def test_cleaned_size_updated(
         self,
         tmp_path: Path,
@@ -2184,18 +2022,10 @@ class TestMkcleanProgressUpdate:
         output_path = Path(job.output_file)
         output_path.parent.mkdir(parents=True, exist_ok=True)
         executor._run_pipeline(job, output_path, tmp_path)
-        # update_output_size should have been called with cleaned size
         progress_mock.update_output_size.assert_called()
 
 
-# ---------------------------------------------------------------------------
-# run() shutdown between jobs
-# ---------------------------------------------------------------------------
-
-
 class TestRunShutdownBetweenJobs:
-    """Shutdown event stops processing of further jobs."""
-
     def test_shutdown_stops_second_job(
         self,
         tmp_path: Path,
@@ -2251,7 +2081,6 @@ class TestRunShutdownBetweenJobs:
         plan_path = tmp_path / "plan.json"
         save_plan(plan, plan_path)
 
-        # Set shutdown after first encode
         def encode_then_shutdown(**kwargs: Any) -> EncodeResult:
             executor._shutdown_event.set()
             return EncodeResult(return_code=0, encoder_settings="test")
@@ -2260,20 +2089,12 @@ class TestRunShutdownBetweenJobs:
 
         executor.run(plan, plan_path)
 
-        # Only job-1 should be marked DONE
         loaded = load_plan(plan_path)
         assert loaded.jobs[0].status == JobStatus.DONE
         assert loaded.jobs[1].status == JobStatus.PENDING
 
 
-# ---------------------------------------------------------------------------
-# run() with progress
-# ---------------------------------------------------------------------------
-
-
 class TestRunWithProgress:
-    """run() lifecycle with progress mock: start_job / finish_job."""
-
     def test_progress_lifecycle(
         self,
         tmp_path: Path,
@@ -2333,14 +2154,7 @@ class TestRunWithProgress:
         progress_mock.finish_job.assert_called_once()
 
 
-# ---------------------------------------------------------------------------
-# graceful_shutdown
-# ---------------------------------------------------------------------------
-
-
 class TestGracefulShutdown:
-    """Test 22: Mock psutil → event set, children killed."""
-
     def test_sets_event_and_kills_children(
         self,
         executor_with_mocks: tuple[Executor, SimpleNamespace],
@@ -2364,7 +2178,7 @@ class TestGracefulShutdown:
         executor, _mocks = executor_with_mocks
 
         with patch("furnace.services.executor.psutil.Process", side_effect=OSError("fail")):
-            executor.graceful_shutdown()  # should not raise
+            executor.graceful_shutdown()
 
         assert executor._shutdown_event.is_set()
 
@@ -2380,7 +2194,7 @@ class TestGracefulShutdown:
             "furnace.services.executor.psutil.Process",
             side_effect=psutil_mod.Error("fail"),
         ):
-            executor.graceful_shutdown()  # should not raise
+            executor.graceful_shutdown()
 
         assert executor._shutdown_event.is_set()
 
@@ -2388,7 +2202,6 @@ class TestGracefulShutdown:
         self,
         executor_with_mocks: tuple[Executor, SimpleNamespace],
     ) -> None:
-        """NoSuchProcess on child.kill() → suppressed."""
         import psutil as psutil_mod
 
         executor, _mocks = executor_with_mocks
@@ -2398,17 +2211,10 @@ class TestGracefulShutdown:
         mock_parent.children.return_value = [mock_child]
 
         with patch("furnace.services.executor.psutil.Process", return_value=mock_parent):
-            executor.graceful_shutdown()  # should not raise
-
-
-# ---------------------------------------------------------------------------
-# _execute_job temp cleanup
-# ---------------------------------------------------------------------------
+            executor.graceful_shutdown()
 
 
 class TestExecuteJobTempCleanup:
-    """_execute_job cleans up temp dir even on failure."""
-
     def test_temp_dir_cleaned_on_success(
         self,
         executor_with_mocks: tuple[Executor, SimpleNamespace],
@@ -2439,20 +2245,21 @@ class TestExecuteJobTempCleanup:
             executor._execute_job(job)
 
 
-# ---------------------------------------------------------------------------
-# _codec_supported_by_eac3to
-# ---------------------------------------------------------------------------
-
-
 class TestCodecSupportedByEac3to:
-    """Test the module-level helper."""
-
     def test_supported_codecs(self) -> None:
         from furnace.services.executor import _codec_supported_by_eac3to
 
         supported = [
-            "ac3", "eac3", "dts", "truehd", "flac",
-            "pcm_s16le", "pcm_s24le", "pcm_s16be", "mp2", "mp3",
+            "ac3",
+            "eac3",
+            "dts",
+            "truehd",
+            "flac",
+            "pcm_s16le",
+            "pcm_s24le",
+            "pcm_s16be",
+            "mp2",
+            "mp3",
         ]
         for codec in supported:
             assert _codec_supported_by_eac3to(codec), f"{codec} should be supported"
@@ -2464,13 +2271,6 @@ class TestCodecSupportedByEac3to:
             assert not _codec_supported_by_eac3to(codec), f"{codec} should NOT be supported"
 
     def test_aac_is_not_supported(self) -> None:
-        """eac3to advertises AAC as a source format, but it has no AAC decoder
-        of its own -- it delegates to the Nero DirectShow filter, which mangles
-        multichannel AAC (a channel lost to silence, the rest in AAC/MPEG order
-        under a 5.1 tag, no remap) while still exiting 0. Routing AAC to eac3to
-        therefore corrupts audio silently, so it must be pre-decoded by ffmpeg.
-        This is a deliberate exclusion, not an oversight -- do not re-add it.
-        """
         from furnace.services.executor import _codec_supported_by_eac3to
 
         assert not _codec_supported_by_eac3to("aac")
@@ -2483,14 +2283,7 @@ class TestCodecSupportedByEac3to:
         assert _codec_supported_by_eac3to("TrueHD")
 
 
-# ---------------------------------------------------------------------------
-# Encode on_progress callback with output size
-# ---------------------------------------------------------------------------
-
-
 class TestEncodeOnProgressOutputSize:
-    """The encode_on_progress wrapper should update output size."""
-
     def test_encode_progress_updates_size(
         self,
         tmp_path: Path,
@@ -2516,7 +2309,6 @@ class TestEncodeOnProgressOutputSize:
             cq_override: Any = None,
         ) -> EncodeResult:
             assert on_progress is not None
-            # Create a fake video output to test size measurement
             Path(output_path).write_bytes(b"V" * 500)
             on_progress(ProgressSample(fraction=0.5))
             return EncodeResult(return_code=0, encoder_settings="test")
@@ -2546,13 +2338,10 @@ class TestEncodeOnProgressOutputSize:
         output_path = Path(job.output_file)
         output_path.parent.mkdir(parents=True, exist_ok=True)
         executor._run_pipeline(job, output_path, tmp_path)
-        # update_output_size should have been called with video size
         progress_mock.update_output_size.assert_called()
 
 
 class TestEncodeOnProgressOSError:
-    """The encode_on_progress handles OSError when video file doesn't exist yet."""
-
     def test_oserror_handled(
         self,
         tmp_path: Path,
@@ -2578,7 +2367,6 @@ class TestEncodeOnProgressOSError:
             cq_override: Any = None,
         ) -> EncodeResult:
             assert on_progress is not None
-            # Don't create video file — test OSError path
             on_progress(ProgressSample(fraction=0.1))
             return EncodeResult(return_code=0, encoder_settings="test")
 
@@ -2606,18 +2394,10 @@ class TestEncodeOnProgressOSError:
         job = _pipeline_job(tmp_path)
         output_path = Path(job.output_file)
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        # Should not raise
         executor._run_pipeline(job, output_path, tmp_path)
 
 
-# ---------------------------------------------------------------------------
-# Audio track processing with progress (audio size tracking)
-# ---------------------------------------------------------------------------
-
-
 class TestAudioSizeTracking:
-    """Audio file size tracked via progress.update_output_size."""
-
     def test_audio_size_tracked(
         self,
         tmp_path: Path,
@@ -2634,7 +2414,6 @@ class TestAudioSizeTracking:
             prober=MagicMock(),
         )
 
-        # extract_track creates a file so size check works
         def fake_extract(src: Any, idx: Any, out: Any, on_progress: Any = None) -> int:
             Path(out).write_bytes(b"A" * 200)
             return 0
@@ -2670,20 +2449,12 @@ class TestAudioSizeTracking:
         output_path = Path(job.output_file)
         output_path.parent.mkdir(parents=True, exist_ok=True)
         executor._run_pipeline(job, output_path, tmp_path)
-        # Should have been called with audio size (200)
         progress_mock.update_output_size.assert_called()
         first_call_size = progress_mock.update_output_size.call_args_list[0][0][0]
         assert first_call_size == 200
 
 
-# ---------------------------------------------------------------------------
-# run() retries ERROR jobs
-# ---------------------------------------------------------------------------
-
-
 class TestRunRetriesErrorJobs:
-    """Jobs with ERROR status are also retried."""
-
     def test_error_job_retried(
         self,
         tmp_path: Path,
@@ -2743,14 +2514,7 @@ class TestRunRetriesErrorJobs:
         assert loaded.jobs[0].status == JobStatus.DONE
 
 
-# ---------------------------------------------------------------------------
-# COPY delay_ms vs other actions delay_ms
-# ---------------------------------------------------------------------------
-
-
 class TestAudioDelayMeta:
-    """Audio meta delay_ms is nonzero only for COPY action."""
-
     def test_copy_preserves_delay(
         self,
         executor_with_mocks: tuple[Executor, SimpleNamespace],
@@ -2785,19 +2549,11 @@ class TestAudioDelayMeta:
         executor._run_pipeline(job, output_path, tmp_path)
         mux_call = mocks.muxer.mux.call_args
         audio_files = mux_call.kwargs["audio_files"]
-        # COPY: delay preserved
         assert audio_files[0][1]["delay_ms"] == 100
-        # DENORM: delay zeroed
         assert audio_files[1][1]["delay_ms"] == 0
 
 
-# ---------------------------------------------------------------------------
-# Coverage gap: progress add_tool_line in per-step methods
-# ---------------------------------------------------------------------------
-
-
 def _make_executor_with_progress() -> tuple[Executor, SimpleNamespace, MagicMock]:
-    """Build an Executor with progress mock AND all adapter mocks."""
     progress_mock = MagicMock()
     mocks = SimpleNamespace(
         encoder=MagicMock(),
@@ -2829,8 +2585,6 @@ def _make_executor_with_progress() -> tuple[Executor, SimpleNamespace, MagicMock
 
 
 class TestAudioProgressLines:
-    """Cover add_tool_line branches for DENORM, DECODE_ENCODE, FFMPEG_ENCODE."""
-
     def test_denorm_progress_lines(self, tmp_path: Path) -> None:
         executor, _mocks, progress = _make_executor_with_progress()
         instr = make_audio_instruction(
@@ -2893,9 +2647,9 @@ class TestAudioProgressLines:
         assert any("Extracting audio stream 1 (copy)" in line for line in tool_lines)
 
     def test_decode_encode_mono_stereo_source_progress_lines(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
-        """Stereo non-DRC source MONO downmix announces the averaging and AAC steps."""
         executor, mocks, progress = _make_executor_with_progress()
         mocks.audio_extractor.stereo_to_mono_wav.return_value = 0
         instr = make_audio_instruction(
@@ -2911,9 +2665,9 @@ class TestAudioProgressLines:
         assert any("Encoding AAC for stream 5" in line for line in tool_lines)
 
     def test_decode_encode_mono_stereo_drc_codec_progress_lines(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
-        """Stereo AC3 MONO routes through eac3to: extract, decode, average, AAC."""
         executor, mocks, progress = _make_executor_with_progress()
         mocks.audio_extractor.stereo_to_mono_wav.return_value = 0
         instr = make_audio_instruction(
@@ -2931,9 +2685,9 @@ class TestAudioProgressLines:
         assert any("Encoding AAC for stream 8" in line for line in tool_lines)
 
     def test_decode_encode_mono_multichannel_eac3to_progress_lines(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
-        """Multichannel eac3to-friendly MONO emits all four step announcements."""
         executor, mocks, progress = _make_executor_with_progress()
         mocks.audio_extractor.stereo_to_mono_wav.return_value = 0
         instr = make_audio_instruction(
@@ -2951,13 +2705,9 @@ class TestAudioProgressLines:
         assert any("Encoding AAC for stream 6" in line for line in tool_lines)
 
     def test_decode_encode_mono_multichannel_non_eac3to_progress_lines(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
-        """Multichannel eac3to-incompatible MONO uses the ffmpeg pre-decode line.
-
-        Opus is not in the eac3to source-codec list, so the executor routes
-        to ffmpeg_to_wav rather than extract_track.
-        """
         executor, mocks, progress = _make_executor_with_progress()
         mocks.audio_extractor.stereo_to_mono_wav.return_value = 0
         instr = make_audio_instruction(
@@ -2969,23 +2719,13 @@ class TestAudioProgressLines:
         )
         executor._process_audio_track(instr, tmp_path, _minimal_job())
         tool_lines = [c[0][0] for c in progress.add_tool_line.call_args_list]
-        assert any(
-            "Pre-decoding audio stream 7" in line and "MONO downmix" in line
-            for line in tool_lines
-        )
+        assert any("Pre-decoding audio stream 7" in line and "MONO downmix" in line for line in tool_lines)
         assert any("Downmixing audio stream 7 to stereo with eac3to" in line for line in tool_lines)
         assert any("Averaging audio stream 7 to mono" in line for line in tool_lines)
         assert any("Encoding AAC for stream 7" in line for line in tool_lines)
 
 
-# ---------------------------------------------------------------------------
-# Coverage gap: video_meta branches for absent color fields
-# ---------------------------------------------------------------------------
-
-
 class TestVideoMetaEmptyFields:
-    """Cover branches where color_range/primaries/transfer are empty/None."""
-
     def test_no_color_metadata_video_meta_none(
         self,
         executor_with_mocks: tuple[Executor, SimpleNamespace],
@@ -2998,9 +2738,6 @@ class TestVideoMetaEmptyFields:
             return 0
 
         mocks.cleaner.clean.side_effect = fake_clean
-        # Passthrough (no fps override) + all color fields empty → nothing to
-        # put in video_meta, so it collapses to None. (A re-encode would still
-        # carry fps, so the None case is only reachable via passthrough now.)
         vp = make_video_params(
             passthrough=True,
             color_range="",
@@ -3024,25 +2761,16 @@ class TestVideoMetaEmptyFields:
         output_path.parent.mkdir(parents=True, exist_ok=True)
         executor._run_pipeline(job, output_path, tmp_path)
         mux_call = mocks.muxer.mux.call_args
-        # When all color fields are empty and no fps is added, video_meta is None
         assert mux_call.kwargs["video_meta"] is None
 
 
-# ---------------------------------------------------------------------------
-# Coverage gap: chapters_have_mojibake=True branch
-# ---------------------------------------------------------------------------
-
-
 class TestChaptersMojibake:
-    """Cover the mojibake detection branch in _extract_chapters_file."""
-
     def test_mojibake_chapters_detected(
         self,
         executor_with_mocks: tuple[Executor, SimpleNamespace],
         tmp_path: Path,
     ) -> None:
         executor, mocks = executor_with_mocks
-        # Simulate UTF-8 bytes "Глава 1" decoded as Latin-1 -> mojibake
         mojibake_title = "Глава 1".encode().decode("latin-1")
         mocks.prober.probe.return_value = {
             "chapters": [
@@ -3058,14 +2786,7 @@ class TestChaptersMojibake:
         assert result.exists()
 
 
-# ---------------------------------------------------------------------------
-# Coverage gap: shutdown after subtitle loop, before DV extraction
-# ---------------------------------------------------------------------------
-
-
 class TestShutdownAfterSubtitles:
-    """Cover the return-after-subtitle-loop shutdown path."""
-
     def test_shutdown_after_subtitles_before_dv(
         self,
         executor_with_mocks: tuple[Executor, SimpleNamespace],
@@ -3079,7 +2800,6 @@ class TestShutdownAfterSubtitles:
             stream_index=3,
         )
 
-        # Set shutdown after sub extraction
         def extract_and_shutdown(src: Any, idx: Any, out: Any, on_progress: Any = None) -> int:
             executor._shutdown_event.set()
             return 0
@@ -3089,23 +2809,13 @@ class TestShutdownAfterSubtitles:
         output_path = Path(job.output_file)
         output_path.parent.mkdir(parents=True, exist_ok=True)
         executor._run_pipeline(job, output_path, tmp_path)
-        # Encoder should not be called
         assert not mocks.encoder.encode.called
 
 
-# ---------------------------------------------------------------------------
-# Coverage gap: _set_adapters_log_dir with adapter missing set_log_dir
-# ---------------------------------------------------------------------------
-
-
 class TestSetAdaptersLogDirMissingMethod:
-    """Cover the branch where getattr returns None for set_log_dir."""
-
     def test_adapter_without_set_log_dir(self, tmp_path: Path) -> None:
-        """Adapter that lacks set_log_dir attribute is skipped."""
-        # Create a mock without set_log_dir method
         adapter_with = MagicMock()
-        adapter_without = MagicMock(spec=[])  # spec=[] means no attributes
+        adapter_without = MagicMock(spec=[])
 
         executor = Executor(
             encoder=adapter_with,
@@ -3121,18 +2831,10 @@ class TestSetAdaptersLogDirMissingMethod:
         executor._set_adapters_log_dir("TestMovie")
         expected_dir = tmp_path / "TestMovie"
         assert expected_dir.is_dir()
-        # adapter_with has set_log_dir -> called
         adapter_with.set_log_dir.assert_called_once_with(expected_dir)
 
 
-# ---------------------------------------------------------------------------
-# Coverage gap: subtitle/DV progress status lines in _run_pipeline
-# ---------------------------------------------------------------------------
-
-
 class TestSubtitleProgressInPipeline:
-    """Cover progress update_status and add_tool_line for subtitles in pipeline."""
-
     def test_subtitle_progress_status(self, tmp_path: Path) -> None:
         executor, mocks, progress = _make_executor_with_progress()
 
@@ -3171,8 +2873,6 @@ class TestSubtitleProgressInPipeline:
 
 
 class TestDvProgressInPipeline:
-    """Cover DV RPU progress status + tool lines."""
-
     def test_dv_progress_lines(self, tmp_path: Path) -> None:
         progress_mock = MagicMock()
         dovi_mock = MagicMock()
@@ -3220,14 +2920,7 @@ class TestDvProgressInPipeline:
         assert any("Extracting DV RPU" in line for line in tool_lines)
 
 
-# ---------------------------------------------------------------------------
-# Coverage gap: shutdown AFTER audio loop, BEFORE subtitle loop (line 265)
-# ---------------------------------------------------------------------------
-
-
 class TestShutdownAfterAudioBeforeSubtitles:
-    """Shutdown after all audio processed but before subtitle loop starts."""
-
     def test_shutdown_after_audio_before_subs(
         self,
         tmp_path: Path,
@@ -3246,7 +2939,6 @@ class TestShutdownAfterAudioBeforeSubtitles:
             stream_index=3,
         )
 
-        # Audio extract sets shutdown
         call_count = 0
 
         def extract_and_shutdown(src: Any, idx: Any, out: Any, on_progress: Any = None) -> int:
@@ -3266,14 +2958,7 @@ class TestShutdownAfterAudioBeforeSubtitles:
         assert not mocks.encoder.encode.called
 
 
-# ---------------------------------------------------------------------------
-# Coverage gap: shutdown after subs but before DV (line 291 with DV job)
-# ---------------------------------------------------------------------------
-
-
 class TestShutdownBeforeDvWithDvMode:
-    """Shutdown after subtitles, before DV RPU extraction in a DV job."""
-
     def test_shutdown_before_dv_extraction_in_dv_job(
         self,
         tmp_path: Path,
@@ -3313,7 +2998,6 @@ class TestShutdownBeforeDvWithDvMode:
             stream_index=3,
         )
 
-        # Sub extraction sets shutdown
         def extract_and_shutdown(src: Any, idx: Any, out: Any, on_progress: Any = None) -> int:
             executor._shutdown_event.set()
             return 0
@@ -3324,18 +3008,10 @@ class TestShutdownBeforeDvWithDvMode:
         output_path = Path(job.output_file)
         output_path.parent.mkdir(parents=True, exist_ok=True)
         executor._run_pipeline(job, output_path, tmp_path)
-        # DV extraction should NOT be called
         assert not dovi_mock.extract_rpu.called
 
 
-# ---------------------------------------------------------------------------
-# Coverage gap: encode_on_progress OSError branch (lines 328-329)
-# ---------------------------------------------------------------------------
-
-
 class TestEncodeOnProgressStatOSError:
-    """Cover the OSError catch in encode_on_progress."""
-
     def test_stat_oserror_caught(self, tmp_path: Path) -> None:
         progress_mock = MagicMock()
         mocks = SimpleNamespace(
@@ -3358,11 +3034,9 @@ class TestEncodeOnProgressStatOSError:
             cq_override: Any = None,
         ) -> EncodeResult:
             assert on_progress is not None
-            # Create output then immediately delete to cause OSError on stat
             Path(output_path).write_bytes(b"V")
 
             def patched_stat(self_path: Path, **kwargs: Any) -> Any:
-                # The callback stats nothing but the encode output while patched.
                 assert str(self_path) == str(output_path)
                 raise OSError("permission denied")
 
@@ -3394,27 +3068,17 @@ class TestEncodeOnProgressStatOSError:
         job = _pipeline_job(tmp_path)
         output_path = Path(job.output_file)
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        # Should not raise — OSError caught
         executor._run_pipeline(job, output_path, tmp_path)
-        # update_output_size still called (with fallback video_size=0)
         progress_mock.update_output_size.assert_called()
 
 
-# ---------------------------------------------------------------------------
-# Coverage gap: encode_on_progress with no progress (line 330->exit)
-# ---------------------------------------------------------------------------
-
-
 class TestEncodeOnProgressNoProgress:
-    """Encode callback does not call update_output_size when progress is None."""
-
     def test_no_progress_in_callback(
         self,
         executor_with_mocks: tuple[Executor, SimpleNamespace],
         tmp_path: Path,
     ) -> None:
         executor, mocks = executor_with_mocks
-        # executor._progress is None by default
 
         def fake_encode(
             input_path: Any,
@@ -3438,18 +3102,10 @@ class TestEncodeOnProgressNoProgress:
         job = _pipeline_job(tmp_path)
         output_path = Path(job.output_file)
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        # Should not raise — progress is None, callback just skips
         executor._run_pipeline(job, output_path, tmp_path)
 
 
-# ---------------------------------------------------------------------------
-# Coverage gap: content_light with extra/unknown part (line 390->387)
-# ---------------------------------------------------------------------------
-
-
 class TestVideoMetaUnknownContentLightPart:
-    """Cover the content_light loop with a part not matching MaxCLL or MaxFALL."""
-
     def test_content_light_unknown_part_ignored(
         self,
         executor_with_mocks: tuple[Executor, SimpleNamespace],
@@ -3464,7 +3120,6 @@ class TestVideoMetaUnknownContentLightPart:
             return 0
 
         mocks.cleaner.clean.side_effect = fake_clean
-        # content_light with an extra unknown part
         hdr = HdrMetadata(content_light="MaxCLL=1000,MaxFALL=400,Unknown=999")
         vp = make_video_params(
             color_range="tv",
@@ -3490,17 +3145,10 @@ class TestVideoMetaUnknownContentLightPart:
         video_meta = mux_call.kwargs["video_meta"]
         assert video_meta["hdr_max_cll"] == "1000"
         assert video_meta["hdr_max_fall"] == "400"
-        # "Unknown=999" is silently ignored
         assert "Unknown" not in str(video_meta)
 
 
-# ---------------------------------------------------------------------------
-# Task 4 — Passthrough video step
-# ---------------------------------------------------------------------------
-
-
 def _passthrough_job(tmp_path: Path, *, dv_mode: DvMode | None = None) -> Any:
-    """Pipeline job whose video stream is copied verbatim (passthrough)."""
     return make_job(
         job_id="passthrough-job",
         source_files=["/src/movie.mkv"],
@@ -3516,8 +3164,6 @@ def _passthrough_job(tmp_path: Path, *, dv_mode: DvMode | None = None) -> Any:
 
 
 class TestVideoCopierInConstructor:
-    """video_copier added to the adapter list when provided."""
-
     def test_video_copier_appended(self) -> None:
         copier = MagicMock()
         executor = Executor(
@@ -3549,8 +3195,6 @@ class TestVideoCopierInConstructor:
 
 
 class TestRunPipelinePassthrough:
-    """Task 4: passthrough branch copies video instead of encoding."""
-
     def test_passthrough_calls_copy_video_not_encode(
         self,
         executor_with_mocks: tuple[Executor, SimpleNamespace],
@@ -3570,7 +3214,6 @@ class TestRunPipelinePassthrough:
 
         mocks.video_copier.copy_video.assert_called_once()
         assert not mocks.encoder.encode.called
-        # mux/tag/mkclean still run
         mocks.muxer.mux.assert_called_once()
         mocks.tagger.set_encoder_tag.assert_called_once()
         mocks.cleaner.clean.assert_called_once()
@@ -3626,7 +3269,6 @@ class TestRunPipelinePassthrough:
             dovi_processor=dovi_mock,
             video_copier=copier_mock,
         )
-        # Even with a DV mode set, passthrough must not extract RPU.
         job = _passthrough_job(tmp_path, dv_mode=DvMode.COPY)
         output_path = Path(job.output_file)
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -3640,8 +3282,6 @@ class TestRunPipelinePassthrough:
         executor_with_mocks: tuple[Executor, SimpleNamespace],
         tmp_path: Path,
     ) -> None:
-        """Passthrough keeps colour/HDR fields populated, so container-level
-        HDR flags must still reach the muxer (Plex/Jellyfin compatibility)."""
         from furnace.core.models import HdrMetadata
 
         executor, mocks = executor_with_mocks
@@ -3712,9 +3352,6 @@ class TestRunPipelinePassthrough:
         job = _passthrough_job(tmp_path)
         output_path = Path(job.output_file)
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        # Match the rc-failure message specifically — both this and the missing
-        # video_copier error contain "passthrough", so a bare match could pass
-        # for the wrong reason.
         with pytest.raises(RuntimeError, match=r"passthrough copy failed with return code 1"):
             executor._run_pipeline(job, output_path, tmp_path)
 
@@ -3768,7 +3405,6 @@ class TestRunPipelinePassthrough:
         executor_with_mocks: tuple[Executor, SimpleNamespace],
         tmp_path: Path,
     ) -> None:
-        """Passthrough progress callback skips size push when progress is None."""
         executor, mocks = executor_with_mocks
 
         def fake_copy(input_path: Any, output_path: Any, on_progress: Any = None) -> int:
@@ -3783,17 +3419,13 @@ class TestRunPipelinePassthrough:
             return 0
 
         mocks.cleaner.clean.side_effect = fake_clean
-        # executor._progress is None by default
         job = _passthrough_job(tmp_path)
         output_path = Path(job.output_file)
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        # Should not raise — callback simply skips the size push
         executor._run_pipeline(job, output_path, tmp_path)
 
 
 class TestVideoIntermediateName:
-    """The encode/copier video output filename feeding the final mux."""
-
     def test_encode_branch_uses_obu(self) -> None:
         assert _video_intermediate_name(passthrough=False) == "video.obu"
 
@@ -3801,20 +3433,10 @@ class TestVideoIntermediateName:
         assert _video_intermediate_name(passthrough=True) == "video.mkv"
 
 
-# ---------------------------------------------------------------------------
-# Grain encoder routing (Task 4)
-# ---------------------------------------------------------------------------
-
-
 def _grain_executor(
     *,
     grain_encoder: Any | None,
 ) -> tuple[Executor, SimpleNamespace]:
-    """Executor with a main encoder plus an optional second grain encoder.
-
-    Both encoders return a successful EncodeResult; mux/tag/clean succeed and
-    clean writes the final output so the pipeline runs end to end.
-    """
     mocks = SimpleNamespace(
         encoder=MagicMock(),
         grain_encoder=grain_encoder,
@@ -3856,7 +3478,6 @@ def _grain_executor(
 
 
 def _grain_job(tmp_path: Path, *, grain: bool, passthrough: bool = False) -> Any:
-    """Pipeline job whose grain / passthrough flags drive encoder routing."""
     return make_job(
         job_id="grain-job",
         source_files=["/src/movie.mkv"],
@@ -3872,8 +3493,6 @@ def _grain_job(tmp_path: Path, *, grain: bool, passthrough: bool = False) -> Any
 
 
 class TestGrainEncoderRouting:
-    """Jobs with video_params.grain route to the second (grain) encoder."""
-
     def test_grain_job_routes_to_grain_encoder(self, tmp_path: Path) -> None:
         grain_enc = MagicMock()
         executor, mocks = _grain_executor(grain_encoder=grain_enc)
@@ -3904,7 +3523,6 @@ class TestGrainEncoderRouting:
         output_path = Path(job.output_file)
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # No grain encoder configured → main encoder handles it, no crash.
         executor._run_pipeline(job, output_path, tmp_path)
 
         mocks.encoder.encode.assert_called_once()
@@ -3929,5 +3547,5 @@ class TestGrainEncoderRouting:
 
     def test_grain_encoder_absent_when_none(self) -> None:
         executor, mocks = _grain_executor(grain_encoder=None)
-        assert mocks.encoder in executor._adapters  # sanity: main still wired
+        assert mocks.encoder in executor._adapters
         assert None not in executor._adapters

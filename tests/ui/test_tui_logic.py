@@ -1,4 +1,3 @@
-"""Tests for extracted business-logic helpers in furnace.ui.tui."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -8,10 +7,6 @@ import pytest
 from furnace.core.models import CropRect, DownmixMode
 from furnace.ui.tui import build_downmix_map, parse_crop_value
 from tests.conftest import make_track
-
-# ---------------------------------------------------------------------------
-# parse_crop_value
-# ---------------------------------------------------------------------------
 
 
 class TestParseCropValue:
@@ -42,11 +37,6 @@ class TestParseCropValue:
     def test_exact_fit(self) -> None:
         result = parse_crop_value("1920:1080:0:0", 1920, 1080)
         assert result == CropRect(w=1920, h=1080, x=0, y=0)
-
-
-# ---------------------------------------------------------------------------
-# build_downmix_map
-# ---------------------------------------------------------------------------
 
 
 class TestBuildDownmixMap:
@@ -90,7 +80,4 @@ class TestBuildDownmixMap:
             None,
         ]
         result = build_downmix_map(tracks, selected, downmix_list)
-        # track 0: selected + stereo -> in map
-        # track 1: unselected -> not in map
-        # track 2: selected but None downmix -> not in map
         assert result == {(Path("/src/a.mkv"), 1): DownmixMode.STEREO}

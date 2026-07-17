@@ -1,4 +1,3 @@
-"""Tests for the CICP code-point maps in furnace.core.color."""
 from __future__ import annotations
 
 import pytest
@@ -12,8 +11,8 @@ class TestCicpPrimaries:
         [
             ("bt709", 1),
             ("bt470m", 4),
-            ("bt470bg", 5),  # PAL / EBU
-            ("smpte170m", 6),  # NTSC / SMPTE-C
+            ("bt470bg", 5),
+            ("smpte170m", 6),
             ("smpte240m", 7),
             ("bt2020", 9),
         ],
@@ -29,14 +28,13 @@ class TestCicpTransfer:
             ("bt709", 1),
             ("bt470m", 4),
             ("bt470bg", 5),
-            ("smpte170m", 6),  # the real SD/BT.601 curve
+            ("smpte170m", 6),
             ("smpte240m", 7),
             ("linear", 8),
-            # SDR BT.2020 — reaches the AV1 encoder via the HD/UHD grain path.
             ("bt2020-10", 14),
             ("bt2020-12", 15),
-            ("smpte2084", 16),  # HDR10 / PQ
-            ("arib-std-b67", 18),  # HLG
+            ("smpte2084", 16),
+            ("arib-std-b67", 18),
         ],
     )
     def test_values(self, name: str, code: int) -> None:
@@ -48,8 +46,8 @@ class TestCicpMatrix:
         ("name", "code"),
         [
             ("bt709", 1),
-            ("bt470bg", 5),  # PAL matrix == BT.601 coefficients
-            ("smpte170m", 6),  # NTSC matrix == BT.601 coefficients
+            ("bt470bg", 5),
+            ("smpte170m", 6),
             ("smpte240m", 7),
             ("bt2020nc", 9),
             ("bt2020c", 10),
@@ -66,8 +64,5 @@ class TestConsistency:
                 assert 0 <= code <= 255
 
     def test_pal_and_ntsc_matrix_share_bt601_coefficients(self) -> None:
-        # bt470bg (PAL) and smpte170m (NTSC) are numerically identical BT.601
-        # matrices; only the enum name differs. Both must be present so each
-        # system keeps its own tag.
         assert "bt470bg" in CICP_MATRIX
         assert "smpte170m" in CICP_MATRIX

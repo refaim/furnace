@@ -17,46 +17,58 @@ class TestRunToolPipeValidation:
         mock_process = MagicMock()
         mock_process.stdout = None
         mock_process.stderr = MagicMock()
-        with patch("furnace.adapters._subprocess.subprocess.Popen", return_value=mock_process), \
-             pytest.raises(RuntimeError, match="pipes"):
+        with (
+            patch("furnace.adapters._subprocess.subprocess.Popen", return_value=mock_process),
+            pytest.raises(RuntimeError, match="pipes"),
+        ):
             run_tool(["echo", "x"])
 
     def test_raises_when_stderr_missing(self) -> None:
         mock_process = MagicMock()
         mock_process.stdout = MagicMock()
         mock_process.stderr = None
-        with patch("furnace.adapters._subprocess.subprocess.Popen", return_value=mock_process), \
-             pytest.raises(RuntimeError, match="pipes"):
+        with (
+            patch("furnace.adapters._subprocess.subprocess.Popen", return_value=mock_process),
+            pytest.raises(RuntimeError, match="pipes"),
+        ):
             run_tool(["echo", "x"])
 
 
 class TestRunToolRealProcess:
-    """Tests using real subprocesses (no mocking Popen)."""
-
     def test_happy_path_stdout(self) -> None:
         rc, output = run_tool([sys.executable, "-c", "print('hello world')"])
         assert rc == 0
         assert "hello world" in output
 
     def test_stderr_captured(self) -> None:
-        rc, output = run_tool([
-            sys.executable, "-c",
-            "import sys; sys.stderr.write('err msg\\n')",
-        ])
+        rc, output = run_tool(
+            [
+                sys.executable,
+                "-c",
+                "import sys; sys.stderr.write('err msg\\n')",
+            ]
+        )
         assert rc == 0
         assert "err msg" in output
 
     def test_nonzero_rc(self) -> None:
-        rc, _output = run_tool([
-            sys.executable, "-c", "import sys; sys.exit(42)",
-        ])
+        rc, _output = run_tool(
+            [
+                sys.executable,
+                "-c",
+                "import sys; sys.exit(42)",
+            ]
+        )
         assert rc == 42
 
     def test_cr_splitting(self) -> None:
-        rc, output = run_tool([
-            sys.executable, "-c",
-            "import sys; sys.stdout.write('aaa\\rbbb\\n'); sys.stdout.flush()",
-        ])
+        rc, output = run_tool(
+            [
+                sys.executable,
+                "-c",
+                "import sys; sys.stdout.write('aaa\\rbbb\\n'); sys.stdout.flush()",
+            ]
+        )
         assert rc == 0
         assert "aaa" in output
         assert "bbb" in output
@@ -108,18 +120,10 @@ class TestRunToolRealProcess:
             cwd=tmp_path,
         )
         assert rc == 0
-        # Resolve to handle symlinks / case differences across platforms
         assert Path(output.strip()).resolve() == tmp_path.resolve()
 
 
 class _SyncThread:
-    """Fake Thread that runs target synchronously in the main thread.
-
-    Used to bring `_read_stream` into the traced main thread so coverage
-    can see its body, and to let us force `is_alive()` True for the
-    thread-race branch.
-    """
-
     is_alive_return = False
 
     def __init__(
@@ -144,21 +148,10 @@ class _SyncThread:
 
 
 class TestRunToolThreadRace:
-    """Covers the reader-thread-did-not-finish warning branch and
-    brings `_read_stream` into the main thread for coverage tracing.
-    """
-
     def test_read_stream_covered_via_sync_thread(
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Run readers synchronously so coverage traces `_read_stream`.
-
-        Produces output covering:
-          * EOF-with-buffer path (no trailing newline)
-          * \\n-split path (newline-terminated)
-          * empty-buffer skip on consecutive newlines (`\\n\\n`)
-        """
 
         class SyncOK(_SyncThread):
             is_alive_return = False
@@ -168,15 +161,15 @@ class TestRunToolThreadRace:
             SyncOK,
         )
 
-        rc, output = run_tool([
-            sys.executable,
-            "-c",
-            # stdout: no trailing newline -> EOF-with-buffer path
-            # stderr: `\n\n` -> covers empty-buf skip branch at line 101
-            "import sys; "
-            "sys.stdout.write('partial'); sys.stdout.flush(); "
-            "sys.stderr.write('done\\n\\nmore\\n'); sys.stderr.flush()",
-        ])
+        rc, output = run_tool(
+            [
+                sys.executable,
+                "-c",
+                "import sys; "
+                "sys.stdout.write('partial'); sys.stdout.flush(); "
+                "sys.stderr.write('done\\n\\nmore\\n'); sys.stderr.flush()",
+            ]
+        )
 
         assert rc == 0
         assert "partial" in output
@@ -188,16 +181,10 @@ class TestRunToolThreadRace:
         monkeypatch: pytest.MonkeyPatch,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
-        """Cover the OSError handler in `_read_stream`.
-
-        Patches `threading.Thread` to run synchronously, then hands a
-        stream whose `read()` raises OSError so the except branch fires.
-        """
         class BoomStream:
             def read(self, _n: int) -> bytes:
                 raise OSError("boom")
 
-        # stdout raises, stderr is benign
         mock_process = MagicMock()
         mock_process.stdout = BoomStream()
         mock_process.stderr = BoomStream()
@@ -239,6 +226,4 @@ class TestRunToolThreadRace:
             rc, _output = run_tool([sys.executable, "-c", "print('x')"])
 
         assert rc == 0
-        assert any(
-            "reader thread did not finish in 5s" in rec.message for rec in caplog.records
-        )
+        assert any("reader thread did not finish in 5s" in rec.message for rec in caplog.records)

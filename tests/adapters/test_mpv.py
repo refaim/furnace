@@ -1,4 +1,3 @@
-"""Tests for MpvAdapter preview methods."""
 from __future__ import annotations
 
 from pathlib import Path

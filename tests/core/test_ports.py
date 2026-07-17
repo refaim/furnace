@@ -1,10 +1,3 @@
-"""Protocol-shape tests for ``furnace.core.ports``.
-
-These tests pin down the public surface of ``Prober`` so that adapters and
-fakes can rely on the method set without importing the concrete adapter.
-They also assert runtime_checkable conformance for a minimal in-test stub —
-any drift in the Protocol signature shows up here immediately.
-"""
 from __future__ import annotations
 
 import inspect
@@ -20,12 +13,6 @@ from furnace.core.progress import ProgressSample
 
 
 class _MinimalProber:
-    """Concrete no-op implementation of every Prober method.
-
-    Used to verify that the ``@runtime_checkable`` Protocol accepts an
-    independently-declared class that merely provides the expected methods.
-    """
-
     def probe(self, path: Path) -> dict[str, Any]:  # noqa: ARG002
         return {}
 
@@ -67,12 +54,20 @@ class _MinimalProber:
     ) -> AudioMetrics:
         return AudioMetrics(
             channels=channels,
-            rms_l=-20.0, rms_r=-20.0,
-            rms_c=None, rms_lfe=None, rms_ls=None, rms_rs=None,
-            rms_lb=None, rms_rb=None,
+            rms_l=-20.0,
+            rms_r=-20.0,
+            rms_c=None,
+            rms_lfe=None,
+            rms_ls=None,
+            rms_rs=None,
+            rms_lb=None,
+            rms_rb=None,
             corr_lr=0.0,
-            corr_ls_l=None, corr_rs_r=None, corr_ls_rs=None,
-            corr_lb_ls=None, corr_rb_rs=None,
+            corr_ls_l=None,
+            corr_rs_r=None,
+            corr_ls_rs=None,
+            corr_lb_ls=None,
+            corr_rb_rs=None,
         )
 
 
@@ -84,7 +79,6 @@ def test_prober_has_profile_audio_track() -> None:
 def test_prober_profile_audio_track_signature() -> None:
     sig = inspect.signature(Prober.profile_audio_track)
     params = sig.parameters
-    # self + four positional args + on_progress (positional-with-default)
     assert list(params) == [
         "self",
         "path",
@@ -93,11 +87,8 @@ def test_prober_profile_audio_track_signature() -> None:
         "duration_s",
         "on_progress",
     ]
-    # ``on_progress`` is opt-in: defaults to None so existing callers keep working.
     assert params["on_progress"].default is None
 
-    # Annotations are stringified by `from __future__ import annotations`, so
-    # resolve them with `typing.get_type_hints` before comparing identities.
     hints = typing.get_type_hints(Prober.profile_audio_track)
     assert hints["path"] is Path
     assert hints["stream_index"] is int
@@ -163,20 +154,20 @@ def test_minimal_prober_satisfies_runtime_checkable_protocol() -> None:
 
 
 def test_minimal_prober_method_surface() -> None:
-    """Exercise every method of the stub so coverage stays at 100%.
-
-    The stub exists purely to demonstrate Protocol conformance; if a new
-    method lands on Prober and the stub forgets to implement it, this test
-    is where it gets caught.
-    """
     stub = _MinimalProber()
     assert stub.probe(Path("/dev/null")) == {}
     assert stub.detect_crop(Path("/dev/null"), 60.0) is None
     assert stub.detect_crop(Path("/dev/null"), 60.0, interlaced=True, is_dvd=True) is None
-    assert stub.detect_crop(
-        Path("/dev/null"), 60.0,
-        interlaced=True, is_dvd=True, hdr_transfer="smpte2084",
-    ) is None
+    assert (
+        stub.detect_crop(
+            Path("/dev/null"),
+            60.0,
+            interlaced=True,
+            is_dvd=True,
+            hdr_transfer="smpte2084",
+        )
+        is None
+    )
     assert stub.get_encoder_tag(Path("/dev/null")) is None
     assert stub.run_idet(Path("/dev/null"), 60.0) == 0.0
     assert stub.probe_hdr_side_data(Path("/dev/null")) == []
@@ -186,13 +177,6 @@ def test_minimal_prober_method_surface() -> None:
 
 
 class _MinimalAudioExtractor:
-    """Concrete no-op implementation of every AudioExtractor method.
-
-    Mirrors ``_MinimalProber`` — proves that the runtime_checkable Protocol
-    accepts an independently-declared class with the expected surface, and
-    locks the signature of ``stereo_to_mono_wav`` in place.
-    """
-
     def extract_track(
         self,
         input_path: Path,  # noqa: ARG002
@@ -230,7 +214,6 @@ def test_audio_extractor_has_stereo_to_mono_wav() -> None:
 def test_audio_extractor_stereo_to_mono_wav_signature() -> None:
     sig = inspect.signature(AudioExtractor.stereo_to_mono_wav)
     params = sig.parameters
-    # self + four positional args + optional on_progress callback
     assert list(params) == [
         "self",
         "input_path",
@@ -258,9 +241,6 @@ def test_minimal_audio_extractor_satisfies_runtime_checkable_protocol(
 
 
 def test_minimal_audio_extractor_method_surface(tmp_path: Path) -> None:
-    """Exercise every method of the AudioExtractor stub so coverage stays
-    at 100% — same rationale as ``test_minimal_prober_method_surface``.
-    """
     stub = _MinimalAudioExtractor()
     assert stub.extract_track(Path("/dev/null"), 0, tmp_path / "o.thd") == 0
     assert stub.ffmpeg_to_wav(Path("/dev/null"), 0, tmp_path / "o.wav") == 0

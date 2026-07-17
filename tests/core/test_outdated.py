@@ -1,9 +1,3 @@
-"""Unit tests for the pure ``--outdated`` defect ledger.
-
-Every ledger rule, every branch, the encoder-family parser boundary values, the
-per-row severity/fix rollup, multi-defect stacking and the sort order are
-covered here with pure inputs (no mocks, no I/O).
-"""
 from __future__ import annotations
 
 from collections.abc import Sequence
@@ -20,11 +14,6 @@ from furnace.core.outdated import (
     row_severity,
 )
 from furnace.core.scan import parse_encoder_family
-
-# ---------------------------------------------------------------------------
-# classify_outdated helper: a clean current-version Furnace file (no defects),
-# each test overrides just the fields its rule keys on.
-# ---------------------------------------------------------------------------
 
 
 def classify(**overrides: object) -> tuple[Defect, ...]:
@@ -43,11 +32,6 @@ def classify(**overrides: object) -> tuple[Defect, ...]:
 
 def _reasons(defects: Sequence[Defect]) -> list[str]:
     return [d.reason for d in defects]
-
-
-# ---------------------------------------------------------------------------
-# parse_encoder_family
-# ---------------------------------------------------------------------------
 
 
 class TestParseEncoderFamily:
@@ -71,11 +55,6 @@ class TestParseEncoderFamily:
 
     def test_empty_is_unknown(self) -> None:
         assert parse_encoder_family("") == EncoderFamily.UNKNOWN
-
-
-# ---------------------------------------------------------------------------
-# Enum ordering / labels
-# ---------------------------------------------------------------------------
 
 
 class TestEnums:
@@ -107,25 +86,14 @@ class TestEnums:
         assert Fix.NONE.label == "—"
 
 
-# ---------------------------------------------------------------------------
-# Unreadable
-# ---------------------------------------------------------------------------
-
-
 class TestUnreadable:
     def test_unreadable_single_defect(self) -> None:
         defects = classify(unreadable=True)
         assert defects == (Defect(reason="unreadable", severity=Severity.UNREADABLE, fix=Fix.NONE),)
 
     def test_unreadable_wins_over_everything(self) -> None:
-        # Even a foreign/HEVC combo is reported purely as unreadable.
         defects = classify(unreadable=True, version=None, encoder_family=EncoderFamily.HEVC_NVENC)
         assert _reasons(defects) == ["unreadable"]
-
-
-# ---------------------------------------------------------------------------
-# Foreign (no valid Furnace tag)
-# ---------------------------------------------------------------------------
 
 
 class TestForeign:
@@ -138,14 +106,8 @@ class TestForeign:
         assert defects == (Defect(reason="unknown", severity=Severity.FOREIGN, fix=Fix.RE_ENCODE),)
 
     def test_foreign_ignores_encoder_family(self) -> None:
-        # A foreign file never keys on encoder family (no Furnace tag → no ledger).
         defects = classify(version=None, codec="vp9", encoder_family=EncoderFamily.AV1_NVENC)
         assert _reasons(defects) == ["vp9"]
-
-
-# ---------------------------------------------------------------------------
-# superseded codec (HEVC)
-# ---------------------------------------------------------------------------
 
 
 class TestSupersededCodec:
@@ -154,9 +116,6 @@ class TestSupersededCodec:
         assert defects == (Defect(reason="superseded codec", severity=Severity.QUALITY, fix=Fix.RE_ENCODE),)
 
     def test_hevc_encode_subsumes_all_other_defects(self) -> None:
-        # A real HEVC encode reports ONLY superseded codec even when other latent
-        # defects would otherwise fire (here: missing matrix tag → color tags):
-        # its from-scratch RE-ENCODE fixes everything, so the early return wins.
         defects = classify(
             encoder_family=EncoderFamily.HEVC_NVENC,
             version=(1, 19, 3),
@@ -166,8 +125,6 @@ class TestSupersededCodec:
         assert _reasons(defects) == ["superseded codec"]
 
     def test_hevc_encode_subsumes_mono_downmix(self) -> None:
-        # v2.0.0 mono downmix would fire on any other family, but a HEVC encode
-        # subsumes it (the RE-ENCODE re-runs audio from source anyway).
         defects = classify(
             encoder_family=EncoderFamily.HEVC_NVENC,
             version=(2, 0, 0),
@@ -177,11 +134,6 @@ class TestSupersededCodec:
 
     def test_av1_not_superseded(self) -> None:
         assert _reasons(classify(encoder_family=EncoderFamily.AV1_NVENC)) == []
-
-
-# ---------------------------------------------------------------------------
-# crop 4px (AV1 < 2.1.2)
-# ---------------------------------------------------------------------------
 
 
 class TestCrop4px:
@@ -194,14 +146,7 @@ class TestCrop4px:
         assert "crop 4px" not in _reasons(classify(version=(2, 1, 2)))
 
     def test_not_av1_does_not_fire(self) -> None:
-        assert "crop 4px" not in _reasons(
-            classify(encoder_family=EncoderFamily.PASSTHROUGH, version=(2, 1, 1))
-        )
-
-
-# ---------------------------------------------------------------------------
-# fps drift (AV1 < 2.1.4)
-# ---------------------------------------------------------------------------
+        assert "crop 4px" not in _reasons(classify(encoder_family=EncoderFamily.PASSTHROUGH, version=(2, 1, 1)))
 
 
 class TestFpsDrift:
@@ -214,14 +159,7 @@ class TestFpsDrift:
         assert "fps drift" not in _reasons(classify(version=(2, 1, 4)))
 
     def test_not_av1_does_not_fire(self) -> None:
-        assert "fps drift" not in _reasons(
-            classify(encoder_family=EncoderFamily.PASSTHROUGH, version=(2, 1, 3))
-        )
-
-
-# ---------------------------------------------------------------------------
-# soft telecine (AV1_NVENC, 2.1.4 <= v < 2.6.0, NTSC-SD height)
-# ---------------------------------------------------------------------------
+        assert "fps drift" not in _reasons(classify(encoder_family=EncoderFamily.PASSTHROUGH, version=(2, 1, 3)))
 
 
 class TestSoftTelecine:
@@ -237,7 +175,6 @@ class TestSoftTelecine:
         assert "soft telecine" not in _reasons(classify(version=(2, 6, 0), height=480))
 
     def test_below_2_1_4_does_not_fire_telecine(self) -> None:
-        # Pre-2.1.4 the same NTSC source is caught by fps drift instead.
         defects = classify(version=(2, 1, 3), height=480)
         assert "soft telecine" not in _reasons(defects)
         assert "fps drift" in _reasons(defects)
@@ -252,11 +189,6 @@ class TestSoftTelecine:
         assert "soft telecine" not in _reasons(
             classify(encoder_family=EncoderFamily.AV1_SVT, version=(2, 5, 0), height=480)
         )
-
-
-# ---------------------------------------------------------------------------
-# soft QVBR (AV1_NVENC < 2.2.0, height >= 1440)
-# ---------------------------------------------------------------------------
 
 
 class TestSoftQvbr:
@@ -282,11 +214,6 @@ class TestSoftQvbr:
         )
 
 
-# ---------------------------------------------------------------------------
-# grain loss (AV1_NVENC < 2.7.0, height < 720 SD)
-# ---------------------------------------------------------------------------
-
-
 class TestGrainLoss:
     def test_fires_for_sd(self) -> None:
         defects = classify(encoder_family=EncoderFamily.AV1_NVENC, version=(2, 6, 0), height=480)
@@ -305,15 +232,9 @@ class TestGrainLoss:
         assert "grain loss" not in _reasons(classify(version=(2, 6, 0), height=None))
 
     def test_svt_family_does_not_fire(self) -> None:
-        # SVT-AV1 is the grain encoder; it never loses grain.
         assert "grain loss" not in _reasons(
             classify(encoder_family=EncoderFamily.AV1_SVT, version=(2, 6, 0), height=480)
         )
-
-
-# ---------------------------------------------------------------------------
-# color tags (Furnace < 2.7.2, matrix tag absent)
-# ---------------------------------------------------------------------------
 
 
 class TestColorTags:
@@ -334,16 +255,8 @@ class TestColorTags:
         assert "color tags" not in _reasons(classify(version=(2, 7, 2), color_matrix=None))
 
     def test_fires_regardless_of_encoder_family(self) -> None:
-        # color tags is not AV1-gated: a passthrough copy pre-2.7.2 needs a remux.
-        defects = classify(
-            encoder_family=EncoderFamily.PASSTHROUGH, version=(2, 7, 1), color_matrix=None
-        )
+        defects = classify(encoder_family=EncoderFamily.PASSTHROUGH, version=(2, 7, 1), color_matrix=None)
         assert "color tags" in _reasons(defects)
-
-
-# ---------------------------------------------------------------------------
-# mono downmix (== 2.0.0, at least one mono audio track)
-# ---------------------------------------------------------------------------
 
 
 class TestMonoDownmix:
@@ -361,19 +274,11 @@ class TestMonoDownmix:
         assert "mono downmix" not in _reasons(classify(version=(2, 0, 1), audio_channels=(1,)))
 
     def test_lower_boundary_1_19_0_does_not_fire(self) -> None:
-        # Pinned to exactly 2.0.0 — an earlier release with a mono track is not it.
-        defects = classify(
-            encoder_family=EncoderFamily.PASSTHROUGH, version=(1, 19, 0), audio_channels=(1,)
-        )
+        defects = classify(encoder_family=EncoderFamily.PASSTHROUGH, version=(1, 19, 0), audio_channels=(1,))
         assert "mono downmix" not in _reasons(defects)
 
     def test_channels_none_is_ignored(self) -> None:
         assert "mono downmix" not in _reasons(classify(version=(2, 0, 0), audio_channels=(None,)))
-
-
-# ---------------------------------------------------------------------------
-# No-defect file (current version)
-# ---------------------------------------------------------------------------
 
 
 def test_clean_current_file_has_no_defects() -> None:
@@ -381,7 +286,6 @@ def test_clean_current_file_has_no_defects() -> None:
 
 
 def test_clean_passthrough_file_has_no_defects() -> None:
-    # A verbatim copy from a recent-enough Furnace, matrix tag present, HD.
     defects = classify(
         encoder_family=EncoderFamily.PASSTHROUGH,
         version=(2, 1, 0),
@@ -392,15 +296,8 @@ def test_clean_passthrough_file_has_no_defects() -> None:
     assert defects == ()
 
 
-# ---------------------------------------------------------------------------
-# Multi-defect stacking + sort order (Reason cell order = by severity)
-# ---------------------------------------------------------------------------
-
-
 class TestStacking:
     def test_av1_sd_ntsc_pre_2_1_2_stacks_and_sorts(self) -> None:
-        # An early AV1_NVENC NTSC-SD encode trips crop 4px, fps drift, grain loss
-        # and color tags at once; the tuple comes back ordered by severity.
         defects = classify(
             encoder_family=EncoderFamily.AV1_NVENC,
             version=(2, 0, 5),
@@ -409,7 +306,6 @@ class TestStacking:
             audio_channels=(6,),
         )
         assert _reasons(defects) == ["fps drift", "crop 4px", "grain loss", "color tags"]
-        # SYNC first, then the two QUALITY defects in insertion order, then COSMETIC.
         assert [d.severity for d in defects] == [
             Severity.SYNC,
             Severity.QUALITY,
@@ -418,15 +314,9 @@ class TestStacking:
         ]
 
     def test_stack_is_stable_within_same_severity(self) -> None:
-        # crop 4px is inserted before grain loss; both QUALITY, order preserved.
         defects = classify(encoder_family=EncoderFamily.AV1_NVENC, version=(2, 0, 5), height=480)
         quality = [d.reason for d in defects if d.severity is Severity.QUALITY]
         assert quality == ["crop 4px", "grain loss"]
-
-
-# ---------------------------------------------------------------------------
-# Row-level rollup: severity (worst) and fix (strongest)
-# ---------------------------------------------------------------------------
 
 
 class TestRowRollup:
@@ -459,6 +349,5 @@ class TestRowRollup:
         assert row_fix(defects) is Fix.NONE
 
     def test_empty_defects_falls_back_safely(self) -> None:
-        # Defensive: the public renderer must never ValueError on an empty row.
         assert row_severity(()) is Severity.UNREADABLE
         assert row_fix(()) is Fix.NONE

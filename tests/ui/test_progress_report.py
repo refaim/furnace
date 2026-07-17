@@ -1,5 +1,3 @@
-"""Tests for furnace.ui.progress.ReportPrinter."""
-
 from __future__ import annotations
 
 from io import StringIO
@@ -12,17 +10,11 @@ from tests.conftest import make_job, make_plan
 
 
 def _render(**plan_kw: object) -> str:
-    """Render a report and return captured text."""
     plan = make_plan(**plan_kw)  # type: ignore[arg-type]
     buf = StringIO()
     console = Console(file=buf, force_terminal=False, width=120)
     ReportPrinter().print_report(plan, console)
     return buf.getvalue()
-
-
-# ------------------------------------------------------------------
-# 1. All jobs DONE
-# ------------------------------------------------------------------
 
 
 class TestAllDone:
@@ -50,11 +42,6 @@ class TestAllDone:
         assert "0" in text.split("Files skipped:")[1].split("\n")[0]
         assert "Files with errors:" in text
         assert "0" in text.split("Files with errors:")[1].split("\n")[0]
-
-
-# ------------------------------------------------------------------
-# 2. Error jobs
-# ------------------------------------------------------------------
 
 
 class TestErrorJobs:
@@ -91,11 +78,6 @@ class TestErrorJobs:
         ]
         text = _render(jobs=jobs)
         assert "2" in text.split("Files with errors:")[1].split("\n")[0]
-
-
-# ------------------------------------------------------------------
-# 3. Mixed statuses
-# ------------------------------------------------------------------
 
 
 class TestMixedStatuses:
@@ -135,11 +117,6 @@ class TestMixedStatuses:
         assert "encoding failed" in text
 
 
-# ------------------------------------------------------------------
-# 4. Size savings
-# ------------------------------------------------------------------
-
-
 class TestSizeSavings:
     def test_positive_savings(self) -> None:
         jobs = [make_job(status=JobStatus.DONE, source_size=10_485_760, output_size=5_242_880)]
@@ -158,7 +135,6 @@ class TestSizeSavings:
         jobs = [make_job(status=JobStatus.DONE, source_size=5_242_880, output_size=10_485_760)]
         text = _render(jobs=jobs)
         assert "Space saved:" in text
-        # saved is negative -> sign is "+"
         assert "+100.0%" in text
 
     def test_no_size_table_when_source_size_zero(self) -> None:
@@ -177,14 +153,8 @@ class TestSizeSavings:
         jobs = [make_job(status=JobStatus.DONE, source_size=10_485_760, output_size=0)]
         text = _render(jobs=jobs)
         assert "Total source size:" in text
-        # fmt_size(0) returns "?" and total_output == 0 is falsy
         assert "Total output size:" not in text
         assert "Space saved:" not in text
-
-
-# ------------------------------------------------------------------
-# 5. No done jobs
-# ------------------------------------------------------------------
 
 
 class TestNoDoneJobs:
@@ -214,11 +184,6 @@ class TestNoDoneJobs:
         assert "0" in text.split("Files processed:")[1].split("\n")[0]
         assert "Total files:" in text
         assert "0" in text.split("Total files:")[1].split("\n")[0]
-
-
-# ------------------------------------------------------------------
-# 6. Per-file display
-# ------------------------------------------------------------------
 
 
 class TestPerFileDisplay:

@@ -43,13 +43,6 @@ def test_garbage_returns_none() -> None:
 
 
 class TestDemuxProgressWiring:
-    """Cover the on_progress_line closure inside MakemkvAdapter.demux_title.
-
-    The closure has three branches: sample is None (return False), sample
-    present + callback None, sample present + callback present. All three
-    must be exercised for 100% branch coverage.
-    """
-
     @staticmethod
     def _make_fake_run_tool(
         tmp_path: Path,
@@ -66,7 +59,6 @@ class TestDemuxProgressWiring:
             str_cmd = [str(c) for c in cmd]
             if "info" in str_cmd:
                 return 0, "Title #5 was added (3 cell(s), 1:00:00)\n"
-            # demux step: feed progress_lines through the closure
             progress_returns.extend(on_progress_line(line) for line in progress_lines)
             mkv_file = tmp_path / "out" / "title_t05.mkv"
             mkv_file.parent.mkdir(parents=True, exist_ok=True)
@@ -76,12 +68,11 @@ class TestDemuxProgressWiring:
         return fake_run_tool
 
     def test_prgv_after_saving_prgc_emits_sample(self, tmp_path: Path) -> None:
-        """PRGV samples are forwarded only after the 'Saving to MKV file' PRGC."""
         samples: list[ProgressSample] = []
         progress_returns: list[bool] = []
         lines = [
-            'PRGC:5017,0,"Saving to MKV file"',  # opens the gate (returns False, flows to log)
-            "PRGV:50,100,100",                    # forwarded (gate is open)
+            'PRGC:5017,0,"Saving to MKV file"',
+            "PRGV:50,100,100",
         ]
         fake = self._make_fake_run_tool(tmp_path, lines, progress_returns)
         adapter = MakemkvAdapter(Path("makemkvcon.exe"))
@@ -96,12 +87,11 @@ class TestDemuxProgressWiring:
         assert samples == [ProgressSample(fraction=0.5)]
 
     def test_prgv_before_saving_prgc_is_dropped(self, tmp_path: Path) -> None:
-        """PRGV before the 'Saving to MKV file' PRGC is consumed but not forwarded."""
         samples: list[ProgressSample] = []
         progress_returns: list[bool] = []
         lines = [
-            'PRGC:3104,0,"Decrypting data"',  # not the saving label, gate stays closed
-            "PRGV:50,100,100",                 # consumed (returns True) but no sample
+            'PRGC:3104,0,"Decrypting data"',
+            "PRGV:50,100,100",
         ]
         fake = self._make_fake_run_tool(tmp_path, lines, progress_returns)
         adapter = MakemkvAdapter(Path("makemkvcon.exe"))

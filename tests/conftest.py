@@ -1,8 +1,3 @@
-"""Shared test factories for furnace test suite.
-
-Every factory produces a valid object with sensible defaults.
-All parameters are keyword-only so call-sites are self-documenting.
-"""
 from __future__ import annotations
 
 from pathlib import Path
@@ -29,9 +24,6 @@ from furnace.core.models import (
     VideoParams,
 )
 
-# ---------------------------------------------------------------------------
-# VideoInfo
-# ---------------------------------------------------------------------------
 
 def make_video_info(
     *,
@@ -80,10 +72,6 @@ def make_video_info(
     )
 
 
-# ---------------------------------------------------------------------------
-# VideoParams
-# ---------------------------------------------------------------------------
-
 def make_video_params(
     *,
     cq: int = 25,
@@ -131,10 +119,6 @@ def make_video_params(
     )
 
 
-# ---------------------------------------------------------------------------
-# Track
-# ---------------------------------------------------------------------------
-
 def make_track(
     *,
     index: int = 0,
@@ -178,10 +162,6 @@ def make_track(
     )
 
 
-# ---------------------------------------------------------------------------
-# AudioInstruction
-# ---------------------------------------------------------------------------
-
 def make_audio_instruction(
     *,
     source_file: str = "/src/movie.mkv",
@@ -209,10 +189,6 @@ def make_audio_instruction(
     )
 
 
-# ---------------------------------------------------------------------------
-# SubtitleInstruction
-# ---------------------------------------------------------------------------
-
 def make_subtitle_instruction(
     *,
     source_file: str = "/src/movie.mkv",
@@ -235,10 +211,6 @@ def make_subtitle_instruction(
         source_encoding=source_encoding,
     )
 
-
-# ---------------------------------------------------------------------------
-# Job
-# ---------------------------------------------------------------------------
 
 def make_job(
     *,
@@ -277,10 +249,6 @@ def make_job(
     )
 
 
-# ---------------------------------------------------------------------------
-# Plan
-# ---------------------------------------------------------------------------
-
 def make_plan(
     *,
     version: str = "2",
@@ -301,10 +269,6 @@ def make_plan(
         jobs=jobs if jobs is not None else [make_job()],
     )
 
-
-# ---------------------------------------------------------------------------
-# Movie
-# ---------------------------------------------------------------------------
 
 def make_movie(
     *,

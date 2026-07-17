@@ -11,7 +11,7 @@ class TestParseNvenccProgressLine:
         sample = _parse_nvencc_progress_line(line)
         assert sample is not None
         assert sample.fraction == pytest.approx(0.453)
-        assert sample.speed is None  # no src_fps passed
+        assert sample.speed is None
 
     def test_percent_with_src_fps(self) -> None:
         line = "[45.3%] 12345 frames: 48.0 fps, 8547 kb/s"
@@ -35,5 +35,4 @@ class TestParseNvenccProgressLine:
         assert sample.speed is None
 
     def test_malformed_percent(self) -> None:
-        # Regex won't match non-numeric percent, result is None
         assert _parse_nvencc_progress_line("[not-a-number%]") is None

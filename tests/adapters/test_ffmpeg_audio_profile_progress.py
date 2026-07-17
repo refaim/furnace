@@ -1,6 +1,3 @@
-"""Tests for the per-sample-point progress callback of
-``FFmpegAdapter.profile_audio_track``."""
-
 from __future__ import annotations
 
 from pathlib import Path

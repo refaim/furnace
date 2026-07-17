@@ -1,12 +1,3 @@
-"""Pure-function tests for ALL formatting helpers across the UI layer.
-
-Covers:
-- furnace.ui.fmt.fmt_size
-- furnace.ui.run_tui: _fmt_time, _fmt_bitrate, _channel_layout_short,
-    _audio_step_label, _sub_step_label, _build_steps, _build_source_text,
-    _build_target_text, _sub_target_label
-- furnace.ui.tui: _fmt_duration, _fmt_subtitle_track
-"""
 from __future__ import annotations
 
 from furnace.core.models import (
@@ -150,14 +141,18 @@ class TestAudioStepLabel:
 
     def test_decode_encode(self) -> None:
         instr = make_audio_instruction(
-            action=AudioAction.DECODE_ENCODE, codec_name="truehd", channels=8,
+            action=AudioAction.DECODE_ENCODE,
+            codec_name="truehd",
+            channels=8,
         )
         result = _audio_step_label(instr, 0, 1)
         assert result == "Recode audio (TRUEHD -> AAC)"
 
     def test_ffmpeg_encode(self) -> None:
         instr = make_audio_instruction(
-            action=AudioAction.FFMPEG_ENCODE, codec_name="opus", channels=6,
+            action=AudioAction.FFMPEG_ENCODE,
+            codec_name="opus",
+            channels=6,
         )
         result = _audio_step_label(instr, 0, 1)
         assert result == "Recode audio (OPUS -> AAC)"
@@ -188,9 +183,6 @@ class TestAudioStepLabel:
         assert result == "Denorm audio 2 (DTS 5.1)"
 
     def test_decode_encode_with_mono_downmix_shows_layout_arrow(self) -> None:
-        """MONO downmix surfaces the layout arrow so the user sees the
-        channel change (was missing in 1.15.0 — bare 'codec -> AAC' hid it).
-        """
         instr = make_audio_instruction(
             action=AudioAction.DECODE_ENCODE,
             codec_name="dts",
@@ -221,7 +213,6 @@ class TestAudioStepLabel:
         assert result == "Recode audio (TRUEHD 7.1 -> AAC 5.1)"
 
     def test_decode_encode_no_downmix_keeps_bare_arrow(self) -> None:
-        """Regression: without an active downmix the label stays terse."""
         instr = make_audio_instruction(
             action=AudioAction.DECODE_ENCODE,
             codec_name="dts",
@@ -245,7 +236,8 @@ class TestAudioStepLabel:
 class TestSubStepLabel:
     def test_copy_single_track(self) -> None:
         instr = make_subtitle_instruction(
-            action=SubtitleAction.COPY, codec_name="hdmv_pgs_subtitle",
+            action=SubtitleAction.COPY,
+            codec_name="hdmv_pgs_subtitle",
         )
         result = _sub_step_label(instr, 0, 1)
         assert result == "Copy subs (HDMV_PGS_SUBTITLE)"
@@ -257,7 +249,8 @@ class TestSubStepLabel:
 
     def test_multiple_tracks_shows_number(self) -> None:
         instr = make_subtitle_instruction(
-            action=SubtitleAction.COPY, codec_name="hdmv_pgs_subtitle",
+            action=SubtitleAction.COPY,
+            codec_name="hdmv_pgs_subtitle",
         )
         result = _sub_step_label(instr, 1, 3)
         assert result == "Copy subs 2 (HDMV_PGS_SUBTITLE)"
@@ -288,9 +281,6 @@ class TestSubTargetLabel:
 
 class TestBuildSteps:
     def test_basic_job_steps(self) -> None:
-        """A re-encode job's video phase: Search quality -> Encode -> mux/tag/clean.
-        The 'Search quality' step is what keeps the list 1:1 with the executor's
-        status calls (the target-quality search emits one status)."""
         job = make_job()
         steps = _build_steps(job)
         assert len(steps) == 7
@@ -303,32 +293,31 @@ class TestBuildSteps:
     def test_no_audio_no_subs(self) -> None:
         job = make_job(audio=[], subtitles=[])
         steps = _build_steps(job)
-        assert steps == ["Search quality", "Encode video", "Assemble MKV",
-                         "Set metadata", "Optimize index"]
+        assert steps == ["Search quality", "Encode video", "Assemble MKV", "Set metadata", "Optimize index"]
 
     def test_search_quality_precedes_encode(self) -> None:
-        """The search is its own step immediately before the encode."""
         steps = _build_steps(make_job(audio=[], subtitles=[]))
         assert steps.index("Search quality") == steps.index("Encode video") - 1
 
     def test_passthrough_has_no_search_step(self) -> None:
-        """A passthrough copy runs no search -> no 'Search quality' step, so the
-        step list stays 1:1 with the (search-free) passthrough status calls."""
         vp = make_video_params(passthrough=True)
         steps = _build_steps(make_job(video_params=vp, audio=[], subtitles=[]))
         assert "Search quality" not in steps
         assert steps == ["Encode video", "Assemble MKV", "Set metadata", "Optimize index"]
 
     def test_dv_reencode_extracts_rpu_step(self) -> None:
-        """A Dolby Vision re-encode extracts the RPU as its own step before the
-        search (the executor emits an 'Extracting DV RPU' status there)."""
         vp = make_video_params(dv_mode=DvMode.COPY)
         steps = _build_steps(make_job(video_params=vp, audio=[], subtitles=[]))
-        assert steps == ["Extract DV RPU", "Search quality", "Encode video",
-                         "Assemble MKV", "Set metadata", "Optimize index"]
+        assert steps == [
+            "Extract DV RPU",
+            "Search quality",
+            "Encode video",
+            "Assemble MKV",
+            "Set metadata",
+            "Optimize index",
+        ]
 
     def test_passthrough_dv_skips_rpu_and_search(self) -> None:
-        """A passthrough copy of DV content extracts no RPU and runs no search."""
         vp = make_video_params(passthrough=True, dv_mode=DvMode.COPY)
         steps = _build_steps(make_job(video_params=vp, audio=[], subtitles=[]))
         assert "Extract DV RPU" not in steps
@@ -347,13 +336,14 @@ class TestBuildSteps:
     def test_multiple_subtitle_tracks(self) -> None:
         subs = [
             make_subtitle_instruction(
-                action=SubtitleAction.COPY, codec_name="hdmv_pgs_subtitle",
+                action=SubtitleAction.COPY,
+                codec_name="hdmv_pgs_subtitle",
             ),
             make_subtitle_instruction(action=SubtitleAction.COPY_RECODE, codec_name="subrip"),
         ]
         job = make_job(subtitles=subs)
         steps = _build_steps(job)
-        assert len(steps) == 8  # 1 audio + 2 subs + Search quality + Encode + mux/tag/clean
+        assert len(steps) == 8
         assert "Copy subs 1" in steps[1]
         assert "Recode subs 2" in steps[2]
 
@@ -381,9 +371,13 @@ class TestBuildSourceText:
         assert "HEVC" in video_line
 
     def test_audio_line_codec_and_channels(self) -> None:
-        audio = [make_audio_instruction(
-            codec_name="dts", channels=6, bitrate=1_500_000,
-        )]
+        audio = [
+            make_audio_instruction(
+                codec_name="dts",
+                channels=6,
+                bitrate=1_500_000,
+            )
+        ]
         job = make_job(audio=audio)
         text = _build_source_text(job)
         assert "Audio:" in text
@@ -405,9 +399,12 @@ class TestBuildSourceText:
         assert audio_lines[1].startswith("      ")
 
     def test_subtitle_line(self) -> None:
-        sub = [make_subtitle_instruction(
-            codec_name="hdmv_pgs_subtitle", language="eng",
-        )]
+        sub = [
+            make_subtitle_instruction(
+                codec_name="hdmv_pgs_subtitle",
+                language="eng",
+            )
+        ]
         job = make_job(subtitles=sub)
         text = _build_source_text(job)
         assert "Subs:" in text
@@ -442,9 +439,6 @@ class TestBuildSourceText:
 
 class TestBuildTargetText:
     def test_basic_target(self) -> None:
-        """A re-encode with no searched knob yet shows the knob TYPE + 'target'
-        (the target-quality search fills the number in at run time; the legacy
-        fixed ``cq`` anchor is no longer shown since the search overrides it)."""
         vp = make_video_params(source_width=1920, source_height=1080, cq=25)
         job = make_job(video_params=vp)
         text = _build_target_text(job)
@@ -456,23 +450,20 @@ class TestBuildTargetText:
         assert "CQ" not in text
 
     def test_target_shows_searched_qvbr(self) -> None:
-        """Once the search picks the knob, NVEnc jobs show 'QVBR N'."""
         vp = make_video_params(source_width=1920, source_height=1080)
         assert "QVBR 24" in _build_target_text(make_job(video_params=vp, chosen_cq=24))
 
     def test_grain_target_shows_crf(self) -> None:
-        """A grain (SVT-AV1) job's knob is CRF, not QVBR: 'target' until searched,
-        then the searched value."""
         vp = make_video_params(grain=True, source_width=720, source_height=576)
         assert "CRF target" in _build_target_text(make_job(video_params=vp))
         assert "CRF 30" in _build_target_text(make_job(video_params=vp, chosen_cq=30))
 
     def test_passthrough_target_shows_copy(self) -> None:
-        """A passthrough copy shows the source codec + dims + (copy), not an AV1
-        knob (nothing is re-encoded)."""
         vp = make_video_params(
-            passthrough=True, source_codec="hevc",
-            source_width=1920, source_height=1080,
+            passthrough=True,
+            source_codec="hevc",
+            source_width=1920,
+            source_height=1080,
         )
         text = _build_target_text(make_job(video_params=vp, audio=[], subtitles=[]))
         assert text.startswith("Video: HEVC 1920x1080 (copy)")
@@ -482,7 +473,10 @@ class TestBuildTargetText:
     def test_crop_changes_resolution(self) -> None:
         crop = CropRect(w=1920, h=800, x=0, y=140)
         vp = make_video_params(
-            source_width=1920, source_height=1080, cq=25, crop=crop,
+            source_width=1920,
+            source_height=1080,
+            cq=25,
+            crop=crop,
         )
         job = make_job(video_params=vp)
         text = _build_target_text(job)
@@ -490,17 +484,24 @@ class TestBuildTargetText:
 
     def test_sar_corrects_resolution(self) -> None:
         vp = make_video_params(
-            source_width=720, source_height=480, cq=22,
-            sar_num=64, sar_den=45,
+            source_width=720,
+            source_height=480,
+            cq=22,
+            sar_num=64,
+            sar_den=45,
         )
         job = make_job(video_params=vp)
         text = _build_target_text(job)
         assert "1024x480" in text
 
     def test_audio_target_label_in_text(self) -> None:
-        audio = [make_audio_instruction(
-            action=AudioAction.DENORM, codec_name="ac3", channels=6,
-        )]
+        audio = [
+            make_audio_instruction(
+                action=AudioAction.DENORM,
+                codec_name="ac3",
+                channels=6,
+            )
+        ]
         job = make_job(audio=audio)
         text = _build_target_text(job)
         assert "Audio:" in text
@@ -508,11 +509,13 @@ class TestBuildTargetText:
         assert "denorm" in text
 
     def test_subtitle_target_label_in_text(self) -> None:
-        sub = [make_subtitle_instruction(
-            action=SubtitleAction.COPY_RECODE,
-            codec_name="subrip",
-            language="eng",
-        )]
+        sub = [
+            make_subtitle_instruction(
+                action=SubtitleAction.COPY_RECODE,
+                codec_name="subrip",
+                language="eng",
+            )
+        ]
         job = make_job(subtitles=sub)
         text = _build_target_text(job)
         assert "Subs:" in text
@@ -532,27 +535,28 @@ class TestBuildTargetText:
         assert audio_lines[1].startswith("      ")
 
     def test_downmix_stereo_shows_2_0(self) -> None:
-        audio = [make_audio_instruction(
-            action=AudioAction.DECODE_ENCODE,
-            codec_name="truehd",
-            channels=8,
-            downmix=DownmixMode.STEREO,
-        )]
+        audio = [
+            make_audio_instruction(
+                action=AudioAction.DECODE_ENCODE,
+                codec_name="truehd",
+                channels=8,
+                downmix=DownmixMode.STEREO,
+            )
+        ]
         job = make_job(audio=audio)
         text = _build_target_text(job)
         assert "2.0" in text
         assert "7.1" not in text
 
     def test_downmix_mono_shows_1_0(self) -> None:
-        """MONO downmix surfaces as '1.0' in the run TUI Target panel
-        (regression in 1.15.0: _target_channels fell through to source count).
-        """
-        audio = [make_audio_instruction(
-            action=AudioAction.DECODE_ENCODE,
-            codec_name="dts",
-            channels=6,
-            downmix=DownmixMode.MONO,
-        )]
+        audio = [
+            make_audio_instruction(
+                action=AudioAction.DECODE_ENCODE,
+                codec_name="dts",
+                channels=6,
+                downmix=DownmixMode.MONO,
+            )
+        ]
         job = make_job(audio=audio)
         text = _build_target_text(job)
         assert "1.0" in text
@@ -565,23 +569,28 @@ class TestBuildTargetText:
         assert "3840x2160" in text
 
     def test_crop_with_sar(self) -> None:
-        """Crop + anamorphic SAR: actual encoded dims include mod-8 alignment.
-        704 * 64/45 = 1001.24 -> 1001 -> mod-8 -> 1000. Height 464 stays."""
         crop = CropRect(w=704, h=464, x=8, y=8)
         vp = make_video_params(
-            source_width=720, source_height=480, cq=22,
-            sar_num=64, sar_den=45, crop=crop,
+            source_width=720,
+            source_height=480,
+            cq=22,
+            sar_num=64,
+            sar_den=45,
+            crop=crop,
         )
         job = make_job(video_params=vp)
         text = _build_target_text(job)
         assert "1000x464" in text
 
     def test_crop_with_pal_dvd_anamorphic_sar(self) -> None:
-        """The motivating bug: 720x576 SAR 16:15 + crop 704x400 -> 744x400."""
         crop = CropRect(w=704, h=400, x=8, y=88)
         vp = make_video_params(
-            source_width=720, source_height=576, cq=22,
-            sar_num=16, sar_den=15, crop=crop,
+            source_width=720,
+            source_height=576,
+            cq=22,
+            sar_num=16,
+            sar_den=15,
+            crop=crop,
         )
         job = make_job(video_params=vp)
         text = _build_target_text(job)

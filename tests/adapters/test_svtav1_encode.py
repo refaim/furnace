@@ -1,10 +1,3 @@
-"""Tests for SvtAv1Adapter.encode orchestration: command run, log wiring, progress.
-
-``encode`` runs a single ffmpeg + libsvtav1 pass and returns an EncodeResult
-(return code + ENCODER_SETTINGS tag). These tests verify that contract: the
-encode command is built and run, progress/output callbacks are forwarded, the
-log path is wired, and the ``rpu_path`` argument is accepted but ignored.
-"""
 from __future__ import annotations
 
 from pathlib import Path
@@ -26,19 +19,28 @@ def _make_vp(
     sar_den: int = 1,
 ) -> VideoParams:
     return VideoParams(
-        cq=23, crop=crop, deinterlace=deinterlace,
-        color_matrix="bt709", color_range="tv",
-        color_transfer="bt709", color_primaries="bt709",
-        hdr=None, gop=120, fps_num=24000, fps_den=1001,
-        source_width=source_width, source_height=source_height,
-        source_codec="mpeg2video", source_bitrate=8_000_000,
-        sar_num=sar_num, sar_den=sar_den, grain=True,
+        cq=23,
+        crop=crop,
+        deinterlace=deinterlace,
+        color_matrix="bt709",
+        color_range="tv",
+        color_transfer="bt709",
+        color_primaries="bt709",
+        hdr=None,
+        gop=120,
+        fps_num=24000,
+        fps_den=1001,
+        source_width=source_width,
+        source_height=source_height,
+        source_codec="mpeg2video",
+        source_bitrate=8_000_000,
+        sar_num=sar_num,
+        sar_den=sar_den,
+        grain=True,
     )
 
 
 class _FakeRunTool:
-    """Records the single ``run_tool`` encode invocation."""
-
     def __init__(self, *, encode_rc: int = 0) -> None:
         self.calls: list[dict[str, Any]] = []
         self.encode_rc = encode_rc
@@ -77,8 +79,11 @@ def _run(
 ) -> Any:
     with patch("furnace.adapters.svtav1.run_tool", side_effect=fake):
         return adapter.encode(
-            tmp_path / "input.mkv", tmp_path / "output.obu", _make_vp(),
-            rpu_path=rpu_path, on_progress=on_progress,
+            tmp_path / "input.mkv",
+            tmp_path / "output.obu",
+            _make_vp(),
+            rpu_path=rpu_path,
+            on_progress=on_progress,
         )
 
 
@@ -127,7 +132,9 @@ class TestEncodeBasics:
 
         with patch("furnace.adapters.svtav1.run_tool", side_effect=fake_run_tool):
             adapter.encode(
-                tmp_path / "in.mkv", tmp_path / "out.obu", _make_vp(),
+                tmp_path / "in.mkv",
+                tmp_path / "out.obu",
+                _make_vp(),
                 on_progress=samples.append,
             )
         assert len(samples) == 1

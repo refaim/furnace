@@ -12,12 +12,8 @@ from furnace.core.rules import (
     parse_subtitle_codec,
 )
 
-# ---------------------------------------------------------------------------
-# test_parse_audio_codec
-# ---------------------------------------------------------------------------
 
 class TestParseAudioCodec:
-    # DTS variants
     def test_dts_core_no_profile(self) -> None:
         assert parse_audio_codec("dts", None) == AudioCodecId.DTS
 
@@ -34,10 +30,8 @@ class TestParseAudioCodec:
         assert parse_audio_codec("dts", "DTS-HD MA") == AudioCodecId.DTS_MA
 
     def test_dts_unknown_profile_falls_back_to_dts(self) -> None:
-        """Unknown DTS profile -> fall back to plain DTS."""
         assert parse_audio_codec("dts", "DTS-X") == AudioCodecId.DTS
 
-    # AAC variants
     def test_aac_lc_no_profile(self) -> None:
         assert parse_audio_codec("aac", None) == AudioCodecId.AAC_LC
 
@@ -50,7 +44,6 @@ class TestParseAudioCodec:
     def test_aac_he_v2(self) -> None:
         assert parse_audio_codec("aac", "HE-AAC v2") == AudioCodecId.AAC_HE_V2
 
-    # Other named codecs
     def test_ac3(self) -> None:
         assert parse_audio_codec("ac3", None) == AudioCodecId.AC3
 
@@ -85,62 +78,63 @@ class TestParseAudioCodec:
         assert parse_audio_codec("", None) == AudioCodecId.UNKNOWN
 
 
-# ---------------------------------------------------------------------------
-# test_audio_action_routing
-# ---------------------------------------------------------------------------
-
 class TestAudioActionRouting:
-    """Every AudioCodecId maps to exactly the right AudioAction."""
-
-    @pytest.mark.parametrize("codec_id", [
-        AudioCodecId.AAC_LC,
-        AudioCodecId.AAC_HE,
-        AudioCodecId.AAC_HE_V2,
-    ])
+    @pytest.mark.parametrize(
+        "codec_id",
+        [
+            AudioCodecId.AAC_LC,
+            AudioCodecId.AAC_HE,
+            AudioCodecId.AAC_HE_V2,
+        ],
+    )
     def test_aac_copy(self, codec_id: AudioCodecId) -> None:
         assert get_audio_action(codec_id) == AudioAction.COPY
 
-    @pytest.mark.parametrize("codec_id", [
-        AudioCodecId.AC3,
-        AudioCodecId.EAC3,
-        AudioCodecId.DTS,
-    ])
+    @pytest.mark.parametrize(
+        "codec_id",
+        [
+            AudioCodecId.AC3,
+            AudioCodecId.EAC3,
+            AudioCodecId.DTS,
+        ],
+    )
     def test_denorm(self, codec_id: AudioCodecId) -> None:
         assert get_audio_action(codec_id) == AudioAction.DENORM
 
-    @pytest.mark.parametrize("codec_id", [
-        AudioCodecId.DTS_ES,
-        AudioCodecId.DTS_HRA,
-        AudioCodecId.DTS_MA,
-        AudioCodecId.TRUEHD,
-        AudioCodecId.FLAC,
-        AudioCodecId.PCM_S16LE,
-        AudioCodecId.PCM_S24LE,
-        AudioCodecId.PCM_S16BE,
-    ])
+    @pytest.mark.parametrize(
+        "codec_id",
+        [
+            AudioCodecId.DTS_ES,
+            AudioCodecId.DTS_HRA,
+            AudioCodecId.DTS_MA,
+            AudioCodecId.TRUEHD,
+            AudioCodecId.FLAC,
+            AudioCodecId.PCM_S16LE,
+            AudioCodecId.PCM_S24LE,
+            AudioCodecId.PCM_S16BE,
+        ],
+    )
     def test_decode_encode(self, codec_id: AudioCodecId) -> None:
         assert get_audio_action(codec_id) == AudioAction.DECODE_ENCODE
 
-    @pytest.mark.parametrize("codec_id", [
-        AudioCodecId.MP2,
-        AudioCodecId.MP3,
-        AudioCodecId.VORBIS,
-        AudioCodecId.OPUS,
-        AudioCodecId.WMA_V2,
-        AudioCodecId.WMA_PRO,
-        AudioCodecId.AMR,
-    ])
+    @pytest.mark.parametrize(
+        "codec_id",
+        [
+            AudioCodecId.MP2,
+            AudioCodecId.MP3,
+            AudioCodecId.VORBIS,
+            AudioCodecId.OPUS,
+            AudioCodecId.WMA_V2,
+            AudioCodecId.WMA_PRO,
+            AudioCodecId.AMR,
+        ],
+    )
     def test_ffmpeg_encode(self, codec_id: AudioCodecId) -> None:
         assert get_audio_action(codec_id) == AudioAction.FFMPEG_ENCODE
 
     def test_unknown_returns_none(self) -> None:
-        """UNKNOWN codec is not in the whitelist -> None."""
         assert get_audio_action(AudioCodecId.UNKNOWN) is None
 
-
-# ---------------------------------------------------------------------------
-# test_parse_subtitle_codec
-# ---------------------------------------------------------------------------
 
 class TestParseSubtitleCodec:
     def test_subrip(self) -> None:
@@ -162,21 +156,30 @@ class TestParseSubtitleCodec:
         assert parse_subtitle_codec("") == SubtitleCodecId.UNKNOWN
 
 
-# ---------------------------------------------------------------------------
-# test_known_codec_checks
-# ---------------------------------------------------------------------------
-
 class TestKnownCodecChecks:
     def test_known_audio_codecs_are_known(self) -> None:
         known = [
-            AudioCodecId.AAC_LC, AudioCodecId.AAC_HE, AudioCodecId.AAC_HE_V2,
-            AudioCodecId.AC3, AudioCodecId.EAC3,
-            AudioCodecId.DTS, AudioCodecId.DTS_ES, AudioCodecId.DTS_HRA, AudioCodecId.DTS_MA,
-            AudioCodecId.TRUEHD, AudioCodecId.FLAC,
-            AudioCodecId.PCM_S16LE, AudioCodecId.PCM_S24LE, AudioCodecId.PCM_S16BE,
-            AudioCodecId.MP2, AudioCodecId.MP3,
-            AudioCodecId.VORBIS, AudioCodecId.OPUS,
-            AudioCodecId.WMA_V2, AudioCodecId.WMA_PRO, AudioCodecId.AMR,
+            AudioCodecId.AAC_LC,
+            AudioCodecId.AAC_HE,
+            AudioCodecId.AAC_HE_V2,
+            AudioCodecId.AC3,
+            AudioCodecId.EAC3,
+            AudioCodecId.DTS,
+            AudioCodecId.DTS_ES,
+            AudioCodecId.DTS_HRA,
+            AudioCodecId.DTS_MA,
+            AudioCodecId.TRUEHD,
+            AudioCodecId.FLAC,
+            AudioCodecId.PCM_S16LE,
+            AudioCodecId.PCM_S24LE,
+            AudioCodecId.PCM_S16BE,
+            AudioCodecId.MP2,
+            AudioCodecId.MP3,
+            AudioCodecId.VORBIS,
+            AudioCodecId.OPUS,
+            AudioCodecId.WMA_V2,
+            AudioCodecId.WMA_PRO,
+            AudioCodecId.AMR,
         ]
         for codec in known:
             assert is_known_audio_codec(codec), f"{codec} should be known"

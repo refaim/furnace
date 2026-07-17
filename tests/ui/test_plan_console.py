@@ -47,9 +47,7 @@ def test_detect_renders_one_row_per_disc() -> None:
     reporter.detect_disc_titles_done(1)
     reporter.stop()
     text = buf.getvalue()
-    # Phase header exactly once
     assert text.count("Detect") == 1
-    # All three rows present
     assert "BDMV" in text
     assert "DVD" in text
     assert "Matrix_BD" in text
@@ -75,14 +73,12 @@ def test_detect_disc_titles_done_singular() -> None:
     reporter.stop()
     text = buf.getvalue()
     assert "DVD   PRIHODI_SCN -> 1 title" in text
-    # Should not say "1 titles" (plural).
     assert "1 titles" not in text
 
 
 def test_detect_disc_titles_done_without_start_is_noop() -> None:
     reporter, buf = _make_reporter()
     reporter.start()
-    # No prior detect_disc; should not crash and should not emit anything.
     reporter.detect_disc_titles_done(5)
     reporter.stop()
     text = buf.getvalue()
@@ -91,12 +87,9 @@ def test_detect_disc_titles_done_without_start_is_noop() -> None:
 
 
 def test_detect_disc_called_twice_finalizes_previous_progress() -> None:
-    """Defensive: a second detect_disc without titles_done first stops the
-    in-flight spinner instead of asserting."""
     reporter, _buf = _make_reporter()
     reporter.start()
     reporter.detect_disc(DiscType.BLURAY, "First_BD")
-    # Spinner is alive — call detect_disc again, must not crash.
     reporter.detect_disc(DiscType.DVD, "Second_DVD")
     reporter.detect_disc_titles_done(2)
     reporter.stop()
@@ -135,7 +128,6 @@ def test_demux_fresh_disc_unfolds_titles() -> None:
     text = buf.getvalue()
     assert "Matrix_BD" in text
     assert "title 3" in text
-    # Only the final state survives the floating bar after done
     assert "done" in text
 
 
@@ -166,7 +158,6 @@ def test_demux_phase_header_appears_once() -> None:
 def test_demux_title_substep_without_start_is_noop() -> None:
     reporter, buf = _make_reporter()
     reporter.start()
-    # No demux_title_start; substep should not crash or render a title row.
     reporter.demux_title_substep("rip", has_progress=True)
     reporter.stop()
     text = buf.getvalue()
@@ -176,10 +167,8 @@ def test_demux_title_substep_without_start_is_noop() -> None:
 def test_demux_title_progress_without_substep_is_noop() -> None:
     reporter, buf = _make_reporter()
     reporter.start()
-    # progress called before any substep / progress bar exists.
     reporter.demux_title_progress(0.25)
     reporter.stop()
-    # Should not crash. No title row should be present.
     text = buf.getvalue()
     assert "title" not in text
 
@@ -204,13 +193,11 @@ def test_demux_title_failed_without_start_is_noop() -> None:
 
 
 def test_start_progress_asserts_invariant() -> None:
-    """_start_progress crashes if invoked while a Progress is already alive."""
     reporter, _ = _make_reporter()
     reporter.start()
     reporter.demux_disc_start("Matrix_BD")
     reporter.demux_title_start(3)
     reporter.demux_title_substep("rip", has_progress=True)
-    # _progress is now alive; force a direct call to provoke the assert
     with pytest.raises(AssertionError, match="previous progress not stopped"):
         reporter._start_progress(has_progress=True)
     reporter.stop()
@@ -221,7 +208,6 @@ def test_demux_title_substep_without_progress_bar() -> None:
     reporter.start()
     reporter.demux_disc_start("Some_BD")
     reporter.demux_title_start(2)
-    # has_progress=False — exercises the indeterminate (total=None) branch.
     reporter.demux_title_substep("scan", has_progress=False)
     reporter.demux_title_done()
     reporter.stop()
@@ -250,7 +236,7 @@ def test_analyze_batch_tty_streams_lines_and_counts() -> None:
     reporter, buf = _make_reporter()
     reporter.start()
     reporter.analyze_batch_start(2)
-    reporter.analyze_batch_progress(1.5)  # fractional fill -> "1.5/2"
+    reporter.analyze_batch_progress(1.5)
     reporter.analyze_batch_item(
         "a.mkv",
         "h264 1920x1080 24fps SDR, 1 audio (eng), 0 subs",
@@ -287,13 +273,12 @@ def test_analyze_batch_non_tty_prints_lines_without_bar() -> None:
     )
     reporter.start()
     reporter.analyze_batch_start(1)
-    reporter.analyze_batch_progress(0.5)  # no-op on a non-TTY console (no bar)
+    reporter.analyze_batch_progress(0.5)
     reporter.analyze_batch_item("a.mkv", "SKIP reason", status=AnalyzeStatus.SKIPPED)
     reporter.analyze_batch_finish()
     reporter.stop()
     text = buf.getvalue()
     assert "a.mkv -> SKIPPED — SKIP reason" in text
-    # Non-TTY: no floating count bar is drawn.
     assert "█" not in text
 
 
@@ -308,7 +293,6 @@ def test_plan_renders_per_file_and_drops_plan_saved() -> None:
     assert "Plan" in text
     assert "Inception.mkv" in text
     assert "cq 22" in text
-    # plan_saved must NOT print the final summary line
     assert "furnace-plan.json" not in text
     assert "(7 jobs)" not in text
 
@@ -328,10 +312,8 @@ def test_pause_resume_stop_and_restart_progress() -> None:
     reporter.analyze_batch_start(2)
     reporter.analyze_batch_item("a.mkv", "ok", status=AnalyzeStatus.DONE)
     reporter.pause()
-    # After pause(), no live progress object is held
     assert reporter._progress is None
     reporter.resume()
-    # resume() does not auto-restart Progress — the next batch start recreates it
     reporter.analyze_batch_finish()
     reporter.stop()
 
@@ -359,7 +341,6 @@ def test_plan_phase_header_appears_once_across_multiple_files() -> None:
 
 
 def test_plan_saved_is_silent_with_no_prior_phases() -> None:
-    """plan_saved must never emit visible output even when called directly."""
     reporter, buf = _make_reporter()
     reporter.start()
     reporter.plan_saved(Path("Z:/p/furnace-plan.json"), 5)
@@ -371,7 +352,6 @@ def test_plan_saved_is_silent_with_no_prior_phases() -> None:
 
 
 def test_phase_headers_separated_by_blank_line() -> None:
-    """Each non-first phase header is preceded by a blank line."""
     reporter, buf = _make_reporter()
     reporter.start()
     reporter.detect_disc(DiscType.BLURAY, "Matrix_BD")
@@ -379,18 +359,14 @@ def test_phase_headers_separated_by_blank_line() -> None:
     reporter.scan_file("Matrix_BD_title_1.mkv")
     reporter.stop()
     text = buf.getvalue()
-    # Both phase headers present
     assert "Detect" in text
     assert "Scan" in text
-    # Between the Detect block and the Scan header there must be a blank line:
-    # the line preceding the "Scan" line should be empty.
     raw_lines = text.splitlines()
     scan_line_idx = next(i for i, line in enumerate(raw_lines) if line.startswith("Scan"))
     assert raw_lines[scan_line_idx - 1] == ""
 
 
 def test_first_phase_has_no_leading_blank_line() -> None:
-    """The very first phase header is not preceded by an extra blank line."""
     buf = StringIO()
     console = Console(
         file=buf,
@@ -410,18 +386,12 @@ def test_first_phase_has_no_leading_blank_line() -> None:
     reporter.detect_disc_titles_done(1)
     reporter.stop()
     raw_lines = buf.getvalue().splitlines()
-    # After the Source/Output header (and its trailing blank line emitted by
-    # start()), Detect is the first phase header — there should be exactly one
-    # blank line (from start()) before it, not two.
     detect_idx = next(i for i, line in enumerate(raw_lines) if line.startswith("Detect"))
-    # The blank line immediately preceding is from start(); the line before
-    # that must be the "Output:" line, not another blank.
     assert raw_lines[detect_idx - 1] == ""
     assert raw_lines[detect_idx - 2].startswith("Output:")
 
 
 def test_demux_title_uses_indented_prefix() -> None:
-    """Demux titles are indented with 2 spaces under their disc."""
     reporter, buf = _make_reporter()
     reporter.start()
     reporter.demux_disc_start("Matrix_BD")
@@ -429,9 +399,7 @@ def test_demux_title_uses_indented_prefix() -> None:
     reporter.demux_title_done()
     reporter.stop()
     text = buf.getvalue()
-    # Disc name flush left
     assert "\nMatrix_BD\n" in text or text.startswith("Matrix_BD") or "Matrix_BD" in text.splitlines()
-    # Title row indented with 2 spaces
     assert "  title 3 -> done" in text
 
 
@@ -473,7 +441,7 @@ def test_non_tty_output_has_no_ansi_escapes() -> None:
     reporter.plan_saved(Path("Z:/p/furnace-plan.json"), 1)
     reporter.stop()
     text = buf.getvalue()
-    assert "\x1b[" not in text  # no ANSI escape sequences
+    assert "\x1b[" not in text
 
 
 def test_canonical_plan_golden_snapshot() -> None:

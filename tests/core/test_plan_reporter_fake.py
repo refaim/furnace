@@ -50,5 +50,4 @@ def test_records_method_name_and_args(tmp_path: Path) -> None:
 
 
 def test_satisfies_protocol() -> None:
-    """Lock in structural conformance with PlanReporter (runtime-checkable)."""
     assert isinstance(RecordingPlanReporter(), PlanReporter)

@@ -13,9 +13,6 @@ from furnace.core.models import (
 from furnace.services.planner import PlannerService
 from tests.conftest import make_movie, make_track, make_video_info
 
-# ---------------------------------------------------------------------------
-# Local factories (mirror the pattern in test_planner_lang.py)
-# ---------------------------------------------------------------------------
 
 def _audio(language: str, index: int, source: Path) -> Track:
     return make_track(
@@ -62,10 +59,6 @@ def _make_movie(
     )
 
 
-# ---------------------------------------------------------------------------
-# _eff_lang
-# ---------------------------------------------------------------------------
-
 class TestEffLang:
     def test_ignore_true_returns_und(self) -> None:
         planner = PlannerService(previewer=None, ignore_langs=True)
@@ -77,10 +70,6 @@ class TestEffLang:
         track = _audio("fre", 1, Path("/src/movie.mkv"))
         assert planner._eff_lang(track) == "fre"
 
-
-# ---------------------------------------------------------------------------
-# _sort_and_set_default keyword behaviour
-# ---------------------------------------------------------------------------
 
 class TestSortAndSetDefaultIgnoreLangs:
     def test_ignore_true_preserves_source_order(self) -> None:
@@ -101,10 +90,6 @@ class TestSortAndSetDefaultIgnoreLangs:
         assert [t.language for t in result] == ["jpn", "rus", "eng"]
         assert result[0].is_default is True
 
-
-# ---------------------------------------------------------------------------
-# Filtering keeps mislabelled tracks under --ignore-langs
-# ---------------------------------------------------------------------------
 
 class TestFilterKeepsMislabelled:
     def test_audio_mislabelled_kept_under_ignore(self) -> None:
@@ -129,10 +114,6 @@ class TestFilterKeepsMislabelled:
         assert [t.language for t in result] == ["fre"]
 
 
-# ---------------------------------------------------------------------------
-# Forced subtitles are still discarded under --ignore-langs
-# ---------------------------------------------------------------------------
-
 class TestForcedSubDiscardedUnderIgnore:
     def test_forced_sub_discarded(self) -> None:
         src = Path("/src/movie.mkv")
@@ -141,10 +122,6 @@ class TestForcedSubDiscardedUnderIgnore:
         result = planner._filter_sub_tracks_by_lang(tracks, ["jpn"])
         assert [t.index for t in result] == [3]
 
-
-# ---------------------------------------------------------------------------
-# _assign_languages_relabel
-# ---------------------------------------------------------------------------
 
 class TestAssignLanguagesRelabel:
     def test_default_to_first_filter_lang(self) -> None:
@@ -170,13 +147,8 @@ class TestAssignLanguagesRelabel:
         assert [t.language for t in result] == ["und"]
 
 
-# ---------------------------------------------------------------------------
-# create_plan integration under --ignore-langs
-# ---------------------------------------------------------------------------
-
 class TestIgnoreLangsPlan:
     def test_single_track_auto_selected_and_relabelled(self, tmp_path: Path) -> None:
-        """One audio + one sub track: each auto-selected (no selector) and relabelled."""
         main = tmp_path / "movie.mkv"
         main.write_bytes(b"")
         audio = [_audio("fre", 1, main)]
@@ -197,8 +169,6 @@ class TestIgnoreLangsPlan:
         assert plan.jobs[0].subtitles[0].language == "eng"
 
     def test_ambiguous_candidates_keep_original_tags_at_selection(self, tmp_path: Path) -> None:
-        """Two mislabelled audio tracks force the selector; candidates still carry
-        their ORIGINAL tags (not yet relabelled to 'und') at selection time."""
         main = tmp_path / "movie.mkv"
         main.write_bytes(b"")
         audio = [_audio("fre", 1, main), _audio("ger", 2, main)]
@@ -207,7 +177,6 @@ class TestIgnoreLangsPlan:
         captured: list[list[str]] = []
 
         def _selector(m: Movie, cands: list[Track], tt: TrackType) -> list[Track]:
-            # This movie has no subtitle tracks, so only audio reaches the selector.
             assert tt == TrackType.AUDIO
             captured.append([t.language for t in cands])
             return list(cands)
@@ -222,7 +191,6 @@ class TestIgnoreLangsPlan:
         assert captured == [["fre", "ger"]]
 
     def test_explicit_override_and_default(self, tmp_path: Path) -> None:
-        """An explicit lang override wins; un-overridden selected tracks get lang_filter[0]."""
         main = tmp_path / "movie.mkv"
         main.write_bytes(b"")
         audio = [_audio("fre", 1, main), _audio("ger", 2, main)]
@@ -244,7 +212,6 @@ class TestIgnoreLangsPlan:
         assert langs[2] == "rus"
 
     def test_final_ordering_and_default(self, tmp_path: Path) -> None:
-        """After relabel the tracks are sorted by target priority and is_default set."""
         main = tmp_path / "movie.mkv"
         main.write_bytes(b"")
         audio = [_audio("fre", 1, main), _audio("ger", 2, main)]
@@ -266,7 +233,6 @@ class TestIgnoreLangsPlan:
         assert plan.jobs[0].audio[1].is_default is False
 
     def test_empty_filter_relabels_to_und(self, tmp_path: Path) -> None:
-        """Empty audio filter under --ignore-langs relabels the selected track to 'und'."""
         main = tmp_path / "movie.mkv"
         main.write_bytes(b"")
         audio = [_audio("fre", 1, main)]
@@ -282,14 +248,8 @@ class TestIgnoreLangsPlan:
         assert plan.jobs[0].audio[0].language == "und"
 
 
-# ---------------------------------------------------------------------------
-# Regression: default behaviour (ignore_langs=False) unchanged
-# ---------------------------------------------------------------------------
-
 class TestRegressionDefault:
     def test_mislabelled_dropped_and_und_resolution_still_works(self, tmp_path: Path) -> None:
-        """Without --ignore-langs a mislabelled track is dropped while a genuine
-        'und' track is still resolved to the single target lang."""
         main = tmp_path / "movie.mkv"
         main.write_bytes(b"")
         audio = [_audio("fre", 1, main), _audio("und", 2, main)]
@@ -303,7 +263,5 @@ class TestRegressionDefault:
             sub_lang_filter=["eng"],
         )
 
-        # The 'fre' track was dropped (not in filter, not 'und'); only the
-        # resolved 'und' track survives, auto-assigned to the single target lang.
         assert [a.language for a in plan.jobs[0].audio] == ["eng"]
         und_resolver.assert_not_called()

@@ -1,5 +1,3 @@
-"""Tests for the per-sample-point progress callback of ``FFmpegAdapter.detect_crop``."""
-
 from __future__ import annotations
 
 from pathlib import Path
@@ -23,12 +21,8 @@ def test_detect_crop_calls_on_progress_per_point_hd() -> None:
             is_dvd=False,
             on_progress=samples.append,
         )
-    # Constant crop converges after 2 HD batches (2 x 10 = 20 points), plus a
-    # final terminal event so the bar reaches 1.0 even on early convergence.
     assert len(samples) == 21
     assert samples[-1].fraction == 1.0
-    # Per-point fractions are reported against the cap (40), so convergence
-    # at point 20 lands on 0.5 before the terminal 1.0.
     assert samples[19].fraction == 0.5
 
 
@@ -46,6 +40,5 @@ def test_detect_crop_calls_on_progress_per_point_dvd() -> None:
             is_dvd=True,
             on_progress=samples.append,
         )
-    # DVD batches are 15 -> converges after 2 x 15 = 30 points + terminal 1.0.
     assert len(samples) == 31
     assert samples[-1].fraction == 1.0

@@ -1,9 +1,3 @@
-"""Pure-function tests for `_audio_target_label` in `furnace.ui.run_tui`.
-
-These tests specifically pin down the target-frame audio label format, which
-must show the OUTPUT channel layout (after any downmix) so the user can see
-at a glance what the processed file will contain.
-"""
 from __future__ import annotations
 
 from furnace.core.models import AudioAction, AudioInstruction, DownmixMode
@@ -49,34 +43,24 @@ class TestAudioTargetLabelDenorm:
 
 
 class TestAudioTargetLabelDecodeEncodeNoDownmix:
-    """Without downmix, DECODE_ENCODE preserves the source channel count."""
-
     def test_truehd_7_1_no_downmix(self) -> None:
-        label = _audio_target_label(
-            _instr(action=AudioAction.DECODE_ENCODE, codec_name="truehd", channels=8)
-        )
+        label = _audio_target_label(_instr(action=AudioAction.DECODE_ENCODE, codec_name="truehd", channels=8))
         assert "AAC" in label
         assert "7.1" in label
         assert "TRUEHD" in label
 
     def test_dts_ma_5_1_no_downmix(self) -> None:
-        label = _audio_target_label(
-            _instr(action=AudioAction.DECODE_ENCODE, codec_name="dts", channels=6)
-        )
+        label = _audio_target_label(_instr(action=AudioAction.DECODE_ENCODE, codec_name="dts", channels=6))
         assert "AAC" in label
         assert "5.1" in label
 
     def test_flac_2_0_no_downmix(self) -> None:
-        label = _audio_target_label(
-            _instr(action=AudioAction.DECODE_ENCODE, codec_name="flac", channels=2)
-        )
+        label = _audio_target_label(_instr(action=AudioAction.DECODE_ENCODE, codec_name="flac", channels=2))
         assert "AAC" in label
         assert "2.0" in label
 
 
 class TestAudioTargetLabelDecodeEncodeDownmix:
-    """With downmix, target channels differ from source channels."""
-
     def test_7_1_downmix_to_stereo(self) -> None:
         label = _audio_target_label(
             _instr(
@@ -88,7 +72,7 @@ class TestAudioTargetLabelDecodeEncodeDownmix:
         )
         assert "AAC" in label
         assert "2.0" in label
-        assert "7.1" not in label  # must not show the source layout
+        assert "7.1" not in label
 
     def test_5_1_downmix_to_stereo(self) -> None:
         label = _audio_target_label(
@@ -119,9 +103,7 @@ class TestAudioTargetLabelDecodeEncodeDownmix:
 
 class TestAudioTargetLabelFfmpegEncode:
     def test_opus_5_1_no_downmix(self) -> None:
-        label = _audio_target_label(
-            _instr(action=AudioAction.FFMPEG_ENCODE, codec_name="opus", channels=6)
-        )
+        label = _audio_target_label(_instr(action=AudioAction.FFMPEG_ENCODE, codec_name="opus", channels=6))
         assert "AAC" in label
         assert "5.1" in label
 
@@ -140,17 +122,11 @@ class TestAudioTargetLabelFfmpegEncode:
 
 
 class TestAudioTargetLabelUnknownChannels:
-    """If channels is None, no layout is rendered — but the rest still shows."""
-
     def test_copy_unknown_channels(self) -> None:
-        label = _audio_target_label(
-            _instr(action=AudioAction.COPY, codec_name="aac", channels=None)
-        )
+        label = _audio_target_label(_instr(action=AudioAction.COPY, codec_name="aac", channels=None))
         assert "AAC" in label
         assert "copy" in label
 
     def test_decode_encode_unknown_channels_no_downmix(self) -> None:
-        label = _audio_target_label(
-            _instr(action=AudioAction.DECODE_ENCODE, codec_name="truehd", channels=None)
-        )
+        label = _audio_target_label(_instr(action=AudioAction.DECODE_ENCODE, codec_name="truehd", channels=None))
         assert "AAC" in label

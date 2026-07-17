@@ -1,11 +1,3 @@
-"""Tests for DoviToolAdapter — ffmpeg pipe + dovi_tool consumer.
-
-run_pipeline is patched in every command-execution test (no real
-subprocess). Builders are tested directly. The adapter signature now
-requires both dovi_tool_path and ffmpeg_path, since the bug fix routes
-the source MKV through ffmpeg before dovi_tool sees it.
-"""
-
 from __future__ import annotations
 
 import tempfile
@@ -44,8 +36,6 @@ class TestFfmpegPipeCmd:
         assert str_cmd[c_idx + 1] == "copy"
 
     def test_applies_annexb_bitstream_filter(self) -> None:
-        """Without hevc_mp4toannexb, MP4-style length-prefixed NALs
-        reach dovi_tool which only understands Annex B start codes."""
         adapter = DoviToolAdapter(DOVI, FFMPEG)
         cmd = adapter._build_ffmpeg_pipe_cmd(Path("input.mkv"))
         str_cmd = [str(c) for c in cmd]
@@ -61,9 +51,6 @@ class TestFfmpegPipeCmd:
         assert str_cmd[-1] == "-"
 
     def test_quiet_loglevel(self) -> None:
-        """Producer chatter would spam the log; -loglevel error keeps
-        only true failures while still surfacing them.
-        """
         adapter = DoviToolAdapter(DOVI, FFMPEG)
         cmd = adapter._build_ffmpeg_pipe_cmd(Path("input.mkv"))
         str_cmd = [str(c) for c in cmd]
@@ -88,10 +75,6 @@ class TestDoviExtractCmd:
         assert str_cmd[m_idx + 1] == "2"
 
     def test_reads_from_stdin(self) -> None:
-        """Bug fix: the consumer must NOT receive a container path —
-        dovi_tool reads the HEVC stream produced by the ffmpeg producer
-        over stdin (`-`).
-        """
         adapter = DoviToolAdapter(DOVI, FFMPEG)
         cmd = adapter._build_extract_cmd(Path("RPU.bin"), DvMode.COPY)
         str_cmd = [str(c) for c in cmd]
@@ -108,10 +91,10 @@ class TestDoviExtractCmd:
 
 
 class TestDoviExtractRpuExecution:
-    """extract_rpu wires both builders into run_pipeline."""
-
     def _patch_pipeline(
-        self, captured: dict[str, Any], rc: int = 0,
+        self,
+        captured: dict[str, Any],
+        rc: int = 0,
     ) -> Any:
         def fake(
             producer_cmd: Any,
@@ -136,7 +119,9 @@ class TestDoviExtractRpuExecution:
         adapter = DoviToolAdapter(DOVI, FFMPEG)
         with self._patch_pipeline(captured, rc=0):
             rc = adapter.extract_rpu(
-                Path("input.mkv"), Path("rpu.bin"), DvMode.COPY,
+                Path("input.mkv"),
+                Path("rpu.bin"),
+                DvMode.COPY,
             )
         assert rc == 0
 
@@ -145,7 +130,9 @@ class TestDoviExtractRpuExecution:
         adapter = DoviToolAdapter(DOVI, FFMPEG)
         with self._patch_pipeline(captured, rc=42):
             rc = adapter.extract_rpu(
-                Path("input.mkv"), Path("rpu.bin"), DvMode.COPY,
+                Path("input.mkv"),
+                Path("rpu.bin"),
+                DvMode.COPY,
             )
         assert rc == 42
 
@@ -154,7 +141,9 @@ class TestDoviExtractRpuExecution:
         adapter = DoviToolAdapter(DOVI, FFMPEG)
         with self._patch_pipeline(captured):
             adapter.extract_rpu(
-                Path("movie.mkv"), Path("rpu.bin"), DvMode.COPY,
+                Path("movie.mkv"),
+                Path("rpu.bin"),
+                DvMode.COPY,
             )
         producer = [str(c) for c in captured["producer"]]
         assert producer[0] == str(FFMPEG)
@@ -167,7 +156,9 @@ class TestDoviExtractRpuExecution:
         adapter = DoviToolAdapter(DOVI, FFMPEG)
         with self._patch_pipeline(captured):
             adapter.extract_rpu(
-                Path("movie.mkv"), Path("out.bin"), DvMode.TO_8_1,
+                Path("movie.mkv"),
+                Path("out.bin"),
+                DvMode.TO_8_1,
             )
         consumer = [str(c) for c in captured["consumer"]]
         assert consumer[0] == str(DOVI)
@@ -178,13 +169,16 @@ class TestDoviExtractRpuExecution:
         assert consumer[o_idx + 1] == "out.bin"
 
     def test_log_path_set_when_log_dir_configured(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         captured: dict[str, Any] = {}
         adapter = DoviToolAdapter(DOVI, FFMPEG, log_dir=tmp_path)
         with self._patch_pipeline(captured):
             adapter.extract_rpu(
-                Path("a.mkv"), Path("rpu.bin"), DvMode.TO_8_1,
+                Path("a.mkv"),
+                Path("rpu.bin"),
+                DvMode.TO_8_1,
             )
         assert captured["log_path"] == tmp_path / "dovi_tool_extract.log"
 
@@ -193,7 +187,9 @@ class TestDoviExtractRpuExecution:
         adapter = DoviToolAdapter(DOVI, FFMPEG)
         with self._patch_pipeline(captured):
             adapter.extract_rpu(
-                Path("a.mkv"), Path("rpu.bin"), DvMode.COPY,
+                Path("a.mkv"),
+                Path("rpu.bin"),
+                DvMode.COPY,
             )
         assert captured["log_path"] is None
 
@@ -205,7 +201,9 @@ class TestDoviExtractRpuExecution:
         adapter = DoviToolAdapter(DOVI, FFMPEG, on_output=output_fn)
         with self._patch_pipeline(captured):
             adapter.extract_rpu(
-                Path("a.mkv"), Path("rpu.bin"), DvMode.COPY,
+                Path("a.mkv"),
+                Path("rpu.bin"),
+                DvMode.COPY,
             )
         assert captured["on_output"] is output_fn
 

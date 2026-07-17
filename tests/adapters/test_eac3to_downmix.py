@@ -1,4 +1,3 @@
-"""Tests for Eac3toAdapter.decode_lossless downmix flag emission."""
 from __future__ import annotations
 
 import tempfile
@@ -10,7 +9,6 @@ from furnace.core.models import DownmixMode
 
 
 def _run_and_capture(downmix: DownmixMode | None, delay_ms: int = 0) -> list[str]:
-    """Invoke decode_lossless with given downmix and return the captured argv."""
     captured: dict[str, object] = {}
 
     def fake_run_tool(
@@ -39,7 +37,6 @@ def _run_and_capture(downmix: DownmixMode | None, delay_ms: int = 0) -> list[str
 
 class TestDecodeLosslessDownmixFlags:
     def test_no_downmix_emits_no_downmix_flags(self) -> None:
-        """Regression guard: calls without downmix must not emit downmix flags."""
         cmd = _run_and_capture(downmix=None)
         assert "-downStereo" not in cmd
         assert "-mixlfe" not in cmd
@@ -58,12 +55,10 @@ class TestDecodeLosslessDownmixFlags:
         assert "-mixlfe" not in cmd
 
     def test_remove_dialnorm_still_present_with_downmix(self) -> None:
-        """Downmix flags augment, not replace, -removeDialnorm."""
         cmd = _run_and_capture(downmix=DownmixMode.STEREO)
         assert "-removeDialnorm" in cmd
 
     def test_delay_still_applied_with_downmix(self) -> None:
-        """Delay arg is independent of downmix."""
         cmd = _run_and_capture(downmix=DownmixMode.STEREO, delay_ms=50)
         assert "-downStereo" in cmd
         assert any(arg == "+50ms" for arg in cmd)

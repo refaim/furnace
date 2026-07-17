@@ -1,9 +1,3 @@
-"""Tests for ``FFmpegAdapter.sample_repeat_pict`` (soft-telecine probing).
-
-The adapter samples repeat_pict flags at five points across the timeline via
-``ffprobe -show_frames``; the pure cadence math lives in ``core.detect``.
-"""
-
 from __future__ import annotations
 
 import json
@@ -36,7 +30,6 @@ def test_sample_repeat_pict_probes_five_points_and_concatenates() -> None:
 
     assert mock_run.call_count == 5
     assert flags == [0, 1, 0, 1] * 5
-    # Windows start at 10/30/50/70/90% of the duration.
     seeks = []
     for call in mock_run.call_args_list:
         cmd = call.args[0]
@@ -81,7 +74,6 @@ def test_sample_repeat_pict_missing_key_counts_as_zero() -> None:
 
 
 def test_sample_repeat_pict_skips_failed_window() -> None:
-    """A window where ffprobe fails contributes nothing; the rest survive."""
     adapter = FFmpegAdapter(Path("ffmpeg"), Path("ffprobe"))
     results = [
         _fake_result(_frames_json([0, 1])),
@@ -98,7 +90,6 @@ def test_sample_repeat_pict_skips_failed_window() -> None:
 
 
 def test_sample_repeat_pict_skips_unparseable_window() -> None:
-    """Garbage JSON in one window is skipped, not fatal."""
     adapter = FFmpegAdapter(Path("ffmpeg"), Path("ffprobe"))
     results = [
         _fake_result("not json"),
@@ -115,7 +106,6 @@ def test_sample_repeat_pict_skips_unparseable_window() -> None:
 
 
 def test_sample_repeat_pict_skips_window_with_non_integer_flag() -> None:
-    """A frame whose repeat_pict is not an integer poisons only its window."""
     adapter = FFmpegAdapter(Path("ffmpeg"), Path("ffprobe"))
     results = [
         _fake_result(_frames_json([0, 1])),
@@ -144,7 +134,6 @@ def test_sample_repeat_pict_all_windows_failed_returns_empty() -> None:
 
 
 def test_sample_repeat_pict_no_frames_key() -> None:
-    """ffprobe JSON without a frames list contributes nothing."""
     adapter = FFmpegAdapter(Path("ffmpeg"), Path("ffprobe"))
     payload: dict[str, Any] = {}
 

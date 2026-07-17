@@ -27,13 +27,9 @@ from tests.conftest import (
     make_video_params,
 )
 
-# ---------------------------------------------------------------------------
-# test_plan_roundtrip
-# ---------------------------------------------------------------------------
 
 class TestPlanRoundtrip:
     def test_basic_roundtrip(self, tmp_path: Path) -> None:
-        """save -> load -> save produces identical JSON."""
         plan = make_plan()
         plan_path = tmp_path / "plan.json"
 
@@ -47,7 +43,6 @@ class TestPlanRoundtrip:
         assert json1 == json2
 
     def test_roundtrip_with_crop(self, tmp_path: Path) -> None:
-        """Plan with CropRect survives roundtrip."""
         crop = CropRect(w=1920, h=800, x=0, y=140)
         vp = make_video_params(crop=crop)
         job = Job(
@@ -72,7 +67,6 @@ class TestPlanRoundtrip:
         assert loaded.jobs[0].video_params.crop == crop
 
     def test_roundtrip_with_hdr(self, tmp_path: Path) -> None:
-        """Plan with HDR metadata survives roundtrip."""
         hdr = HdrMetadata(
             mastering_display="G(0.265,0.69)B(0.15,0.06)R(0.68,0.32)WP(0.3127,0.329)L(1000,0.005)",
             content_light="MaxCLL=1000,MaxFALL=400",
@@ -110,7 +104,6 @@ class TestPlanRoundtrip:
         assert loaded_hdr.content_light == hdr.content_light
 
     def test_roundtrip_preserves_job_fields(self, tmp_path: Path) -> None:
-        """All job scalar fields survive roundtrip."""
         job = make_job(job_id="abc-123", output_file="/out/test.mkv")
         plan = make_plan(jobs=[job])
         plan_path = tmp_path / "plan.json"
@@ -124,7 +117,6 @@ class TestPlanRoundtrip:
         assert loaded_job.status == JobStatus.PENDING
 
     def test_roundtrip_empty_jobs(self, tmp_path: Path) -> None:
-        """Plan with no jobs roundtrips correctly."""
         plan = make_plan(jobs=[])
         plan_path = tmp_path / "plan.json"
 
@@ -134,7 +126,6 @@ class TestPlanRoundtrip:
         assert loaded.jobs == []
 
     def test_roundtrip_multiple_jobs(self, tmp_path: Path) -> None:
-        """Multiple jobs all survive roundtrip."""
         jobs = [make_job(job_id=f"job-{i}", output_file=f"/out/movie{i}.mkv") for i in range(3)]
         plan = make_plan(jobs=jobs)
         plan_path = tmp_path / "plan.json"
@@ -146,7 +137,6 @@ class TestPlanRoundtrip:
         assert [j.id for j in loaded.jobs] == ["job-0", "job-1", "job-2"]
 
     def test_roundtrip_audio_action_preserved(self, tmp_path: Path) -> None:
-        """AudioAction enum values survive roundtrip."""
         audio = make_audio_instruction(action=AudioAction.DECODE_ENCODE)
         job = make_job(audio=[audio])
         plan = make_plan(jobs=[job])
@@ -158,7 +148,6 @@ class TestPlanRoundtrip:
         assert loaded.jobs[0].audio[0].action == AudioAction.DECODE_ENCODE
 
     def test_roundtrip_subtitle_instruction(self, tmp_path: Path) -> None:
-        """SubtitleInstruction with COPY_RECODE survives roundtrip."""
         sub = make_subtitle_instruction(
             action=SubtitleAction.COPY_RECODE,
             codec_name="subrip",
@@ -178,19 +167,27 @@ class TestPlanRoundtrip:
         assert loaded_sub.is_forced is True
 
     def test_roundtrip_with_downmix(self, tmp_path: Path) -> None:
-        """AudioInstruction.downmix survives save -> load."""
         audio = [
             make_audio_instruction(
-                stream_index=1, codec_name="truehd", channels=8,
-                action=AudioAction.DECODE_ENCODE, downmix=DownmixMode.STEREO,
+                stream_index=1,
+                codec_name="truehd",
+                channels=8,
+                action=AudioAction.DECODE_ENCODE,
+                downmix=DownmixMode.STEREO,
             ),
             make_audio_instruction(
-                stream_index=2, codec_name="ac3", channels=6,
-                action=AudioAction.DECODE_ENCODE, downmix=DownmixMode.DOWN6,
+                stream_index=2,
+                codec_name="ac3",
+                channels=6,
+                action=AudioAction.DECODE_ENCODE,
+                downmix=DownmixMode.DOWN6,
             ),
             make_audio_instruction(
-                stream_index=3, codec_name="aac", channels=2,
-                action=AudioAction.COPY, downmix=None,
+                stream_index=3,
+                codec_name="aac",
+                channels=2,
+                action=AudioAction.COPY,
+                downmix=None,
             ),
         ]
         job = make_job(audio=audio)
@@ -206,7 +203,6 @@ class TestPlanRoundtrip:
         assert loaded_audio[2].downmix is None
 
     def test_legacy_plan_without_downmix_key_loads(self, tmp_path: Path) -> None:
-        """A JSON plan produced before the downmix field existed must still load."""
         raw = {
             "version": "2",
             "furnace_version": "1.0.0",
@@ -221,13 +217,24 @@ class TestPlanRoundtrip:
                     "source_files": ["/src/movie.mkv"],
                     "output_file": "/out/movie.mkv",
                     "video_params": {
-                        "cq": 25, "crop": None, "deinterlace": False,
-                        "color_matrix": "bt709", "color_range": "tv",
-                        "color_transfer": "bt709", "color_primaries": "bt709",
-                        "hdr": None, "gop": 120, "fps_num": 24, "fps_den": 1,
-                        "source_width": 1920, "source_height": 1080,
-                        "source_codec": "", "source_bitrate": 0,
-                        "sar_num": 1, "sar_den": 1, "dv_mode": None,
+                        "cq": 25,
+                        "crop": None,
+                        "deinterlace": False,
+                        "color_matrix": "bt709",
+                        "color_range": "tv",
+                        "color_transfer": "bt709",
+                        "color_primaries": "bt709",
+                        "hdr": None,
+                        "gop": 120,
+                        "fps_num": 24,
+                        "fps_den": 1,
+                        "source_width": 1920,
+                        "source_height": 1080,
+                        "source_codec": "",
+                        "source_bitrate": 0,
+                        "sar_num": 1,
+                        "sar_den": 1,
+                        "dv_mode": None,
                     },
                     "audio": [
                         {
@@ -240,7 +247,6 @@ class TestPlanRoundtrip:
                             "codec_name": "aac",
                             "channels": 2,
                             "bitrate": 192000,
-                            # no 'downmix' key
                         },
                     ],
                     "subtitles": [],
@@ -264,12 +270,10 @@ class TestPlanRoundtrip:
         assert loaded.jobs[0].audio[0].downmix is None
 
     def test_invalid_downmix_string_raises(self, tmp_path: Path) -> None:
-        """An unknown downmix string in JSON must raise ValueError on load."""
         plan = make_plan()
         plan_path = tmp_path / "plan.json"
         save_plan(plan, plan_path)
 
-        # Inject an invalid downmix value into the saved JSON
         raw = json.loads(plan_path.read_text(encoding="utf-8"))
         raw["jobs"][0]["audio"][0]["downmix"] = "foo"
         plan_path.write_text(json.dumps(raw), encoding="utf-8")
@@ -278,13 +282,8 @@ class TestPlanRoundtrip:
             load_plan(plan_path)
 
 
-# ---------------------------------------------------------------------------
-# test_plan_version_validation
-# ---------------------------------------------------------------------------
-
 class TestPlanVersionValidation:
     def test_correct_version_loads(self, tmp_path: Path) -> None:
-        """Plan with version '2' loads without error."""
         plan = make_plan()
         plan_path = tmp_path / "plan.json"
         save_plan(plan, plan_path)
@@ -292,33 +291,39 @@ class TestPlanVersionValidation:
         assert loaded.version == "2"
 
     def test_wrong_version_raises(self, tmp_path: Path) -> None:
-        """Plan with wrong version -> ValueError."""
         plan_path = tmp_path / "plan.json"
-        data = {"version": "99", "furnace_version": "0.1.0", "created_at": "2026-01-01T00:00:00",
-                "source": "/src", "destination": "/out", "vmaf_enabled": False, "jobs": []}
+        data = {
+            "version": "99",
+            "furnace_version": "0.1.0",
+            "created_at": "2026-01-01T00:00:00",
+            "source": "/src",
+            "destination": "/out",
+            "vmaf_enabled": False,
+            "jobs": [],
+        }
         plan_path.write_text(json.dumps(data), encoding="utf-8")
 
         with pytest.raises(ValueError, match="Unsupported plan version"):
             load_plan(plan_path)
 
     def test_missing_version_raises(self, tmp_path: Path) -> None:
-        """Plan with no version field -> ValueError."""
         plan_path = tmp_path / "plan.json"
-        data = {"furnace_version": "0.1.0", "created_at": "2026-01-01T00:00:00",
-                "source": "/src", "destination": "/out", "vmaf_enabled": False, "jobs": []}
+        data = {
+            "furnace_version": "0.1.0",
+            "created_at": "2026-01-01T00:00:00",
+            "source": "/src",
+            "destination": "/out",
+            "vmaf_enabled": False,
+            "jobs": [],
+        }
         plan_path.write_text(json.dumps(data), encoding="utf-8")
 
         with pytest.raises(ValueError, match="Unsupported plan version"):
             load_plan(plan_path)
 
 
-# ---------------------------------------------------------------------------
-# test_update_job_status
-# ---------------------------------------------------------------------------
-
 class TestUpdateJobStatus:
     def test_update_pending_to_done(self, tmp_path: Path) -> None:
-        """Update job from PENDING -> DONE."""
         plan = make_plan(jobs=[make_job(job_id="j1")])
         plan_path = tmp_path / "plan.json"
         save_plan(plan, plan_path)
@@ -331,7 +336,6 @@ class TestUpdateJobStatus:
         assert job_raw["error"] is None
 
     def test_update_to_error_with_message(self, tmp_path: Path) -> None:
-        """Update job to ERROR with error message."""
         plan = make_plan(jobs=[make_job(job_id="j2")])
         plan_path = tmp_path / "plan.json"
         save_plan(plan, plan_path)
@@ -344,7 +348,6 @@ class TestUpdateJobStatus:
         assert job_raw["error"] == "ffmpeg died"
 
     def test_update_with_output_size(self, tmp_path: Path) -> None:
-        """output_size is persisted when provided."""
         plan = make_plan(jobs=[make_job(job_id="j4")])
         plan_path = tmp_path / "plan.json"
         save_plan(plan, plan_path)
@@ -355,7 +358,6 @@ class TestUpdateJobStatus:
         assert raw["jobs"][0]["output_size"] == 500_000_000
 
     def test_update_with_chosen_cq(self, tmp_path: Path) -> None:
-        """chosen_cq (the target-quality search result) is persisted when provided."""
         plan = make_plan(jobs=[make_job(job_id="j-cq")])
         plan_path = tmp_path / "plan.json"
         save_plan(plan, plan_path)
@@ -366,7 +368,6 @@ class TestUpdateJobStatus:
         assert raw["jobs"][0]["chosen_cq"] == 27
 
     def test_update_nonexistent_job_raises(self, tmp_path: Path) -> None:
-        """Updating a job ID that doesn't exist -> KeyError."""
         plan = make_plan(jobs=[make_job(job_id="j5")])
         plan_path = tmp_path / "plan.json"
         save_plan(plan, plan_path)
@@ -375,7 +376,6 @@ class TestUpdateJobStatus:
             update_job_status(plan_path, "nonexistent", JobStatus.DONE)
 
     def test_update_correct_job_among_multiple(self, tmp_path: Path) -> None:
-        """Only the targeted job is updated when multiple jobs exist."""
         jobs = [make_job(job_id="j-a"), make_job(job_id="j-b"), make_job(job_id="j-c")]
         plan = make_plan(jobs=jobs)
         plan_path = tmp_path / "plan.json"
@@ -390,51 +390,38 @@ class TestUpdateJobStatus:
         assert statuses["j-c"] == "pending"
 
 
-# ---------------------------------------------------------------------------
-# test_atomic_write
-# ---------------------------------------------------------------------------
-
 class TestAtomicWrite:
     def test_writes_content(self, tmp_path: Path) -> None:
-        """atomic_write creates the file with correct content."""
         target = tmp_path / "output.json"
         atomic_write(target, '{"key": "value"}')
         assert target.exists()
         assert target.read_text(encoding="utf-8") == '{"key": "value"}'
 
     def test_overwrites_existing(self, tmp_path: Path) -> None:
-        """atomic_write overwrites an existing file atomically."""
         target = tmp_path / "output.json"
         target.write_text("old content", encoding="utf-8")
         atomic_write(target, "new content")
         assert target.read_text(encoding="utf-8") == "new content"
 
     def test_no_tmp_file_left_on_success(self, tmp_path: Path) -> None:
-        """No .tmp file remains after successful write."""
         target = tmp_path / "output.json"
         atomic_write(target, "data")
         tmp_files = list(tmp_path.glob("*.tmp"))
         assert tmp_files == []
 
     def test_unicode_content(self, tmp_path: Path) -> None:
-        """atomic_write handles Unicode content correctly."""
         target = tmp_path / "output.json"
         content = '{"title": "Фильм — тест"}'
         atomic_write(target, content)
         assert target.read_text(encoding="utf-8") == content
 
     def test_write_to_nested_existing_dir(self, tmp_path: Path) -> None:
-        """atomic_write works when parent dir exists."""
         subdir = tmp_path / "plans"
         subdir.mkdir()
         target = subdir / "plan.json"
         atomic_write(target, "content")
         assert target.read_text(encoding="utf-8") == "content"
 
-
-# ---------------------------------------------------------------------------
-# test_plan_demux_dir
-# ---------------------------------------------------------------------------
 
 class TestPlanDemuxDir:
     def test_roundtrip_with_demux_dir(self, tmp_path: Path) -> None:
@@ -452,18 +439,22 @@ class TestPlanDemuxDir:
         assert loaded.demux_dir is None
 
 
-# ---------------------------------------------------------------------------
-# test_plan_dv_mode_roundtrip
-# ---------------------------------------------------------------------------
-
 class TestPlanDvModeRoundtrip:
     def test_roundtrip_dv_mode_to_8_1(self, tmp_path: Path) -> None:
         vp = make_video_params()
         vp = dataclasses.replace(vp, dv_mode=DvMode.TO_8_1)
         job = Job(
-            id="dv-job", source_files=["/src/dv.mkv"], output_file="/out/dv.mkv",
-            video_params=vp, audio=[], subtitles=[], attachments=[],
-            copy_chapters=False, chapters_source=None, status=JobStatus.PENDING, source_size=0,
+            id="dv-job",
+            source_files=["/src/dv.mkv"],
+            output_file="/out/dv.mkv",
+            video_params=vp,
+            audio=[],
+            subtitles=[],
+            attachments=[],
+            copy_chapters=False,
+            chapters_source=None,
+            status=JobStatus.PENDING,
+            source_size=0,
         )
         plan = make_plan(jobs=[job])
         plan_path = tmp_path / "plan.json"
@@ -489,9 +480,17 @@ class TestPlanDvModeRoundtrip:
         vp = make_video_params(color_matrix="bt2020nc", hdr=hdr)
         vp = dataclasses.replace(vp, dv_mode=DvMode.COPY)
         job = Job(
-            id="dv-hdr-job", source_files=["/src/dv.mkv"], output_file="/out/dv.mkv",
-            video_params=vp, audio=[], subtitles=[], attachments=[],
-            copy_chapters=False, chapters_source=None, status=JobStatus.PENDING, source_size=0,
+            id="dv-hdr-job",
+            source_files=["/src/dv.mkv"],
+            output_file="/out/dv.mkv",
+            video_params=vp,
+            audio=[],
+            subtitles=[],
+            attachments=[],
+            copy_chapters=False,
+            chapters_source=None,
+            status=JobStatus.PENDING,
+            source_size=0,
         )
         plan = make_plan(jobs=[job])
         plan_path = tmp_path / "plan.json"
@@ -504,18 +503,21 @@ class TestPlanDvModeRoundtrip:
         assert loaded_hdr.dv_bl_compatibility == DvBlCompatibility.HDR10
 
 
-# ---------------------------------------------------------------------------
-# test_plan_passthrough_roundtrip
-# ---------------------------------------------------------------------------
-
 class TestPlanPassthroughRoundtrip:
     def test_roundtrip_passthrough_true(self, tmp_path: Path) -> None:
-        """video_params.passthrough=True survives save -> load."""
         vp = make_video_params(passthrough=True)
         job = Job(
-            id="pt-job", source_files=["/src/pt.mkv"], output_file="/out/pt.mkv",
-            video_params=vp, audio=[], subtitles=[], attachments=[],
-            copy_chapters=False, chapters_source=None, status=JobStatus.PENDING, source_size=0,
+            id="pt-job",
+            source_files=["/src/pt.mkv"],
+            output_file="/out/pt.mkv",
+            video_params=vp,
+            audio=[],
+            subtitles=[],
+            attachments=[],
+            copy_chapters=False,
+            chapters_source=None,
+            status=JobStatus.PENDING,
+            source_size=0,
         )
         plan = make_plan(jobs=[job])
         plan_path = tmp_path / "plan.json"
@@ -524,7 +526,6 @@ class TestPlanPassthroughRoundtrip:
         assert loaded.jobs[0].video_params.passthrough is True
 
     def test_roundtrip_passthrough_false(self, tmp_path: Path) -> None:
-        """video_params.passthrough=False survives save -> load."""
         plan = make_plan()
         plan_path = tmp_path / "plan.json"
         save_plan(plan, plan_path)
@@ -532,20 +533,29 @@ class TestPlanPassthroughRoundtrip:
         assert loaded.jobs[0].video_params.passthrough is False
 
     def test_legacy_plan_without_passthrough_key_defaults_false(self, tmp_path: Path) -> None:
-        """A plan JSON produced before passthrough existed must load with False."""
         job_raw = {
             "id": "legacy-job",
             "source_files": ["/src/movie.mkv"],
             "output_file": "/out/movie.mkv",
             "video_params": {
-                "cq": 25, "crop": None, "deinterlace": False,
-                "color_matrix": "bt709", "color_range": "tv",
-                "color_transfer": "bt709", "color_primaries": "bt709",
-                "hdr": None, "gop": 120, "fps_num": 24, "fps_den": 1,
-                "source_width": 1920, "source_height": 1080,
-                "source_codec": "", "source_bitrate": 0,
-                "sar_num": 1, "sar_den": 1, "dv_mode": None,
-                # no 'passthrough' key — simulates legacy plan
+                "cq": 25,
+                "crop": None,
+                "deinterlace": False,
+                "color_matrix": "bt709",
+                "color_range": "tv",
+                "color_transfer": "bt709",
+                "color_primaries": "bt709",
+                "hdr": None,
+                "gop": 120,
+                "fps_num": 24,
+                "fps_den": 1,
+                "source_width": 1920,
+                "source_height": 1080,
+                "source_codec": "",
+                "source_bitrate": 0,
+                "sar_num": 1,
+                "sar_den": 1,
+                "dv_mode": None,
             },
             "audio": [],
             "subtitles": [],
@@ -576,18 +586,21 @@ class TestPlanPassthroughRoundtrip:
         assert loaded.jobs[0].video_params.passthrough is False
 
 
-# ---------------------------------------------------------------------------
-# test_plan_grain_roundtrip
-# ---------------------------------------------------------------------------
-
 class TestPlanGrainRoundtrip:
     def test_roundtrip_grain_true(self, tmp_path: Path) -> None:
-        """video_params.grain=True survives save -> load."""
         vp = make_video_params(grain=True)
         job = Job(
-            id="grain-job", source_files=["/src/grain.mkv"], output_file="/out/grain.mkv",
-            video_params=vp, audio=[], subtitles=[], attachments=[],
-            copy_chapters=False, chapters_source=None, status=JobStatus.PENDING, source_size=0,
+            id="grain-job",
+            source_files=["/src/grain.mkv"],
+            output_file="/out/grain.mkv",
+            video_params=vp,
+            audio=[],
+            subtitles=[],
+            attachments=[],
+            copy_chapters=False,
+            chapters_source=None,
+            status=JobStatus.PENDING,
+            source_size=0,
         )
         plan = make_plan(jobs=[job])
         plan_path = tmp_path / "plan.json"
@@ -596,7 +609,6 @@ class TestPlanGrainRoundtrip:
         assert loaded.jobs[0].video_params.grain is True
 
     def test_roundtrip_grain_false(self, tmp_path: Path) -> None:
-        """video_params.grain=False survives save -> load."""
         plan = make_plan()
         plan_path = tmp_path / "plan.json"
         save_plan(plan, plan_path)
@@ -604,21 +616,30 @@ class TestPlanGrainRoundtrip:
         assert loaded.jobs[0].video_params.grain is False
 
     def test_legacy_plan_without_grain_key_defaults_false(self, tmp_path: Path) -> None:
-        """A plan JSON produced before grain existed must load with False."""
         job_raw = {
             "id": "legacy-job",
             "source_files": ["/src/movie.mkv"],
             "output_file": "/out/movie.mkv",
             "video_params": {
-                "cq": 25, "crop": None, "deinterlace": False,
-                "color_matrix": "bt709", "color_range": "tv",
-                "color_transfer": "bt709", "color_primaries": "bt709",
-                "hdr": None, "gop": 120, "fps_num": 24, "fps_den": 1,
-                "source_width": 1920, "source_height": 1080,
-                "source_codec": "", "source_bitrate": 0,
-                "sar_num": 1, "sar_den": 1, "dv_mode": None,
+                "cq": 25,
+                "crop": None,
+                "deinterlace": False,
+                "color_matrix": "bt709",
+                "color_range": "tv",
+                "color_transfer": "bt709",
+                "color_primaries": "bt709",
+                "hdr": None,
+                "gop": 120,
+                "fps_num": 24,
+                "fps_den": 1,
+                "source_width": 1920,
+                "source_height": 1080,
+                "source_codec": "",
+                "source_bitrate": 0,
+                "sar_num": 1,
+                "sar_den": 1,
+                "dv_mode": None,
                 "passthrough": False,
-                # no 'grain' key — simulates legacy plan
             },
             "audio": [],
             "subtitles": [],
@@ -649,31 +670,33 @@ class TestPlanGrainRoundtrip:
         assert loaded.jobs[0].video_params.grain is False
 
 
-# ---------------------------------------------------------------------------
-# test_plan_legacy_metric_keys — pre-target-quality plans carry metric scores
-# ---------------------------------------------------------------------------
-
 class TestPlanLegacyMetricKeys:
     def test_legacy_plan_with_removed_metric_keys_loads(self, tmp_path: Path) -> None:
-        """A real pre-target-quality plan (2.8.0/2.9.0) carries per-job metric
-        scores (vmaf/ssimulacra2/butteraugli/cvvdp) and a plan-level
-        ``vmaf_enabled``. Those fields were removed with the metrics-on-final
-        subsystem; the loader must still round-trip such a plan (it reads keys via
-        ``.get``, never ``Job(**raw)``, so unknown keys are ignored) and default
-        the new ``chosen_cq`` to None."""
         job_raw = {
             "id": "legacy-metric-job",
             "source_files": ["/src/movie.mkv"],
             "output_file": "/out/movie.mkv",
             "video_params": {
-                "cq": 25, "crop": None, "deinterlace": False,
-                "color_matrix": "bt709", "color_range": "tv",
-                "color_transfer": "bt709", "color_primaries": "bt709",
-                "hdr": None, "gop": 120, "fps_num": 24, "fps_den": 1,
-                "source_width": 1920, "source_height": 1080,
-                "source_codec": "", "source_bitrate": 0,
-                "sar_num": 1, "sar_den": 1, "dv_mode": None,
-                "passthrough": False, "grain": False,
+                "cq": 25,
+                "crop": None,
+                "deinterlace": False,
+                "color_matrix": "bt709",
+                "color_range": "tv",
+                "color_transfer": "bt709",
+                "color_primaries": "bt709",
+                "hdr": None,
+                "gop": 120,
+                "fps_num": 24,
+                "fps_den": 1,
+                "source_width": 1920,
+                "source_height": 1080,
+                "source_codec": "",
+                "source_bitrate": 0,
+                "sar_num": 1,
+                "sar_den": 1,
+                "dv_mode": None,
+                "passthrough": False,
+                "grain": False,
             },
             "audio": [],
             "subtitles": [],
@@ -684,12 +707,10 @@ class TestPlanLegacyMetricKeys:
             "error": None,
             "source_size": 0,
             "output_size": 123,
-            # Removed metric-score fields a real old plan still carries:
             "vmaf_score": 95.4,
             "ssimulacra2_score": 88.1,
             "butteraugli_score": 1.7,
             "cvvdp_score": 9.2,
-            # no 'chosen_cq' key — the new field is absent in a legacy plan.
         }
         data = {
             "version": "2",
@@ -697,7 +718,7 @@ class TestPlanLegacyMetricKeys:
             "created_at": "2026-01-01T00:00:00",
             "source": "/src",
             "destination": "/out",
-            "vmaf_enabled": True,  # removed plan-level flag, still present here
+            "vmaf_enabled": True,
             "jobs": [job_raw],
         }
         plan_path = tmp_path / "plan.json"
@@ -710,19 +731,7 @@ class TestPlanLegacyMetricKeys:
         assert loaded.jobs[0].chosen_cq is None
 
 
-# ---------------------------------------------------------------------------
-# test_mixed_passthrough_encode_plan
-# ---------------------------------------------------------------------------
-
 class TestMixedPassthroughEncodePlan:
-    """A single plan may mix passthrough jobs and fallback-encode jobs.
-
-    Integration check for the ``--copy-video`` feature: a passthrough job
-    (video copied verbatim) and a fallback-encode job (e.g. interlaced source
-    that had to be re-encoded) must both serialize and reload intact in one
-    plan.
-    """
-
     def test_mixed_plan_roundtrips(self, tmp_path: Path) -> None:
         passthrough_vp = make_video_params(passthrough=True)
         passthrough_job = Job(
@@ -773,13 +782,8 @@ class TestMixedPassthroughEncodePlan:
         assert loaded_enc.video_params.deinterlace is True
 
 
-# ---------------------------------------------------------------------------
-# test_job_duration_s
-# ---------------------------------------------------------------------------
-
 class TestJobDurationS:
     def test_roundtrip_duration_s(self, tmp_path: Path) -> None:
-        """duration_s value is preserved through save/load roundtrip."""
         job = make_job(job_id="dur-job")
         job = dataclasses.replace(job, duration_s=7200.5)
         plan = make_plan(jobs=[job])
@@ -791,19 +795,29 @@ class TestJobDurationS:
         assert loaded.jobs[0].duration_s == pytest.approx(7200.5)
 
     def test_legacy_plan_without_duration_s_defaults_to_zero(self, tmp_path: Path) -> None:
-        """Loading a plan JSON that lacks duration_s defaults the field to 0.0."""
         job_raw = {
             "id": "legacy-job",
             "source_files": ["/src/movie.mkv"],
             "output_file": "/out/movie.mkv",
             "video_params": {
-                "cq": 25, "crop": None, "deinterlace": False,
-                "color_matrix": "bt709", "color_range": "tv",
-                "color_transfer": "bt709", "color_primaries": "bt709",
-                "hdr": None, "gop": 120, "fps_num": 24, "fps_den": 1,
-                "source_width": 1920, "source_height": 1080,
-                "source_codec": "", "source_bitrate": 0,
-                "sar_num": 1, "sar_den": 1, "dv_mode": None,
+                "cq": 25,
+                "crop": None,
+                "deinterlace": False,
+                "color_matrix": "bt709",
+                "color_range": "tv",
+                "color_transfer": "bt709",
+                "color_primaries": "bt709",
+                "hdr": None,
+                "gop": 120,
+                "fps_num": 24,
+                "fps_den": 1,
+                "source_width": 1920,
+                "source_height": 1080,
+                "source_codec": "",
+                "source_bitrate": 0,
+                "sar_num": 1,
+                "sar_den": 1,
+                "dv_mode": None,
             },
             "audio": [],
             "subtitles": [],
@@ -816,7 +830,6 @@ class TestJobDurationS:
             "ssim_score": None,
             "source_size": 0,
             "output_size": None,
-            # no duration_s key — simulates legacy plan
         }
         data = {
             "version": "2",
@@ -835,13 +848,8 @@ class TestJobDurationS:
         assert loaded.jobs[0].duration_s == 0.0
 
 
-# ---------------------------------------------------------------------------
-# test_plan_chosen_cq_roundtrip
-# ---------------------------------------------------------------------------
-
 class TestPlanChosenCqRoundtrip:
     def test_roundtrip_chosen_cq_set(self, tmp_path: Path) -> None:
-        """Job.chosen_cq (target-quality search result) survives save -> load."""
         job = dataclasses.replace(make_job(job_id="cq-job"), chosen_cq=28)
         plan = make_plan(jobs=[job])
         plan_path = tmp_path / "plan.json"
@@ -850,7 +858,6 @@ class TestPlanChosenCqRoundtrip:
         assert loaded.jobs[0].chosen_cq == 28
 
     def test_roundtrip_chosen_cq_none(self, tmp_path: Path) -> None:
-        """A job with no chosen_cq round-trips as None."""
         plan = make_plan()
         plan_path = tmp_path / "plan.json"
         save_plan(plan, plan_path)
@@ -858,19 +865,29 @@ class TestPlanChosenCqRoundtrip:
         assert loaded.jobs[0].chosen_cq is None
 
     def test_legacy_plan_without_chosen_cq_key_defaults_none(self, tmp_path: Path) -> None:
-        """A plan JSON produced before chosen_cq existed must load with None."""
         job_raw = {
             "id": "legacy-job",
             "source_files": ["/src/movie.mkv"],
             "output_file": "/out/movie.mkv",
             "video_params": {
-                "cq": 25, "crop": None, "deinterlace": False,
-                "color_matrix": "bt709", "color_range": "tv",
-                "color_transfer": "bt709", "color_primaries": "bt709",
-                "hdr": None, "gop": 120, "fps_num": 24, "fps_den": 1,
-                "source_width": 1920, "source_height": 1080,
-                "source_codec": "", "source_bitrate": 0,
-                "sar_num": 1, "sar_den": 1, "dv_mode": None,
+                "cq": 25,
+                "crop": None,
+                "deinterlace": False,
+                "color_matrix": "bt709",
+                "color_range": "tv",
+                "color_transfer": "bt709",
+                "color_primaries": "bt709",
+                "hdr": None,
+                "gop": 120,
+                "fps_num": 24,
+                "fps_den": 1,
+                "source_width": 1920,
+                "source_height": 1080,
+                "source_codec": "",
+                "source_bitrate": 0,
+                "sar_num": 1,
+                "sar_den": 1,
+                "dv_mode": None,
             },
             "audio": [],
             "subtitles": [],
@@ -879,7 +896,6 @@ class TestPlanChosenCqRoundtrip:
             "chapters_source": None,
             "status": "pending",
             "error": None,
-            # no chosen_cq key — simulates legacy plan
         }
         data = {
             "version": "2",
@@ -898,35 +914,25 @@ class TestPlanChosenCqRoundtrip:
         assert loaded.jobs[0].chosen_cq is None
 
 
-# ---------------------------------------------------------------------------
-# test_plan_encoder
-# ---------------------------------------------------------------------------
-
 class TestPlanEncoder:
     def test_encodes_path(self) -> None:
-        """_PlanEncoder encodes a bare Path to its string representation."""
         result = json.dumps({"p": Path("/test/movie.mkv")}, cls=_PlanEncoder)
         assert "/test/movie.mkv" in result
 
     def test_unknown_type_raises_type_error(self) -> None:
-        """_PlanEncoder falls through to super().default() for unknown types."""
         with pytest.raises(TypeError):
             json.dumps({"obj": object()}, cls=_PlanEncoder)
 
 
-# ---------------------------------------------------------------------------
-# test_atomic_write_failure
-# ---------------------------------------------------------------------------
-
 class TestAtomicWriteFailure:
     def test_cleanup_on_write_failure(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """If os.fdopen raises, the temp file is cleaned up and no target is created."""
         target = tmp_path / "output.json"
 
         def _failing_fdopen(fd: int, *args: object, **kwargs: object) -> object:
-            # Close the fd so it doesn't leak, then raise
             os.close(fd)
             raise OSError("disk full")
 
@@ -935,7 +941,5 @@ class TestAtomicWriteFailure:
         with pytest.raises(OSError, match="disk full"):
             atomic_write(target, "data")
 
-        # Target must not exist
         assert not target.exists()
-        # No .tmp files should remain
         assert list(tmp_path.glob("*.tmp")) == []

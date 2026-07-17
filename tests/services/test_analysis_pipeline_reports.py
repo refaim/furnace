@@ -1,11 +1,3 @@
-"""Reporter-sequence expectations for ``AnalysisPipeline.run``.
-
-Driven deterministically (``max_workers=1``) so the full
-``analyze_batch_start`` -> per-file ``analyze_batch_item`` ->
-``analyze_batch_finish`` sequence can be asserted exactly across a mix of
-DONE / SKIPPED / FAILED outcomes.
-"""
-
 from __future__ import annotations
 
 from collections.abc import Callable
@@ -26,21 +18,10 @@ from tests.fakes.recording_reporter import Event, RecordingPlanReporter
 
 
 def _framing(reporter: RecordingPlanReporter) -> list[Event]:
-    """Events with the fractional ``analyze_batch_progress`` ticks filtered out.
-
-    The poll-driven progress ticks interleave nondeterministically with the
-    per-file items, so sequence assertions key off the start/item/finish framing.
-    """
     return [e for e in reporter.events if e.method != "analyze_batch_progress"]
-
-# ---------------------------------------------------------------------------
-# Fakes / factories
-# ---------------------------------------------------------------------------
 
 
 class _FakeAnalyzer:
-    """Returns a canned ``AnalysisOutcome`` keyed by the scan's main file."""
-
     def __init__(self, outcomes: dict[Path, AnalysisOutcome]) -> None:
         self._outcomes = outcomes
 
@@ -56,11 +37,6 @@ class _FakeAnalyzer:
 
 
 class _FakeProber:
-    """Returns a canned crop keyed by main file; ``None`` when absent.
-
-    Captures every call (all arguments) so the signature stays exercised.
-    """
-
     def __init__(self, crops: dict[Path, CropRect | None] | None = None) -> None:
         self._crops = crops if crops is not None else {}
         self.calls: list[tuple[Path, float, bool, bool, str | None, object]] = []
@@ -105,16 +81,10 @@ def _build_pipeline(
     )
 
 
-# ---------------------------------------------------------------------------
-# Tests
-# ---------------------------------------------------------------------------
-
-
 def test_full_reporter_sequence_mixed_statuses(tmp_path: Path) -> None:
-    """start(N) -> one item per file (right name/detail/status) -> finish."""
-    good = _sr(tmp_path, "good.mkv")   # DONE outcome
-    old = _sr(tmp_path, "old.mkv")     # SKIPPED outcome
-    bad = _sr(tmp_path, "bad.mkv")     # FAILED outcome
+    good = _sr(tmp_path, "good.mkv")
+    old = _sr(tmp_path, "old.mkv")
+    bad = _sr(tmp_path, "bad.mkv")
     outcomes = {
         good.main_file: _done(good.main_file, detail="hevc 1920x1080 24fps SDR, 2 audio (eng), 1 subs"),
         old.main_file: AnalysisOutcome(None, AnalyzeStatus.SKIPPED, "output file already exists"),
@@ -136,13 +106,11 @@ def test_full_reporter_sequence_mixed_statuses(tmp_path: Path) -> None:
         Event("analyze_batch_item", ("bad.mkv", "HDR10+ not supported"), (("status", AnalyzeStatus.FAILED),)),
         Event("analyze_batch_finish", (), ()),
     ]
-    # The bar is driven to completion: the last progress tick reports all 3 files.
     progress = [e for e in reporter.events if e.method == "analyze_batch_progress"]
     assert progress[-1] == Event("analyze_batch_progress", (3.0,), ())
 
 
 def test_single_done_file_full_sequence(tmp_path: Path) -> None:
-    """A lone DONE file still brackets its item with start(1)/finish()."""
     only = _sr(tmp_path, "only.mkv")
     outcomes = {only.main_file: _done(only.main_file, detail="h264 1920x1080 24fps SDR, 1 audio (rus), 0 subs")}
     reporter = RecordingPlanReporter()

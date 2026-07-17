@@ -36,8 +36,6 @@ class TestQaacSetLogDir:
 
 
 class TestQaacEncodeAac:
-    """Test encode_aac() execution by mocking run_tool."""
-
     def test_cmd_flags(self) -> None:
         captured: list[str] = []
 
@@ -105,7 +103,6 @@ class TestQaacEncodeAac:
         assert abs(samples[0].fraction - 0.5) < 0.01  # type: ignore[operator]
 
     def test_progress_non_progress_line(self) -> None:
-        """Non-progress lines return False from the closure."""
         results: list[bool] = []
 
         def fake_run_tool(
@@ -124,7 +121,6 @@ class TestQaacEncodeAac:
         assert results == [False]
 
     def test_progress_without_callback(self) -> None:
-        """Progress line consumed even when on_progress is None."""
         results: list[bool] = []
 
         def fake_run_tool(

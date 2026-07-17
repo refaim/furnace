@@ -1,4 +1,3 @@
-"""Tests for mkvpropedit _build_tags_xml helper and set_encoder_tag execution."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -23,8 +22,6 @@ class TestBuildTagsXml:
 
 
 class TestSetEncoderTag:
-    """Test set_encoder_tag() execution with mocked run_tool."""
-
     def test_set_encoder_tag_cmd(self, tmp_path: Path) -> None:
         mkv_path = tmp_path / "movie.mkv"
         mkv_path.write_text("fake mkv")
@@ -47,7 +44,6 @@ class TestSetEncoderTag:
         assert "mkvpropedit.exe" in captured
         assert str(mkv_path) in captured
         assert "--tags" in captured
-        # global: prefix
         tags_arg = [c for c in captured if c.startswith("global:")]
         assert len(tags_arg) == 1
 
@@ -67,7 +63,6 @@ class TestSetEncoderTag:
         adapter = MkvpropeditAdapter(Path("mkvpropedit.exe"))
         with patch("furnace.adapters.mkvpropedit.run_tool", side_effect=fake_run_tool):
             adapter.set_encoder_tag(mkv_path, "Furnace v1.4.0", "av1_nvenc / main")
-        # After execution, no .xml temp files should remain
         xml_files = list(tmp_path.glob("furnace_tags_*.xml"))
         assert len(xml_files) == 0
 
@@ -88,7 +83,6 @@ class TestSetEncoderTag:
         with patch("furnace.adapters.mkvpropedit.run_tool", side_effect=fake_run_tool):
             rc = adapter.set_encoder_tag(mkv_path, "Furnace v1.4.0")
         assert rc == 1
-        # Temp file cleaned up even on error
         xml_files = list(tmp_path.glob("furnace_tags_*.xml"))
         assert len(xml_files) == 0
 

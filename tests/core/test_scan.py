@@ -17,10 +17,6 @@ from furnace.core.scan import (
     summarize_streams,
 )
 
-# ---------------------------------------------------------------------------
-# parse_furnace_version
-# ---------------------------------------------------------------------------
-
 
 def test_parse_furnace_version_valid_tag() -> None:
     assert parse_furnace_version("Furnace v1.19.3") == (1, 19, 3)
@@ -58,11 +54,6 @@ def test_parse_furnace_version_empty() -> None:
     assert parse_furnace_version("") is None
 
 
-# ---------------------------------------------------------------------------
-# parse_version_arg
-# ---------------------------------------------------------------------------
-
-
 def test_parse_version_arg_valid() -> None:
     assert parse_version_arg("1.19.3") == (1, 19, 3)
 
@@ -78,11 +69,6 @@ def test_parse_version_arg_multi_digit() -> None:
 def test_parse_version_arg_raises(bad: str) -> None:
     with pytest.raises(ValueError, match="Invalid version"):
         parse_version_arg(bad)
-
-
-# ---------------------------------------------------------------------------
-# summarize_streams
-# ---------------------------------------------------------------------------
 
 
 def test_summarize_streams_multi_audio_and_subs() -> None:
@@ -225,11 +211,6 @@ def test_summarize_streams_video_dolby_vision_from_side_data() -> None:
     assert video == VideoSummary(codec="hevc", bit_depth=10, hdr="DV P8")
 
 
-# ---------------------------------------------------------------------------
-# summarize_streams: geometry + container matrix tag (new outdated fields)
-# ---------------------------------------------------------------------------
-
-
 def test_summarize_streams_populates_width_height_matrix() -> None:
     probe = {
         "streams": [
@@ -257,7 +238,6 @@ def test_summarize_streams_missing_geometry_is_none() -> None:
 
 
 def test_summarize_streams_color_space_unknown_passed_through() -> None:
-    # summarize keeps the literal "unknown"; the outdated ledger interprets it.
     probe = {
         "streams": [
             {"codec_type": "video", "codec_name": "av1", "color_space": "unknown"},
@@ -274,11 +254,6 @@ def test_summarize_streams_no_video_stream_has_no_geometry() -> None:
     assert video.width is None
     assert video.height is None
     assert video.color_matrix is None
-
-
-# ---------------------------------------------------------------------------
-# parse_encoder_family
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -307,15 +282,7 @@ def test_parse_encoder_family(settings: str | None, expected: EncoderFamily) -> 
     ],
 )
 def test_parse_encoder_family_matches_enum_value(family: EncoderFamily) -> None:
-    # The parser is driven off ``EncoderFamily.value`` — feeding a settings
-    # string that leads with the enum's own value round-trips to that family, so
-    # the parser and the enum can never silently drift apart.
     assert parse_encoder_family(f"{family.value} / trailing tokens") is family
-
-
-# ---------------------------------------------------------------------------
-# ScanRow: new outdated fields default cleanly
-# ---------------------------------------------------------------------------
 
 
 def test_scan_row_outdated_fields_default() -> None:
@@ -330,11 +297,6 @@ def test_scan_row_outdated_fields_default() -> None:
     )
     assert row.encoder_family is EncoderFamily.UNKNOWN
     assert row.defects == ()
-
-
-# ---------------------------------------------------------------------------
-# bit_depth_from_pix_fmt
-# ---------------------------------------------------------------------------
 
 
 def test_bit_depth_from_pix_fmt_none() -> None:
@@ -359,11 +321,6 @@ def test_bit_depth_from_pix_fmt_empty() -> None:
 )
 def test_bit_depth_from_pix_fmt_values(pix_fmt: str, expected: int) -> None:
     assert bit_depth_from_pix_fmt(pix_fmt) == expected
-
-
-# ---------------------------------------------------------------------------
-# hdr_label
-# ---------------------------------------------------------------------------
 
 
 def test_hdr_label_sdr_transfer_bt709() -> None:
@@ -402,11 +359,6 @@ def test_hdr_label_dolby_vision_wins_over_smpte2084() -> None:
     assert hdr_label(stream, []) == "DV"
 
 
-# ---------------------------------------------------------------------------
-# ScanRow
-# ---------------------------------------------------------------------------
-
-
 def test_scan_row_defaults_unreadable_false() -> None:
     from pathlib import Path
 
@@ -434,11 +386,6 @@ def test_scan_row_unreadable() -> None:
         unreadable=True,
     )
     assert row.unreadable is True
-
-
-# ---------------------------------------------------------------------------
-# row_matches
-# ---------------------------------------------------------------------------
 
 
 def test_row_matches_no_predicate_encoded() -> None:
@@ -478,17 +425,14 @@ def test_row_matches_max_version_above() -> None:
 
 
 def test_row_matches_max_version_none_version() -> None:
-    # A not-encoded file cannot satisfy a --max-version predicate.
     assert row_matches(None, not_encoded=False, encoded=False, max_version=(1, 19, 3)) is False
 
 
 def test_row_matches_union_not_encoded_or_max_version() -> None:
-    # not_encoded matches a None version even though max_version would not.
     assert row_matches(None, not_encoded=True, encoded=False, max_version=(1, 19, 3)) is True
 
 
 def test_row_matches_union_encoded_or_max_version() -> None:
-    # encoded matches any version even though max_version would not (too new).
     assert row_matches((2, 0, 0), not_encoded=False, encoded=True, max_version=(1, 19, 3)) is True
 
 

@@ -77,7 +77,6 @@ class TestProgressTrackerProcessedSamples:
     def test_processed_without_total_dropped(self) -> None:
         t = ProgressTracker(total_s=None)
         t.add(ProgressSample(processed_s=60.0), wall_time=0.0)
-        # Sample has no recoverable fraction → silently dropped
         assert t.snapshot().fraction == 0.0
 
     def test_empty_sample_dropped(self) -> None:
@@ -122,12 +121,10 @@ class TestProgressTrackerSmoothedSpeed:
         speeds = [1.0, 2.0, 3.0, 4.0, 5.0]
         for i, s in enumerate(speeds):
             t.add(ProgressSample(fraction=(i + 1) / 10, speed=s), wall_time=float(i))
-        # Average of 1..5 = 3.0
         assert t.snapshot().speed == 3.0
 
     def test_older_samples_dropped_from_average(self) -> None:
         t = ProgressTracker()
-        # Add six samples with speed 1..6; only last five should count (avg = 4.0)
         for i in range(6):
             t.add(ProgressSample(fraction=(i + 1) / 10, speed=float(i + 1)), wall_time=float(i))
         assert t.snapshot().speed == 4.0
@@ -137,7 +134,6 @@ class TestProgressTrackerSmoothedSpeed:
         t.add(ProgressSample(fraction=0.1), wall_time=0.0)
         t.add(ProgressSample(fraction=0.2, speed=3.0), wall_time=1.0)
         t.add(ProgressSample(fraction=0.3), wall_time=2.0)
-        # Only one speed sample exists → average of that one
         assert t.snapshot().speed == 3.0
 
 
@@ -149,14 +145,12 @@ class TestProgressTrackerEta:
     def test_single_sample_no_eta(self) -> None:
         t = ProgressTracker()
         t.add(ProgressSample(fraction=0.5), wall_time=0.0)
-        # Need ≥2 samples to compute rate → None
         assert t.snapshot().eta_s is None
 
     def test_linear_progress_eta(self) -> None:
         t = ProgressTracker()
         t.add(ProgressSample(fraction=0.0), wall_time=0.0)
         t.add(ProgressSample(fraction=0.5), wall_time=10.0)
-        # Rate = 0.05/s, remaining = 0.5, ETA = 10s
         eta = t.snapshot().eta_s
         assert eta is not None
         assert abs(eta - 10.0) < 1e-9
@@ -165,7 +159,6 @@ class TestProgressTrackerEta:
         t = ProgressTracker()
         t.add(ProgressSample(fraction=0.5), wall_time=0.0)
         t.add(ProgressSample(fraction=0.5), wall_time=10.0)
-        # No forward progress → None
         assert t.snapshot().eta_s is None
 
     def test_fraction_at_one_eta_zero(self) -> None:
@@ -177,14 +170,7 @@ class TestProgressTrackerEta:
         assert eta == 0.0
 
     def test_eta_uses_last_five_samples_window(self) -> None:
-        """ETA rate should be computed from the window of last 5 samples,
-        not from the first sample ever added."""
         t = ProgressTracker()
-        # Add a slow first sample, then 5 fast samples.
-        # If _eta used the first sample, rate = 0.6 / 5 = 0.12/s, ETA ≈ 3.33s
-        # If _eta uses the last-5 window (indices 1..5),
-        #   rate = (0.6 - 0.2) / (5 - 1) = 0.1/s
-        # Remaining = 0.4, so ETA = 4.0 seconds.
         t.add(ProgressSample(fraction=0.0), wall_time=0.0)
         t.add(ProgressSample(fraction=0.2), wall_time=1.0)
         t.add(ProgressSample(fraction=0.3), wall_time=2.0)

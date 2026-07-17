@@ -1,9 +1,3 @@
-"""Smoke integration test: real services + recording reporter, fake adapters.
-
-Bypasses typer; calls the reporter-aware portion of cli.plan directly
-through the same wiring it uses, with all external tools stubbed.
-"""
-
 from __future__ import annotations
 
 from pathlib import Path
@@ -20,28 +14,34 @@ def _stub_prober() -> MagicMock:
     p = MagicMock()
     p.get_encoder_tag.return_value = None
     p.probe.return_value = {
-        "streams": [{
-            "codec_type": "video", "index": 0, "codec_name": "h264",
-            "width": 1920, "height": 1080,
-            "avg_frame_rate": "24/1", "r_frame_rate": "24/1",
-            "duration": "100",
-            "color_primaries": "bt709", "color_transfer": "bt709",
-            "color_space": "bt709", "pix_fmt": "yuv420p",
-            "field_order": "progressive", "sample_aspect_ratio": "1:1",
-            "side_data_list": [],
-        }],
+        "streams": [
+            {
+                "codec_type": "video",
+                "index": 0,
+                "codec_name": "h264",
+                "width": 1920,
+                "height": 1080,
+                "avg_frame_rate": "24/1",
+                "r_frame_rate": "24/1",
+                "duration": "100",
+                "color_primaries": "bt709",
+                "color_transfer": "bt709",
+                "color_space": "bt709",
+                "pix_fmt": "yuv420p",
+                "field_order": "progressive",
+                "sample_aspect_ratio": "1:1",
+                "side_data_list": [],
+            }
+        ],
         "format": {},
         "chapters": [],
     }
     p.detect_crop.return_value = None
-    # SDR sources are grain-probed at any resolution now, so this 1080p stub needs
-    # a verdict; a clean (sub-threshold) flicker keeps the smoke plan non-grain.
     p.sample_grain.return_value = [0.2, 0.2, 0.2, 0.2, 0.2]
     return p
 
 
 def test_plan_emits_full_event_sequence(tmp_path: Path) -> None:
-    # Source dir: one MKV file (no discs).
     src = tmp_path / "src"
     src.mkdir()
     (src / "Inception.mkv").touch()
@@ -56,7 +56,10 @@ def test_plan_emits_full_event_sequence(tmp_path: Path) -> None:
 
     analyzer = Analyzer(prober=prober)
     pipeline = AnalysisPipeline(
-        analyzer=analyzer, prober=prober, reporter=reporter, max_workers=1,
+        analyzer=analyzer,
+        prober=prober,
+        reporter=reporter,
+        max_workers=1,
     )
     batch = pipeline.run(scan_results, copy_video=False, dry_run=False)
     assert len(batch.movies) == 1

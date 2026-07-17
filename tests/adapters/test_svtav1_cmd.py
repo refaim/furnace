@@ -1,9 +1,3 @@
-"""Tests for SvtAv1Adapter command construction + Encoder-protocol conformance.
-
-Mirrors ``tests/adapters/test_nvencc_cmd.py`` in style: build the command, str-ify
-every element, and pin the recipe flags / -vf filter chain / colors. ``encode`` is
-minimal in Task 2 (build + run the command); Task 3 fleshes out VMAF + progress.
-"""
 from __future__ import annotations
 
 from pathlib import Path
@@ -40,20 +34,30 @@ def _make_vp(
     fps_den: int = 1001,
 ) -> VideoParams:
     return VideoParams(
-        cq=23, crop=crop, deinterlace=deinterlace,
-        color_matrix=color_matrix, color_range=color_range,
-        color_transfer=color_transfer, color_primaries=color_primaries,
-        hdr=None, gop=gop, fps_num=fps_num, fps_den=fps_den,
-        source_width=source_width, source_height=source_height,
-        source_codec="mpeg2video", source_bitrate=8_000_000,
-        sar_num=sar_num, sar_den=sar_den, grain=grain,
+        cq=23,
+        crop=crop,
+        deinterlace=deinterlace,
+        color_matrix=color_matrix,
+        color_range=color_range,
+        color_transfer=color_transfer,
+        color_primaries=color_primaries,
+        hdr=None,
+        gop=gop,
+        fps_num=fps_num,
+        fps_den=fps_den,
+        source_width=source_width,
+        source_height=source_height,
+        source_codec="mpeg2video",
+        source_bitrate=8_000_000,
+        sar_num=sar_num,
+        sar_den=sar_den,
+        grain=grain,
     )
 
 
 def _contains_subseq(cmd: list[str], sub: list[str]) -> bool:
-    """True if `sub` appears as a contiguous slice of `cmd` (order-preserving)."""
     n = len(sub)
-    return any(cmd[i:i + n] == sub for i in range(len(cmd) - n + 1))
+    return any(cmd[i : i + n] == sub for i in range(len(cmd) - n + 1))
 
 
 def _adapter() -> SvtAv1Adapter:
@@ -61,24 +65,27 @@ def _adapter() -> SvtAv1Adapter:
 
 
 def _cmd(vp: VideoParams) -> list[str]:
-    """Build the encode command and str-ify every element for easy assertion."""
     raw = _adapter()._build_encode_cmd(Path("input.mkv"), Path("output.obu"), vp)
     return [str(x) for x in raw]
 
 
 class TestSvtCqOverride:
-    """cq_override replaces the fixed CRF (target-quality search result)."""
-
     def test_cq_override_replaces_crf_in_cmd(self) -> None:
         raw = _adapter()._build_encode_cmd(
-            Path("in.mkv"), Path("out.obu"), _make_vp(), cq_override=19,
+            Path("in.mkv"),
+            Path("out.obu"),
+            _make_vp(),
+            cq_override=19,
         )
         cmd = [str(x) for x in raw]
         assert cmd[cmd.index("-crf") + 1] == "19"
 
     def test_cq_override_none_uses_default_crf(self) -> None:
         raw = _adapter()._build_encode_cmd(
-            Path("in.mkv"), Path("out.obu"), _make_vp(), cq_override=None,
+            Path("in.mkv"),
+            Path("out.obu"),
+            _make_vp(),
+            cq_override=None,
         )
         cmd = [str(x) for x in raw]
         assert cmd[cmd.index("-crf") + 1] == _SVT_CRF
@@ -94,14 +101,11 @@ class TestSvtCqOverride:
 
 
 def _vf(vp: VideoParams) -> str:
-    """Return the -vf filtergraph value from the built command."""
     cmd = _cmd(vp)
     return cmd[cmd.index("-vf") + 1]
 
 
 class TestSvtAv1RecipeFlags:
-    """The load-bearing SVT-AV1 recipe: codec, preset, crf, params, obu, progress."""
-
     def test_codec_preset_crf_block(self) -> None:
         cmd = _cmd(_make_vp())
         assert _contains_subseq(
@@ -116,8 +120,6 @@ class TestSvtAv1RecipeFlags:
         assert _SVT_CRF == "23"
 
     def test_svtav1_params_starts_with_recipe(self) -> None:
-        # The tuned recipe is preserved verbatim as the prefix; the CICP
-        # color-description is appended after it.
         cmd = _cmd(_make_vp())
         idx = cmd.index("-svtav1-params")
         assert cmd[idx + 1].startswith(_SVT_PARAMS + ":")
@@ -141,15 +143,11 @@ class TestSvtAv1RecipeFlags:
         assert "-y" in cmd
 
     def test_maps_first_video_stream(self) -> None:
-        # Pin the first video stream so a multi-video-stream source (cover art)
-        # can't diverge from the metric reference (build_reference and
-        # extract_window pin 0:v:0 the same way). -map follows the input.
         cmd = _cmd(_make_vp())
         assert _contains_subseq(cmd, ["-map", "0:v:0"])
         assert cmd.index("-map") > cmd.index("-i")
 
     def test_libsvtav1_params_value_is_exact_recipe(self) -> None:
-        """The tuned recipe string is pinned verbatim — no drift allowed."""
         assert _SVT_PARAMS == (
             "tune=0:enable-variance-boost=1:variance-boost-strength=3:"
             "enable-qm=1:qm-min=0:luminance-qp-bias=50:ac-bias=6.0"
@@ -157,27 +155,30 @@ class TestSvtAv1RecipeFlags:
 
 
 class TestSvtAv1ColorDescription:
-    """Full CICP color-description is appended to -svtav1-params so the AV1
-    bitstream is self-describing. libsvtav1 drops ffmpeg's -color_primaries /
-    -color_trc, so without this the OBU carries no primaries/transfer.
-    """
-
     def test_pal_color_description(self) -> None:
-        cmd = _cmd(_make_vp(
-            color_primaries="bt470bg", color_transfer="smpte170m",
-            color_matrix="bt470bg", color_range="tv",
-        ))
+        cmd = _cmd(
+            _make_vp(
+                color_primaries="bt470bg",
+                color_transfer="smpte170m",
+                color_matrix="bt470bg",
+                color_range="tv",
+            )
+        )
         params = cmd[cmd.index("-svtav1-params") + 1]
         assert "color-primaries=5" in params
         assert "transfer-characteristics=6" in params
         assert "matrix-coefficients=5" in params
-        assert "color-range=0" in params  # tv / studio-swing
+        assert "color-range=0" in params
 
     def test_hd_color_description(self) -> None:
-        cmd = _cmd(_make_vp(
-            color_primaries="bt709", color_transfer="bt709",
-            color_matrix="bt709", color_range="tv",
-        ))
+        cmd = _cmd(
+            _make_vp(
+                color_primaries="bt709",
+                color_transfer="bt709",
+                color_matrix="bt709",
+                color_range="tv",
+            )
+        )
         params = cmd[cmd.index("-svtav1-params") + 1]
         assert "color-primaries=1" in params
         assert "transfer-characteristics=1" in params
@@ -186,19 +187,14 @@ class TestSvtAv1ColorDescription:
     def test_full_range_maps_to_one(self) -> None:
         cmd = _cmd(_make_vp(color_range="pc"))
         params = cmd[cmd.index("-svtav1-params") + 1]
-        assert "color-range=1" in params  # pc / full-swing
+        assert "color-range=1" in params
 
     def test_unmapped_color_value_raises_valueerror(self) -> None:
-        # transfer/primaries pass through source tags unvalidated; a legit H.273
-        # value furnace has no CICP code point for must fail loudly (clear
-        # ValueError), not crash with a cryptic KeyError or emit a bad OBU.
         with pytest.raises(ValueError, match="no CICP code point"):
             _cmd(_make_vp(color_primaries="film"))
 
 
 class TestSvtAv1ForbiddenForkParams:
-    """Fork-only knobs must never leak into the -svtav1-params string."""
-
     def test_psy_rd_absent(self) -> None:
         cmd = _cmd(_make_vp())
         params = cmd[cmd.index("-svtav1-params") + 1]
@@ -216,8 +212,6 @@ class TestSvtAv1ForbiddenForkParams:
 
 
 class TestSvtAv1Gop:
-    """-g mirrors vp.gop."""
-
     def test_gop_value(self) -> None:
         cmd = _cmd(_make_vp(gop=125))
         idx = cmd.index("-g")
@@ -230,14 +224,6 @@ class TestSvtAv1Gop:
 
 
 class TestSvtAv1OutputRate:
-    """Output ``-r`` pins the encode to the coded film rate (vp.fps_num/fps_den).
-
-    For soft-telecine NTSC-DVD sources plain ffmpeg applies the 2:3 pulldown on
-    decode (inflating to 29.97); ``-r 24000/1001`` drops the duplicated frames so
-    the OBU matches the rate mkvmerge pins the container to. For native content
-    the input already decodes at that rate, so ``-r`` is a harmless no-op.
-    """
-
     def test_output_rate_telecine(self) -> None:
         cmd = _cmd(_make_vp(fps_num=24000, fps_den=1001))
         assert _contains_subseq(cmd, ["-r", "24000/1001"])
@@ -247,7 +233,6 @@ class TestSvtAv1OutputRate:
         assert _contains_subseq(cmd, ["-r", "25/1"])
 
     def test_output_rate_is_output_option_before_obu(self) -> None:
-        """`-r` is an OUTPUT option (drops pulldown dups): after -i, before -f obu."""
         cmd = _cmd(_make_vp())
         r_idx = cmd.index("-r")
         assert r_idx > cmd.index("-i")
@@ -255,42 +240,42 @@ class TestSvtAv1OutputRate:
 
 
 class TestSvtAv1Color:
-    """Color metadata maps from vp fields; range flows from vp.color_range."""
-
     def test_color_range_tv(self) -> None:
         cmd = _cmd(_make_vp())
         idx = cmd.index("-color_range")
         assert cmd[idx + 1] == "tv"
 
     def test_color_range_passthrough_pc(self) -> None:
-        """-color_range mirrors vp.color_range (ffmpeg accepts tv/pc), not a
-        hardcoded 'tv' -- matches NVEncC deriving range from the same field."""
         cmd = _cmd(_make_vp(color_range="pc"))
         idx = cmd.index("-color_range")
         assert cmd[idx + 1] == "pc"
 
     def test_bt709_colors(self) -> None:
-        cmd = _cmd(_make_vp(
-            color_matrix="bt709", color_primaries="bt709", color_transfer="bt709",
-        ))
+        cmd = _cmd(
+            _make_vp(
+                color_matrix="bt709",
+                color_primaries="bt709",
+                color_transfer="bt709",
+            )
+        )
         assert cmd[cmd.index("-color_primaries") + 1] == "bt709"
         assert cmd[cmd.index("-color_trc") + 1] == "bt709"
         assert cmd[cmd.index("-colorspace") + 1] == "bt709"
 
     def test_bt601_colors(self) -> None:
-        cmd = _cmd(_make_vp(
-            color_matrix="smpte170m",
-            color_primaries="smpte170m",
-            color_transfer="smpte170m",
-        ))
+        cmd = _cmd(
+            _make_vp(
+                color_matrix="smpte170m",
+                color_primaries="smpte170m",
+                color_transfer="smpte170m",
+            )
+        )
         assert cmd[cmd.index("-color_primaries") + 1] == "smpte170m"
         assert cmd[cmd.index("-color_trc") + 1] == "smpte170m"
         assert cmd[cmd.index("-colorspace") + 1] == "smpte170m"
 
 
 class TestSvtAv1InputOutput:
-    """Input via -i, output as the final element."""
-
     def test_input_path(self) -> None:
         cmd = _cmd(_make_vp())
         assert cmd[cmd.index("-i") + 1] == "input.mkv"
@@ -301,21 +286,17 @@ class TestSvtAv1InputOutput:
 
 
 class TestSvtAv1VideoFilter:
-    """The -vf filtergraph: format/setsar always, crop/scale/bwdif conditional."""
-
     def test_always_ends_with_format_and_setsar(self) -> None:
         parts = _vf(_make_vp()).split(",")
         assert parts[-2:] == ["format=yuv420p10le", "setsar=1"]
 
     def test_no_crop_no_scale_plain_1080p(self) -> None:
-        """1920x1080, square SAR, no crop -> only format + setsar."""
         vf = _vf(_make_vp())
         assert "crop=" not in vf
         assert "scale=" not in vf
         assert vf == "format=yuv420p10le,setsar=1"
 
     def test_crop_present(self) -> None:
-        """Crop rect renders as crop=w:h:x:y, and mod-8 dims need no scale."""
         vp = _make_vp(crop=CropRect(w=1920, h=800, x=0, y=140))
         vf = _vf(vp)
         assert "crop=1920:800:0:140" in vf
@@ -326,16 +307,12 @@ class TestSvtAv1VideoFilter:
         assert "crop=" not in vf
 
     def test_crop_with_alignment_scale(self) -> None:
-        """Crop to non-mod-8 dims -> scale to the mod-8-aligned size."""
-        # CropRect 1910x798 -> mod-8 -> 1904x792.
         vp = _make_vp(crop=CropRect(w=1910, h=798, x=5, y=141))
         vf = _vf(vp)
         assert "crop=1910:798:5:141" in vf
         assert "scale=1904:792:flags=spline" in vf
 
     def test_scale_from_sar_no_crop(self) -> None:
-        """Non-square SAR without crop -> scale to the SAR-corrected size."""
-        # 720x480 SAR 4:3 -> 960x480 (both mod-8).
         vp = _make_vp(source_width=720, source_height=480, sar_num=4, sar_den=3)
         vf = _vf(vp)
         assert "crop=" not in vf
@@ -350,13 +327,9 @@ class TestSvtAv1VideoFilter:
         assert parts[0] == "bwdif=send_frame"
 
     def test_bwdif_single_rate_send_frame(self) -> None:
-        """Deinterlace must be SINGLE-RATE (send_frame): one output frame per
-        input frame, matching NVEncC's nnedi and the fps-pin contract. The
-        double-rate default (send_field) would emit 2N frames pinned at N fps."""
         vf = _vf(_make_vp(deinterlace=True))
         parts = vf.split(",")
         assert parts[0] == "bwdif=send_frame"
-        # No bare `bwdif` (default = double-rate) and no explicit send_field.
         assert "bwdif" not in parts
         assert "send_field" not in vf
 
@@ -371,8 +344,6 @@ class TestSvtAv1VideoFilter:
 
 
 class TestSvtAv1EncoderSettings:
-    """The slash-joined ENCODER_SETTINGS tag string."""
-
     def test_basic_settings(self) -> None:
         settings = _adapter()._build_encoder_settings(_make_vp())
         assert settings.startswith("av1_svt")
@@ -417,8 +388,6 @@ class TestSvtAv1SetLogDir:
 
 
 class TestSvtAv1EncoderProtocol:
-    """Runtime-checkable Encoder conformance."""
-
     def test_isinstance_encoder(self) -> None:
         assert isinstance(SvtAv1Adapter(Path("ffmpeg")), Encoder)
 
@@ -434,8 +403,6 @@ def _fake_run_tool(
 
 
 class TestSvtAv1Encode:
-    """Minimal Task-2 encode(): build the command, run it, return EncodeResult."""
-
     def test_encode_returns_result(self) -> None:
         from unittest.mock import patch
 
@@ -447,14 +414,15 @@ class TestSvtAv1Encode:
         assert result.encoder_settings.startswith("av1_svt")
 
     def test_encode_accepts_rpu_kwarg(self) -> None:
-        """encode accepts but ignores rpu_path (SVT-AV1 grain jobs are SDR)."""
         from unittest.mock import patch
 
         adapter = _adapter()
         vp = _make_vp()
         with patch("furnace.adapters.svtav1.run_tool", side_effect=_fake_run_tool):
             result = adapter.encode(
-                Path("input.mkv"), Path("output.obu"), vp,
+                Path("input.mkv"),
+                Path("output.obu"),
+                vp,
                 rpu_path=Path("rpu.bin"),
             )
         assert result.return_code == 0
@@ -479,7 +447,9 @@ class TestSvtAv1Encode:
 
         with patch("furnace.adapters.svtav1.run_tool", side_effect=fake_run_tool):
             adapter.encode(
-                Path("input.mkv"), Path("output.obu"), vp,
+                Path("input.mkv"),
+                Path("output.obu"),
+                vp,
                 on_progress=samples.append,
             )
         assert len(samples) == 1
