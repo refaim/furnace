@@ -20,21 +20,11 @@ class ToolPaths:
     makemkvcon: Path
     nvencc: Path
     dovi_tool: Path | None
-    # VapourSynth plugin binaries for the SVT-AV1 grain path's perceptual
-    # metrics (BestSource source filter + Vship). Optional: absent -> the grain
-    # path simply records no SSIMULACRA2/Butteraugli/CVVDP scores.
     bestsource: Path | None = None
     vship: Path | None = None
 
 
 def load_config(config_path: Path | None = None) -> ToolPaths:
-    """Load TOML config. Search order:
-    1. Explicit path (if provided)
-    2. furnace.toml in CWD
-    3. furnace.toml next to the package (project root)
-    4. %APPDATA%\\furnace\\furnace.toml
-    Validates that all tool paths exist.
-    """
     searched: list[Path] = []
 
     def try_load(path: Path) -> dict[str, Any] | None:
@@ -51,15 +41,12 @@ def load_config(config_path: Path | None = None) -> ToolPaths:
         if data is None:
             raise FileNotFoundError(f"Config file not found at explicit path: {config_path}")
     else:
-        # Try CWD
         data = try_load(Path.cwd() / "furnace.toml")
 
-        # Try project root (directory containing the furnace package)
         if data is None:
             project_root = Path(__file__).resolve().parent.parent
             data = try_load(project_root / "furnace.toml")
 
-        # Try %APPDATA%\furnace\furnace.toml
         if data is None:
             appdata = os.environ.get("APPDATA")
             if appdata:
@@ -93,7 +80,6 @@ def load_config(config_path: Path | None = None) -> ToolPaths:
             raise FileNotFoundError(f"Tool '{name}' not found at path: {tool_path}")
         resolved[name] = tool_path
 
-    # Optional tools: absent -> None; present but missing on disk -> hard error.
     def optional_tool(name: str) -> Path | None:
         if name not in tools_section:
             return None

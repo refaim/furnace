@@ -13,12 +13,10 @@ from ._subprocess import OutputCallback, run_tool
 logger = logging.getLogger(__name__)
 
 
-# "Title #4 was added (13 cell(s), 1:12:32)"
 _TITLE_ADDED_RE = re.compile(r"Title #(\d+) was added \(\d+ cell\(s\), (\d+:\d{2}:\d{2})\)")
 
 
 def _parse_duration(s: str) -> float:
-    """Parse 'H:MM:SS' into total seconds."""
     parts = s.split(":")
     if len(parts) == len(["H", "MM", "SS"]):
         return int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2])
@@ -30,25 +28,10 @@ def _parse_duration(s: str) -> float:
 _PRGV_RE = re.compile(r"^PRGV:(\d+),(\d+),(\d+)\s*$")
 _PRGC_RE = re.compile(r'^PRGC:\d+,\d+,"(.*)"\s*$')
 
-# MakeMKV emits PRGV per sub-operation (each PRGC change resets current to 0):
-# "Scanning CD-ROM devices", "Opening DVD files", "Processing title sets",
-# "Scanning contents", "Processing titles", "Decrypting data", "Analyzing
-# seamless segments", and finally the long "Saving to MKV file". Without
-# gating, the bar would zip 0->100% half a dozen times for the fast sub-ops
-# before the actual rip starts. We watch PRGC labels and only forward PRGV
-# once we enter "Saving to MKV file"; once flipped on, the gate stays on so
-# any trailing sub-ops don't undo it.
 _SAVING_LABEL_TOKEN = "Saving to MKV file"  # noqa: S105 — not a password
 
 
 def _parse_makemkv_progress_line(line: str) -> ProgressSample | None:
-    """Parse a makemkvcon ``-r`` (robot mode) ``PRGV:current,total,max`` line.
-
-    ``max`` is the total work for the overall task; ``current`` is overall
-    progress against ``max``. ``total`` describes the current sub-task scale
-    and is ignored here. Returns ``None`` for any other line shape (PRGT,
-    PRGC, MSG, malformed, empty).
-    """
     m = _PRGV_RE.match(line.strip())
     if not m:
         return None
@@ -60,10 +43,6 @@ def _parse_makemkv_progress_line(line: str) -> ProgressSample | None:
 
 
 def _is_saving_prgc(line: str) -> bool:
-    """Return True if ``line`` is a PRGC entering the ``Saving to MKV file``
-    sub-operation. Used by the demux gate to start forwarding PRGV. PRGC
-    lines for other sub-operations return False; non-PRGC lines also False.
-    """
     m = _PRGC_RE.match(line.strip())
     if not m:
         return False
@@ -71,8 +50,6 @@ def _is_saving_prgc(line: str) -> bool:
 
 
 class MakemkvAdapter:
-    """Implements DiscDemuxerPort for DVD via makemkvcon."""
-
     def __init__(
         self,
         makemkvcon_path: Path,
@@ -92,7 +69,6 @@ class MakemkvAdapter:
         return self._log_dir / f"makemkv_{label}.log"
 
     def list_titles(self, disc_path: Path) -> list[DiscTitle]:
-        """Run makemkvcon info to list DVD titles."""
         cmd = [
             str(self._makemkvcon),
             "--noscan",
@@ -111,12 +87,6 @@ class MakemkvAdapter:
         output_dir: Path,
         on_progress: Callable[[ProgressSample], None] | None = None,
     ) -> list[Path]:
-        """Demux one DVD title to MKV via makemkvcon -r mkv.
-
-        ``-r`` (robot mode) emits structured PRGV/PRGT/PRGC/MSG lines; the
-        progress parser consumes PRGV and feeds ``on_progress``. Other lines
-        flow to the per-tool log file.
-        """
         output_dir.mkdir(parents=True, exist_ok=True)
 
         titles = self.list_titles(disc_path)
@@ -141,17 +111,12 @@ class MakemkvAdapter:
             str(output_dir),
         ]
 
-        # PRGV is per-sub-operation — gate forwarding on the PRGC entering
-        # "Saving to MKV file" so we only show progress during the actual rip,
-        # not during the half-dozen short sub-ops that precede it. Once the
-        # gate flips on, it stays on for the rest of the rip. PRGC lines
-        # themselves are NOT consumed (return False) so they reach the log.
         saving_phase = [False]
 
         def _on_progress_line(line: str) -> bool:
             if _is_saving_prgc(line):
                 saving_phase[0] = True
-                return False  # let PRGC reach the log
+                return False
             sample = _parse_makemkv_progress_line(line)
             if sample is None:
                 return False
@@ -176,10 +141,6 @@ class MakemkvAdapter:
 
     @staticmethod
     def _parse_info_output(output: str) -> list[DiscTitle]:
-        """Parse makemkvcon info output.
-
-        Looks for lines like: "Title #4 was added (13 cell(s), 1:12:32)"
-        """
         results: list[DiscTitle] = []
         for line in output.splitlines():
             m = _TITLE_ADDED_RE.search(line)

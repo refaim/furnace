@@ -39,36 +39,22 @@ _SUBTITLE_CODEC_MAP: dict[str, SubtitleCodecId] = {
 
 
 def get_audio_action(codec_id: AudioCodecId) -> AudioAction | None:
-    """Return the action for a codec, or None if not in the whitelist."""
     return AUDIO_CODEC_ACTIONS.get(codec_id)
 
 
 def get_subtitle_action(codec_id: SubtitleCodecId) -> SubtitleAction | None:
-    """Return the action for a subtitle codec, or None if not in the whitelist."""
     return SUBTITLE_CODEC_ACTIONS.get(codec_id)
 
 
 def is_known_audio_codec(codec_id: AudioCodecId) -> bool:
-    """Return True if the codec is in the audio whitelist."""
     return codec_id in AUDIO_CODEC_ACTIONS
 
 
 def is_known_subtitle_codec(codec_id: SubtitleCodecId) -> bool:
-    """Return True if the codec is in the subtitle whitelist."""
     return codec_id in SUBTITLE_CODEC_ACTIONS
 
 
 def parse_audio_codec(codec_name: str, profile: str | None) -> AudioCodecId:
-    """Map ffprobe codec_name + profile to an AudioCodecId.
-
-    DTS disambiguation: ffprobe reports all DTS variants as ``dts`` in
-    codec_name; the profile field distinguishes DTS core, DTS-ES,
-    DTS-HD HRA, and DTS-HD MA.
-
-    AAC disambiguation: profile ``HE-AAC`` maps to AAC_HE, ``HE-AAC v2``
-    maps to AAC_HE_V2; anything else (including LC or absent profile)
-    maps to AAC_LC.
-    """
     if codec_name == "dts":
         match profile:
             case "DTS-HD MA":
@@ -111,5 +97,4 @@ def parse_audio_codec(codec_name: str, profile: str | None) -> AudioCodecId:
 
 
 def parse_subtitle_codec(codec_name: str) -> SubtitleCodecId:
-    """Map an ffprobe codec_name to a SubtitleCodecId."""
     return _SUBTITLE_CODEC_MAP.get(codec_name, SubtitleCodecId.UNKNOWN)

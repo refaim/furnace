@@ -1,22 +1,3 @@
-"""Textual TUI for the furnace run (encoding) phase.
-
-Replaces Rich Live with a full Textual App that owns the terminal,
-eliminating logging conflicts in cmd.exe.  ASCII-only borders
-throughout for Windows compatibility.
-
-Layout:
-    +-- [1/3] Movie Name (2020) ----------------------------------+
-    +-- Source -------------------------+-- Target ----------------+
-    | Video: H.264 1920x1080 8.5Mbps   | Video: AV1 1920x800 CQ25 |
-    | Audio: DTS 5.1 755kbps           | Audio: DTS 5.1 (denorm)  |
-    +-----------------------------------+--------------------------+
-    +-- Steps ------+-- Output ------------------------------------+
-    |   Extract     |  Running in normal mode ...                   |
-    | > Denormalize |  Creating file "audio_2_denorm.dts"...        |
-    +---------------+----------------------------------------------+
-    +-- ████████░░░░░░ 42.5% | 3:20 / ~4:40 | 1.2x ---------------+
-"""
-
 from __future__ import annotations
 
 import contextlib
@@ -44,10 +25,6 @@ from furnace.core.progress import TrackerSnapshot
 from furnace.core.quality import final_output_dimensions
 from furnace.ui.fmt import fmt_size
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
 BAR_WIDTH = 40
 
 
@@ -70,7 +47,6 @@ def _fmt_bitrate(bps: int | None) -> str:
 
 
 def _channel_layout_short(layout: str | None) -> str:
-    """Simplify channel layout: '5.1(side)' -> '5.1'."""
     if not layout:
         return ""
     return layout.split("(")[0]
@@ -94,12 +70,6 @@ _DOWNMIX_TARGET_CHANNELS: dict[DownmixMode, int] = {
 
 
 def _audio_step_label(instr: AudioInstruction, index: int, total: int) -> str:
-    """Build a human-readable step label for an audio track.
-
-    Recode actions with an active downmix surface the layout arrow so the
-    user sees the channel change (e.g. ``Recode audio (DTS 5.1 -> AAC 1.0)``).
-    Without a downmix the bare codec arrow is enough.
-    """
     codec = instr.codec_name.upper()
     ch = ""
     if instr.channels:
@@ -107,10 +77,7 @@ def _audio_step_label(instr: AudioInstruction, index: int, total: int) -> str:
 
     num = f" {index + 1}" if total > 1 else ""
 
-    if (
-        instr.action in (AudioAction.DECODE_ENCODE, AudioAction.FFMPEG_ENCODE)
-        and instr.downmix is not None
-    ):
+    if instr.action in (AudioAction.DECODE_ENCODE, AudioAction.FFMPEG_ENCODE) and instr.downmix is not None:
         tgt_ch = _DOWNMIX_TARGET_CHANNELS[instr.downmix]
         tgt_layout = _CH_LAYOUT_MAP.get(tgt_ch, f"{tgt_ch}ch")
         return f"Recode audio{num} ({codec}{ch} -> AAC {tgt_layout})"
@@ -119,7 +86,6 @@ def _audio_step_label(instr: AudioInstruction, index: int, total: int) -> str:
 
 
 def _sub_step_label(instr: SubtitleInstruction, index: int, total: int) -> str:
-    """Build a human-readable step label for a subtitle track."""
     codec = instr.codec_name.upper()
     num = f" {index + 1}" if total > 1 else ""
 
@@ -129,26 +95,14 @@ def _sub_step_label(instr: SubtitleInstruction, index: int, total: int) -> str:
 
 
 def _build_steps(job: Job) -> list[str]:
-    """Build the dynamic step list matching actual pipeline execution order.
-
-    The list must stay 1:1 with the executor's ``update_status`` calls -- each
-    call advances exactly one step -- so the video phase's conditional sub-steps
-    are reflected here. A re-encode first extracts the Dolby Vision RPU (if any),
-    then always runs the target-quality search, then encodes; a passthrough copy
-    does neither (its stream is copied verbatim).
-    """
     steps: list[str] = []
 
-    # Audio tracks (each processed fully: extract + denorm/decode/encode)
     for i, audio_instr in enumerate(job.audio):
         steps.append(_audio_step_label(audio_instr, i, len(job.audio)))
 
-    # Subtitle tracks
     for i, sub_instr in enumerate(job.subtitles):
         steps.append(_sub_step_label(sub_instr, i, len(job.subtitles)))
 
-    # Video phase: a re-encode extracts the DV RPU (if any) and searches the
-    # quality knob before encoding; a passthrough copy skips both.
     vp = job.video_params
     if not vp.passthrough:
         if vp.dv_mode is not None:
@@ -159,7 +113,6 @@ def _build_steps(job: Job) -> list[str]:
 
 
 def _build_source_text(job: Job) -> str:
-    """Build source info block from Job data."""
     lines: list[str] = []
 
     vp = job.video_params
@@ -171,7 +124,6 @@ def _build_source_text(job: Job) -> str:
         codec = audio_instr.codec_name.upper()
         ch = _channel_layout_short(None)
         if audio_instr.channels:
-            # Approximate layout from channel count
             ch_map = {1: "1.0", 2: "2.0", 6: "5.1", 8: "7.1"}
             ch = ch_map.get(audio_instr.channels, f"{audio_instr.channels}ch")
         br = _fmt_bitrate(audio_instr.bitrate)
@@ -191,19 +143,12 @@ def _build_source_text(job: Job) -> str:
 
 
 def _target_channels(instr: AudioInstruction) -> int | None:
-    """Return the number of channels in the output after any downmix.
-
-    Single source of truth: ``_DOWNMIX_TARGET_CHANNELS``. Loud-fails (KeyError)
-    on a future ``DownmixMode`` value that is not yet mapped — same contract
-    as ``_audio_step_label``.
-    """
     if instr.downmix is not None:
         return _DOWNMIX_TARGET_CHANNELS[instr.downmix]
     return instr.channels
 
 
 def _target_channel_layout(instr: AudioInstruction) -> str:
-    """Short layout string (e.g. '5.1', '2.0') for the OUTPUT track."""
     ch = _target_channels(instr)
     if ch is None:
         return ""
@@ -219,7 +164,6 @@ _AUDIO_TARGET_PARTS: dict[AudioAction, Callable[[str], tuple[str, str]]] = {
 
 
 def _audio_target_label(instr: AudioInstruction) -> str:
-    """Describe what this audio track becomes."""
     src_codec = instr.codec_name.upper()
     layout = _target_channel_layout(instr)
     head, tag = _AUDIO_TARGET_PARTS[instr.action](src_codec)
@@ -234,22 +178,14 @@ def _sub_target_label(instr: SubtitleInstruction) -> str:
 
 
 def _build_target_text(job: Job) -> str:
-    """Build target info block from Job data."""
     lines: list[str] = []
 
     vp = job.video_params
     if vp.passthrough:
-        # Verbatim copy: the output keeps the source codec and dimensions, no
-        # re-encode and no quality knob.
         codec = vp.source_codec.upper() or "?"
         lines.append(f"Video: {codec} {vp.source_width}x{vp.source_height} (copy)")
     else:
         final_w, final_h = final_output_dimensions(vp)
-        # The quality knob is searched per title at run time (target-quality), so
-        # show its TYPE -- CRF for the SVT-AV1 grain path, QVBR for NVEnc -- and
-        # the searched value once known, or "target" until the search fills it in.
-        # (``vp.cq`` is the legacy fixed anchor the search overrides, so it is not
-        # shown.)
         knob = "CRF" if vp.grain else "QVBR"
         value = str(job.chosen_cq) if job.chosen_cq is not None else "target"
         lines.append(f"Video: AV1 {final_w}x{final_h} {knob} {value}")
@@ -265,14 +201,7 @@ def _build_target_text(job: Job) -> str:
     return "\n".join(lines)
 
 
-# ---------------------------------------------------------------------------
-# Widgets
-# ---------------------------------------------------------------------------
-
-
 class HeaderWidget(Static):
-    """Top bar: [X/N] filename."""
-
     DEFAULT_CSS = """
     HeaderWidget {
         height: 1;
@@ -285,8 +214,6 @@ class HeaderWidget(Static):
 
 
 class SourceWidget(Static):
-    """Source track info."""
-
     DEFAULT_CSS = """
     SourceWidget {
         width: 50%;
@@ -298,8 +225,6 @@ class SourceWidget(Static):
 
 
 class TargetWidget(Static):
-    """Target track info."""
-
     DEFAULT_CSS = """
     TargetWidget {
         width: 50%;
@@ -311,8 +236,6 @@ class TargetWidget(Static):
 
 
 class StepsWidget(Static):
-    """Pipeline step list with > and + markers."""
-
     DEFAULT_CSS = """
     StepsWidget {
         width: 36;
@@ -324,8 +247,6 @@ class StepsWidget(Static):
 
 
 class OutputLog(RichLog):
-    """Scrollable tool output (auto-scroll)."""
-
     DEFAULT_CSS = """
     OutputLog {
         border: double $primary;
@@ -335,8 +256,6 @@ class OutputLog(RichLog):
 
 
 class ProgressWidget(Static):
-    """Unicode progress bar at the bottom."""
-
     DEFAULT_CSS = """
     ProgressWidget {
         height: 2;
@@ -345,23 +264,7 @@ class ProgressWidget(Static):
     """
 
 
-# ---------------------------------------------------------------------------
-# RunApp
-# ---------------------------------------------------------------------------
-
-
 class RunApp(App[None]):
-    """Textual app for the furnace run (encoding) phase.
-
-    Public API (called from worker thread via call_from_thread):
-        start_job(job, job_index)
-        update_progress(snapshot)
-        update_status(message)
-        add_tool_line(line)
-        finish_job(job)
-        stop()
-    """
-
     CSS = """
     #source-target {
         height: auto;
@@ -388,7 +291,6 @@ class RunApp(App[None]):
         self._shutdown_event = shutdown_event
         self._executor_fn = executor_fn
 
-        # State
         self._job: Job | None = None
         self._job_idx = 0
         self._steps: list[str] = []
@@ -397,14 +299,7 @@ class RunApp(App[None]):
         self._start_time = 0.0
         self._target_base_text = ""
         self._output_size = 0
-        # Raw adapter output is muted during the target-quality search so the
-        # per-probe ffmpeg/nvencc chatter stays out of the log (the search
-        # narrates itself through add_tool_line, which is never muted).
         self._tool_output_muted = False
-
-    # ------------------------------------------------------------------
-    # Compose
-    # ------------------------------------------------------------------
 
     def compose(self) -> ComposeResult:
         yield HeaderWidget("Waiting...", id="header")
@@ -420,95 +315,58 @@ class RunApp(App[None]):
         )
         yield ProgressWidget("", id="progress")
 
-    # ------------------------------------------------------------------
-    # Lifecycle
-    # ------------------------------------------------------------------
-
     def on_mount(self) -> None:
-        """Start executor in a worker thread."""
         self.run_worker(self._run_executor, thread=True)
 
     def _run_executor(self) -> None:
-        """Worker thread entry point — calls executor_fn with self as progress."""
         self._executor_fn(self)
 
-    # ------------------------------------------------------------------
-    # Actions
-    # ------------------------------------------------------------------
-
     def action_quit_app(self) -> None:
-        """ESC pressed: graceful shutdown."""
         self._shutdown_event.set()
-        # Kill child process tree and force exit
         parent = psutil.Process(os.getpid())
         for child in parent.children(recursive=True):
             with contextlib.suppress(psutil.NoSuchProcess):
                 child.kill()
         os._exit(0)
 
-    # ------------------------------------------------------------------
-    # Public API (called from worker thread)
-    # ------------------------------------------------------------------
-
     def _safe_call(self, fn: Callable[..., object], *args: object) -> None:
-        """Call from thread, silently ignore if app already exited."""
         with contextlib.suppress(Exception):
             self.call_from_thread(fn, *args)
 
     def start_job(self, job: Job, job_index: int) -> None:
-        """New job started — update all widgets."""
         self._safe_call(self._do_start_job, job, job_index)
 
     def update_progress(self, snapshot: TrackerSnapshot) -> None:
-        """Update progress bar from a tracker snapshot."""
         self._safe_call(self._do_update_progress, snapshot)
 
     def update_status(self, message: str) -> None:
-        """Update current step in the steps list."""
         self._safe_call(self._do_update_status, message)
 
     def add_tool_line(self, line: str) -> None:
-        """Append one furnace-narration line. Never muted — the search narrates
-        itself through here while the raw ``tool_output`` channel is silenced."""
         self._safe_call(self._do_add_tool_line, line)
 
     def tool_output(self, line: str) -> None:
-        """Raw subprocess output sink for the adapters (ffmpeg/nvencc/eac3to/...).
-
-        Muted during the target-quality search so the per-probe encoder chatter
-        never floods the log; furnace's own narration uses ``add_tool_line`` and
-        stays visible throughout."""
         if self._tool_output_muted:
             return
         self._safe_call(self._do_add_tool_line, line)
 
     def mute_tool_output(self) -> None:
-        """Drop raw adapter output (called around the quality search)."""
         self._tool_output_muted = True
 
     def unmute_tool_output(self) -> None:
-        """Restore raw adapter output after the quality search."""
         self._tool_output_muted = False
 
     def finish_job(self, job: Job) -> None:
-        """Job completed — mark all steps done."""
         self._safe_call(self._do_finish_job, job)
 
     def update_output_size(self, size_bytes: int) -> None:
-        """Update current output size in the Target block."""
         self._safe_call(self._do_update_output_size, size_bytes)
 
     def set_chosen_quality(self, cq: int) -> None:
-        """The target-quality search picked the knob — show it in the Target block."""
         self._safe_call(self._do_set_chosen_quality, cq)
 
     def stop(self) -> None:
-        """All jobs done — exit app."""
         self._safe_call(self.exit)
-
-    # ------------------------------------------------------------------
-    # Internal (main thread)
-    # ------------------------------------------------------------------
 
     def _do_start_job(self, job: Job, job_index: int) -> None:
         self._job = job
@@ -516,12 +374,10 @@ class RunApp(App[None]):
         self._snapshot = None
         self._start_time = time.monotonic()
 
-        # Header
         filename = Path(job.output_file).name
         header = self.query_one("#header", HeaderWidget)
         header.update(f"[{job_index + 1}/{self._total_jobs}] {filename}")
 
-        # Source / Target
         source_w = self.query_one("#source", SourceWidget)
         source_w.update(_build_source_text(job))
 
@@ -529,16 +385,13 @@ class RunApp(App[None]):
         self._output_size = 0
         self._render_target()
 
-        # Steps
         self._steps = _build_steps(job)
         self._current_step_idx = -1
         self._refresh_steps()
 
-        # Clear output log
         output_log = self.query_one("#output", OutputLog)
         output_log.clear()
 
-        # Clear progress
         progress_w = self.query_one("#progress", ProgressWidget)
         progress_w.update("")
 
@@ -548,14 +401,12 @@ class RunApp(App[None]):
 
     def _do_update_status(self, message: str) -> None:
         self._snapshot = None
-        self._start_time = time.monotonic()  # reset phase timer on every step
+        self._start_time = time.monotonic()
 
-        # Advance to next step sequentially
         if self._current_step_idx < len(self._steps) - 1:
             self._current_step_idx += 1
             self._refresh_steps()
 
-        # Show status in progress bar area
         progress_w = self.query_one("#progress", ProgressWidget)
         progress_w.update(message)
 
@@ -568,8 +419,6 @@ class RunApp(App[None]):
         self._render_target()
 
     def _do_set_chosen_quality(self, cq: int) -> None:
-        """Fill the searched quality knob into the Target block (rebuilds the base
-        text and re-renders with the current size)."""
         if self._job is None:
             return
         self._job.chosen_cq = cq
@@ -577,7 +426,6 @@ class RunApp(App[None]):
         self._render_target()
 
     def _render_target(self) -> None:
-        """Re-render the Target block: base text plus the current output size."""
         size_str = fmt_size(self._output_size) if self._output_size > 0 else "..."
         target_w = self.query_one("#target", TargetWidget)
         target_w.update(f"{self._target_base_text}\nSize:  {size_str}")
@@ -586,20 +434,13 @@ class RunApp(App[None]):
         self._job = job
         self._snapshot = None
 
-        # Mark all steps completed
         self._current_step_idx = len(self._steps)
         self._refresh_steps()
 
-        # Show done in progress
         progress_w = self.query_one("#progress", ProgressWidget)
         progress_w.update("Done")
 
-    # ------------------------------------------------------------------
-    # Rendering helpers
-    # ------------------------------------------------------------------
-
     def _refresh_steps(self) -> None:
-        """Re-render the steps widget."""
         lines: list[str] = []
         for i, step in enumerate(self._steps):
             if i < self._current_step_idx:
@@ -613,7 +454,6 @@ class RunApp(App[None]):
         steps_w.update("\n".join(lines))
 
     def _refresh_progress(self) -> None:
-        """Re-render the progress bar from the current snapshot."""
         if self._snapshot is None:
             return
 

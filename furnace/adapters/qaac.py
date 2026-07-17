@@ -17,14 +17,6 @@ _QAAC_SPEED_RE = re.compile(r"\((\d+(?:\.\d+)?)x\)")
 
 
 def _parse_qaac_progress_line(line: str) -> ProgressSample | None:
-    """Parse a qaac stderr progress line into a sample.
-
-    Format (confirmed by existing UI regex at run_tui.py:50):
-
-        [42.5%] 0:30/1:43:01.600 (30.5x), ETA 3:20
-
-    Captures: leading percent in brackets, optional `(NNx)` speed multiplier.
-    """
     m_pct = _QAAC_PROGRESS_RE.match(line.strip())
     if not m_pct:
         return None
@@ -37,8 +29,6 @@ def _parse_qaac_progress_line(line: str) -> ProgressSample | None:
 
 
 class QaacAdapter:
-    """Implements AacEncoder."""
-
     def __init__(self, qaac_path: Path, on_output: OutputCallback = None, log_dir: Path | None = None) -> None:
         self._qaac = qaac_path
         self._on_output = on_output
@@ -53,7 +43,6 @@ class QaacAdapter:
         output_m4a: Path,
         on_progress: Callable[[ProgressSample], None] | None = None,
     ) -> int:
-        """qaac64 --tvbr 91 --quality 2 --rate keep --no-delay --threading input -o output"""
         cmd = [
             str(self._qaac),
             "--tvbr",

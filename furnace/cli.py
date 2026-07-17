@@ -69,16 +69,7 @@ app = typer.Typer()
 logger = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------------------------
-# Textual app runners
-# ---------------------------------------------------------------------------
-
 def _run_screen_app[T](screen_factory: Callable[[], Screen[T]]) -> T | None:
-    """Build a minimal Textual App that pushes a single Screen and returns its dismiss result.
-
-    `screen_factory` is invoked inside `on_mount` so the caller doesn't need to
-    pre-instantiate the screen before the app event loop is ready.
-    """
     result_holder: list[T | None] = [None]
 
     class _ScreenApp(App[T]):
@@ -98,13 +89,7 @@ def _run_screen_app[T](screen_factory: Callable[[], Screen[T]]) -> T | None:
     return result_holder[0]
 
 
-# ---------------------------------------------------------------------------
-# Misc helpers
-# ---------------------------------------------------------------------------
-
-
 def _make_preview_track_cb(movie: Movie, mpv_adapter: MpvAdapter) -> Callable[[Track], None]:
-    """Create a preview callback with closure over movie and mpv adapter."""
 
     def _preview_track(track: Track) -> None:
         if track.track_type == TrackType.AUDIO:
@@ -113,11 +98,6 @@ def _make_preview_track_cb(movie: Movie, mpv_adapter: MpvAdapter) -> Callable[[T
             mpv_adapter.preview_subtitle(movie.main_file, track.source_file, track.index)
 
     return _preview_track
-
-
-# ---------------------------------------------------------------------------
-# Track / language selector wrappers
-# ---------------------------------------------------------------------------
 
 
 def _select_tracks_tui(
@@ -130,7 +110,6 @@ def _select_tracks_tui(
     lang_list: list[str] | None = None,
     app_runner: Callable[[Callable[[], Screen[TrackSelection]]], TrackSelection | None] = _run_screen_app,
 ) -> TrackSelection:
-    """Run Textual TrackSelectorScreen synchronously for user to pick tracks."""
 
     def _factory() -> Screen[TrackSelection]:
         return TrackSelectorScreen(
@@ -160,11 +139,6 @@ def _select_tracks_tui_for_planner(
     lang_list: list[str] | None = None,
     app_runner: Callable[[Callable[[], Screen[TrackSelection]]], TrackSelection | None] = _run_screen_app,
 ) -> list[Track]:
-    """Planner-facing wrapper: returns list[Track] and mutates the shared override dicts.
-
-    Relabel languages picked in the TUI merge into ``lang_overrides`` (all track
-    types); audio downmix choices merge into ``downmix_overrides``.
-    """
     result = _select_tracks_tui(
         movie,
         candidates,
@@ -188,7 +162,6 @@ def _resolve_und_language_tui(
     *,
     app_runner: Callable[[Callable[[], Screen[str]]], str | None] = _run_screen_app,
 ) -> str:
-    """Run Textual LanguageSelectorScreen synchronously for user to pick a language."""
 
     def _factory() -> Screen[str]:
         return LanguageSelectorScreen(
@@ -204,22 +177,13 @@ def _resolve_und_language_tui(
     return result
 
 
-# ---------------------------------------------------------------------------
-# Disc demux helpers
-# ---------------------------------------------------------------------------
-
-
 def _collect_selected_titles(
     detected_discs: list[DiscSource],
     disc_titles: dict[DiscSource, list[DiscTitle]],
     *,
     reporter: RichPlanReporter | None = None,
-    playlist_app_runner: Callable[
-        [Callable[[], Screen[list[DiscTitle]]]], list[DiscTitle] | None
-    ] = _run_screen_app,
+    playlist_app_runner: Callable[[Callable[[], Screen[list[DiscTitle]]]], list[DiscTitle] | None] = _run_screen_app,
 ) -> dict[DiscSource, list[DiscTitle]]:
-    """For each detected disc, pick which titles to demux from the pre-listed
-    playlists. Pauses the reporter only around the interactive playlist screen."""
     selected_titles: dict[DiscSource, list[DiscTitle]] = {}
     for disc in detected_discs:
         playlists = disc_titles.get(disc, [])
@@ -252,7 +216,6 @@ def _dvd_demuxed_paths(
     selected_titles: dict[DiscSource, list[DiscTitle]],
     demuxed_paths: list[Path],
 ) -> set[Path]:
-    """Identify which demuxed paths came from DVD sources (by filename prefix)."""
     dvd_demuxed: set[Path] = set()
     for disc in detected_discs:
         if disc.disc_type == DiscType.DVD and disc in selected_titles:
@@ -263,24 +226,10 @@ def _dvd_demuxed_paths(
     return dvd_demuxed
 
 
-# One file-selector row: (path, duration_s, size_bytes, height, color_transfer).
-# ``height`` guards "has a readable video stream"; ``color_transfer`` gates the
-# grain toggle (the grain path is SDR-only, see ``core.detect.needs_grain_probe``).
 _FileInfo = tuple[Path, float, int, int, str | None]
 
 
-def _probe_file_infos(
-    demuxed_paths: list[Path], ffmpeg_adapter: FFmpegAdapter
-) -> list[_FileInfo]:
-    """Probe each file for duration/size/height/transfer for the file-selector UI.
-
-    Height and colour transfer are read from the first video stream (0 / None when
-    none is present) and gate the grain toggle; duration and size feed the
-    on-screen file list. Duration mirrors the analyzer's precedence exactly — the
-    first video stream's ``duration`` first, falling back to ``format.duration`` —
-    so the grain pre-probe seeks the same window as the headless grain verdict and
-    the two agree at the classify boundary.
-    """
+def _probe_file_infos(demuxed_paths: list[Path], ffmpeg_adapter: FFmpegAdapter) -> list[_FileInfo]:
     file_infos: list[_FileInfo] = []
     for mkv_path in demuxed_paths:
         probe_data = ffmpeg_adapter.probe(mkv_path)
@@ -303,29 +252,10 @@ def _probe_file_infos(
 
 
 def _grain_toggle_files(file_infos: list[_FileInfo]) -> set[Path]:
-    """Files eligible for a grain toggle in the file selector.
-
-    Eligible = SDR (any resolution — grainy HD/UHD needs the grain path too) with a
-    readable video stream. A height of 0 (unreadable / no video stream) is excluded
-    so a file we could not measure never triggers the fragile grain probe; HDR is
-    excluded by ``needs_grain_probe`` (the grain path cannot score PQ/HLG).
-    """
-    return {
-        p
-        for (p, _dur, _size, height, transfer) in file_infos
-        if height > 0 and needs_grain_probe(transfer)
-    }
+    return {p for (p, _dur, _size, height, transfer) in file_infos if height > 0 and needs_grain_probe(transfer)}
 
 
 def _classify_one(path: Path, dur: float, ffmpeg_adapter: FFmpegAdapter) -> bool:
-    """Grain verdict for a single grain-eligible file, fail-soft to GRAINY.
-
-    Mirrors the analyzer's grain stage: ``sample_grain`` returns ``[]`` (never
-    raises) for expected per-window failures, but a catastrophic raise — a
-    broken ffmpeg subprocess (``OSError``) or an internal parse error — is
-    caught here and treated as GRAINY rather than crashing the whole ``plan``
-    run. Wrongly-on costs a few extra bytes; wrongly-off smears real film grain.
-    """
     try:
         return classify_grain(ffmpeg_adapter.sample_grain(path, dur))
     except (OSError, RuntimeError, ValueError):
@@ -338,16 +268,8 @@ def _grain_pre_probe(
     grain_files: set[Path],
     ffmpeg_adapter: FFmpegAdapter,
 ) -> set[Path]:
-    """Seed the file-selector grain default: an eligible file whose sampled flicker
-    classifies GRAINY starts with grain ON.
-
-    Only ``grain_files`` are probed, so the result is always a subset of
-    ``grain_files`` (never seed a default for an ineligible path). Each file is
-    classified independently and fail-soft (see ``_classify_one``), so one
-    file's hard probe failure never loses the others.
-    """
     grain_defaults: set[Path] = set()
-    for (p, dur, _size, _height, _transfer) in file_infos:
+    for p, dur, _size, _height, _transfer in file_infos:
         if p in grain_files and _classify_one(p, dur, ffmpeg_adapter):
             grain_defaults.add(p)
     return grain_defaults
@@ -363,12 +285,6 @@ def _run_file_selector(
     reporter: RichPlanReporter | None,
     file_app_runner: Callable[[Callable[[], Screen[FileSelection]]], FileSelection | None],
 ) -> FileSelection | None:
-    """Pre-probe grain for the eligible files, then run the file selector.
-
-    Brackets the interactive screen (and the slow grain pre-probe) with the
-    reporter's pause/resume. Returns the ``FileSelection`` or ``None`` if the
-    screen was dismissed.
-    """
     if reporter is not None:
         reporter.pause()
     grain_defaults = _grain_pre_probe(file_infos, grain_files, ffmpeg_adapter)
@@ -403,18 +319,9 @@ def _run_disc_demux_interactive(
     ffmpeg_adapter: FFmpegAdapter,
     mpv_adapter: MpvAdapter,
     reporter: RichPlanReporter | None = None,
-    playlist_app_runner: Callable[
-        [Callable[[], Screen[list[DiscTitle]]]], list[DiscTitle] | None
-    ] = _run_screen_app,
-    file_app_runner: Callable[
-        [Callable[[], Screen[FileSelection]]], FileSelection | None
-    ] = _run_screen_app,
+    playlist_app_runner: Callable[[Callable[[], Screen[list[DiscTitle]]]], list[DiscTitle] | None] = _run_screen_app,
+    file_app_runner: Callable[[Callable[[], Screen[FileSelection]]], FileSelection | None] = _run_screen_app,
 ) -> tuple[Path | None, list[Path], set[Path], dict[Path, bool]]:
-    """Coordinate the interactive disc demux flow.
-
-    Returns `(demux_dir, demuxed_paths, sar_override_paths, grain_overrides)`.
-    When no discs are provided, returns `(None, [], set(), {})`.
-    """
     if not detected_discs:
         return None, [], set(), {}
 
@@ -443,8 +350,6 @@ def _run_disc_demux_interactive(
     file_infos = _probe_file_infos(demuxed_paths, ffmpeg_adapter)
     grain_files = _grain_toggle_files(file_infos)
 
-    # Show the file selector when a DVD needs a SAR toggle, when there are
-    # multiple files to pick from, or when any file offers a grain toggle.
     if dvd_demuxed or len(demuxed_paths) > 1 or grain_files:
         file_selection = _run_file_selector(
             file_infos=file_infos,
@@ -463,17 +368,11 @@ def _run_disc_demux_interactive(
     return demux_dir, demuxed_paths, sar_override_paths, grain_overrides
 
 
-# ---------------------------------------------------------------------------
-# Plan wiring helpers
-# ---------------------------------------------------------------------------
-
-
 def _append_demuxed_scan_results(
     scan_results: list[ScanResult],
     demuxed_paths: list[Path],
     output: Path,
 ) -> None:
-    """Append a ScanResult entry for each demuxed MKV so it flows through the pipeline."""
     scan_results.extend(
         ScanResult(
             main_file=mkv_path,
@@ -485,23 +384,15 @@ def _append_demuxed_scan_results(
 
 
 def _apply_demux_dir_to_plan(plan_obj: Plan, demux_dir: Path | None) -> None:
-    """Record the demux directory on the Plan if disc demux actually happened."""
     if demux_dir is not None:
         plan_obj.demux_dir = str(demux_dir)
 
 
-# ---------------------------------------------------------------------------
-# Logging
-# ---------------------------------------------------------------------------
-
-
 def _setup_logging(log_dir: Path, *, console: bool = True) -> None:
-    """Create furnace.log in log_dir. Optionally add console output for INFO+."""
     log_dir.mkdir(parents=True, exist_ok=True)
     root = logging.getLogger()
     root.setLevel(logging.DEBUG)
 
-    # File: everything (DEBUG+)
     log_path = log_dir / "furnace.log"
     file_handler = logging.FileHandler(log_path, encoding="utf-8")
     file_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
@@ -510,7 +401,6 @@ def _setup_logging(log_dir: Path, *, console: bool = True) -> None:
     if not console:
         return
 
-    # Console: INFO+ with short format
     console_handler = logging.StreamHandler()
     console_handler.setLevel(logging.INFO)
     console_handler.setFormatter(logging.Formatter("[furnace] %(message)s"))
@@ -533,9 +423,7 @@ def plan(
     force: bool = typer.Option(
         False, "--force", "-f", help="Process files even if already encoded by Furnace or output exists"
     ),
-    jobs: int | None = typer.Option(
-        None, "--jobs", "-j", help="Parallel analysis workers (default: CPU cores - 2)"
-    ),
+    jobs: int | None = typer.Option(None, "--jobs", "-j", help="Parallel analysis workers (default: CPU cores - 2)"),
     ignore_langs: bool = typer.Option(
         False,
         "--ignore-langs",
@@ -545,14 +433,13 @@ def plan(
     ),
     config: Path | None = typer.Option(None, "--config", help="Path to config file"),
 ) -> None:
-    """Scan source, show TUI for track selection, save JSON plan."""
     audio_lang_list = [x.strip() for x in audio_lang.split(",") if x.strip()]
     sub_lang_list = [x.strip() for x in sub_lang.split(",") if x.strip()]
 
     cfg = load_config(config)
 
     output.mkdir(parents=True, exist_ok=True)
-    _setup_logging(output, console=False)  # console handler removed; reporter owns terminal
+    _setup_logging(output, console=False)
 
     logger.debug(
         "plan command started: source=%s output=%s audio_lang=%s sub_lang=%s names=%s "
@@ -624,11 +511,6 @@ def plan(
         scanner = Scanner(prober=ffmpeg_adapter, reporter=reporter)
         scan_results = scanner.scan(source, output, names_map)
 
-        # Plain-files grain flow: with no disc demux, plain sources still need the
-        # file selector so the user can confirm/override the grain verdict. Probe
-        # the scanned main files; if any is grain-eligible (SDR, any resolution),
-        # show the same selector (no DVDs -> the SAR hint stays hidden). An
-        # HDR-only source offers no grain toggle and skips the screen entirely.
         plain_grain_overrides: dict[Path, bool] = {}
         if not dry_run and scan_results:
             plain_infos = _probe_file_infos([sr.main_file for sr in scan_results], ffmpeg_adapter)
@@ -649,7 +531,6 @@ def plan(
                     scan_results = [sr for sr in scan_results if sr.main_file in selected_plain]
 
         _append_demuxed_scan_results(scan_results, demuxed_paths, output)
-        # The appended demuxed entries also deserve scan_file events
         for mkv_path in demuxed_paths:
             reporter.scan_file(mkv_path.name)
 
@@ -696,9 +577,6 @@ def plan(
         if not dry_run:
             reporter.resume()
 
-        # Merge the disc and plain-files grain decisions. An empty merge means no
-        # interactive screen ran (dry-run or HD-only), so pass None and let the
-        # analyzer's per-file verdict rule.
         grain_overrides: dict[Path, bool] | None = None
         if not dry_run:
             grain_overrides = {**disc_grain_overrides, **plain_grain_overrides} or None
@@ -736,14 +614,10 @@ def run(
     plan_file: Path = typer.Argument(..., help="JSON plan file"),
     config: Path | None = typer.Option(None, "--config", help="Path to config file"),
 ) -> None:
-    """Read plan and encode all pending jobs."""
-    # 1. Load config
     cfg = load_config(config)
 
-    # 2. Load plan (need destination for log dir)
     plan_obj = load_plan(plan_file)
 
-    # 3. Setup file logging -> destination/furnace.log (console OFF — Textual owns terminal)
     destination = Path(plan_obj.destination)
     destination.mkdir(parents=True, exist_ok=True)
     _setup_logging(destination, console=False)
@@ -752,17 +626,10 @@ def run(
 
     pending_count = sum(1 for j in plan_obj.jobs if j.status.value in ("pending", "error"))
 
-    # 4. ESC handling: RunApp binds ESC via Textual; shutdown_event shared with executor
     shutdown_event = threading.Event()
     log_dir = destination / "logs"
 
-    # 5. Define executor factory — RunApp calls this in a worker thread,
-    #    passing itself as the progress object.
     def _run_executor(progress: RunApp) -> None:
-        # Adapters stream their raw stdout/stderr through this sink; it is muted
-        # during the target-quality search (progress.mute_tool_output) so the
-        # per-probe encoder chatter stays out of the log. Furnace's own narration
-        # uses progress.add_tool_line, which is never muted.
         tool_output = progress.tool_output
 
         ffmpeg_adapter = FFmpegAdapter(cfg.ffmpeg, cfg.ffprobe, on_output=tool_output)
@@ -780,14 +647,11 @@ def run(
         dovi_adapter: DoviToolAdapter | None = None
         if cfg.dovi_tool is not None:
             dovi_adapter = DoviToolAdapter(
-                cfg.dovi_tool, cfg.ffmpeg, on_output=tool_output,
+                cfg.dovi_tool,
+                cfg.ffmpeg,
+                on_output=tool_output,
             )
 
-        # Target-quality search: always on for the NVEnc path (ffmpeg extracts
-        # probe windows, NVEncC self-measures inline -- no extra config). The
-        # grain (SVT) path additionally needs the Vship metrics adapter to score
-        # its probes; when that's absent, grain jobs fall back to the fixed CRF
-        # recipe (see TargetQualityService.can_search).
         target_quality = TargetQualityService(
             ffmpeg_adapter,
             nvencc_adapter,
@@ -816,7 +680,6 @@ def run(
         finally:
             progress.stop()
 
-    # 6. Run the Textual app (blocks until all jobs done or ESC)
     run_app = RunApp(
         total_jobs=pending_count,
         shutdown_event=shutdown_event,
@@ -824,20 +687,15 @@ def run(
     )
     run_app.run()
 
-    # If user requested shutdown (ESC/Ctrl+Q), exit immediately
-    # to avoid waiting for worker thread cleanup
     if shutdown_event.is_set():
         os._exit(0)
 
-    # 7. Reload plan from disk (executor updates JSON after each job)
     plan_obj = load_plan(plan_file)
 
-    # 8. ReportPrinter.print_report() — after TUI exits, console is free
     console = Console()
     printer = ReportPrinter()
     printer.print_report(plan_obj, console)
 
-    # Cleanup demux directory after successful run
     if plan_obj.demux_dir:
         demux_path = Path(plan_obj.demux_dir)
         if demux_path.exists():
@@ -852,15 +710,9 @@ def run(
 @app.command()
 def scan(
     src: Path = typer.Argument(..., help="Video file or directory to scan"),
-    not_encoded: bool = typer.Option(
-        False, "--not-encoded", help="Show files with no parseable Furnace tag"
-    ),
-    encoded: bool = typer.Option(
-        False, "--encoded", help="Show files encoded by any Furnace version"
-    ),
-    max_version: str | None = typer.Option(
-        None, "--max-version", help="Show Furnace files at version <= X.Y.Z"
-    ),
+    not_encoded: bool = typer.Option(False, "--not-encoded", help="Show files with no parseable Furnace tag"),
+    encoded: bool = typer.Option(False, "--encoded", help="Show files encoded by any Furnace version"),
+    max_version: str | None = typer.Option(None, "--max-version", help="Show Furnace files at version <= X.Y.Z"),
     outdated: bool = typer.Option(
         False,
         "--outdated",
@@ -870,17 +722,9 @@ def scan(
     ),
     config: Path | None = typer.Option(None, "--config", help="Path to config file"),
 ) -> None:
-    """Inventory video files and their Furnace-encode status (read-only).
-
-    Filter flags select on encode status and union (OR): no flag shows every
-    video file. ``--outdated`` is standalone and instead surfaces only the files
-    worth re-encoding or remuxing. The table goes to stdout (redirect-safe); the
-    summary and any warnings go to stderr.
-    """
     if outdated and (not_encoded or encoded or max_version is not None):
         raise typer.BadParameter(
-            "--outdated is standalone; it cannot be combined with "
-            "--not-encoded, --encoded or --max-version",
+            "--outdated is standalone; it cannot be combined with --not-encoded, --encoded or --max-version",
             param_hint="--outdated",
         )
 

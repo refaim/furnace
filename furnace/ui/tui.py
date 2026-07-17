@@ -35,7 +35,6 @@ _VERY_QUIET_DB_THRESHOLD = -60.0
 
 
 def _bar_and_word(rms_db: float) -> tuple[str, str]:
-    """Return (ASCII bar, one-word volume category) for a dB value."""
     clamped = max(_BAR_MIN_DB, min(_BAR_MAX_DB, rms_db))
     fill = round((clamped - _BAR_MIN_DB) / (_BAR_MAX_DB - _BAR_MIN_DB) * _BAR_WIDTH)
     bar = "[" + "#" * fill + "." * (_BAR_WIDTH - fill) + "]"
@@ -63,11 +62,6 @@ def _mode_label(mode: DownmixMode | None) -> str:
 
 
 def _render_detector_panel(track: Track | None, downmix: DownmixMode | None = None) -> str:
-    """Multi-line panel for the track under the cursor.
-
-    Shows verdict + reasons + ASCII level bars. `None` or non-audio tracks
-    render a short placeholder.
-    """
     if track is None or track.track_type != TrackType.AUDIO:
         return " Detector: ---"
     if track.audio_profile is None:
@@ -82,14 +76,11 @@ def _render_detector_panel(track: Track | None, downmix: DownmixMode | None = No
         kind = "real stereo" if m.channels == STEREO_CHANNELS else "real surround"
         lines.append(f" Detector: {kind}")
     else:
-        # The trailing status reflects the CURRENT downmix, not a fixed
-        # assumption: once the user clears an (auto-applied) downmix the panel
-        # must agree with the row instead of still claiming "auto-applied".
         mode_label = _mode_label(p.suggested)
         if p.verdict == Verdict.FAKE:
             kind = "FAKE stereo" if m.channels == STEREO_CHANNELS else "FAKE surround"
             status = "downmix applied" if downmix is not None else "no downmix applied"
-        else:  # SUSPICIOUS
+        else:
             kind = "SUSPICIOUS stereo" if m.channels == STEREO_CHANNELS else "SUSPICIOUS surround"
             status = "downmix applied" if downmix is not None else "decide manually"
         lines.append(f" Detector: {kind} -> suggested {mode_label} ({status})")
@@ -104,15 +95,17 @@ def _render_detector_panel(track: Track | None, downmix: DownmixMode | None = No
         channel_values = [("L", m.rms_l), ("R", m.rms_r)]
     elif m.channels == SURROUND_5_1_CHANNELS:
         channel_values = [
-            ("L", m.rms_l), ("R", m.rms_r),
+            ("L", m.rms_l),
+            ("R", m.rms_r),
             ("C", m.rms_c if m.rms_c is not None else _BAR_MIN_DB),
             ("LFE", m.rms_lfe if m.rms_lfe is not None else _BAR_MIN_DB),
             ("Ls", m.rms_ls if m.rms_ls is not None else _BAR_MIN_DB),
             ("Rs", m.rms_rs if m.rms_rs is not None else _BAR_MIN_DB),
         ]
-    else:  # 7.1
+    else:
         channel_values = [
-            ("L", m.rms_l), ("R", m.rms_r),
+            ("L", m.rms_l),
+            ("R", m.rms_r),
             ("C", m.rms_c if m.rms_c is not None else _BAR_MIN_DB),
             ("LFE", m.rms_lfe if m.rms_lfe is not None else _BAR_MIN_DB),
             ("Lb", m.rms_lb if m.rms_lb is not None else _BAR_MIN_DB),
@@ -147,17 +140,12 @@ def _render_detector_panel(track: Track | None, downmix: DownmixMode | None = No
 
     return "\n".join(lines)
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
 
 def build_downmix_map(
     tracks: list[Track],
     selected: list[bool],
     downmix_list: list[DownmixMode | None],
 ) -> dict[tuple[Path, int], DownmixMode]:
-    """Build downmix override map from selector state."""
     result: dict[tuple[Path, int], DownmixMode] = {}
     for i, track in enumerate(tracks):
         mode = downmix_list[i]
@@ -171,11 +159,6 @@ def build_language_map(
     selected: list[bool],
     lang_override_list: list[str | None],
 ) -> dict[tuple[Path, int], str]:
-    """Build per-track language relabel map from selector state.
-
-    Only EXPLICIT 'l'-overrides of SELECTED tracks are reported; the planner
-    fills the default target language for the rest.
-    """
     result: dict[tuple[Path, int], str] = {}
     for i, track in enumerate(tracks):
         lang = lang_override_list[i]
@@ -203,13 +186,12 @@ def _fmt_audio_track(
     mark = "x" if selected else " "
     base_lang = track.language or "und"
     if relabel_to is not None and relabel_to != base_lang:
-        lang = f"{base_lang}->{relabel_to}".ljust(4)  # e.g. "eng->jpn"
+        lang = f"{base_lang}->{relabel_to}".ljust(4)
     else:
         lang = base_lang.ljust(4)
     codec = track.codec_name.upper()
     layout = ""
     if track.channel_layout:
-        # Simplify channel layout: "5.1(side)" -> "5.1"
         layout = track.channel_layout.split("(")[0]
     codec_layout = f"{codec} {layout}".strip()
     bitrate = ""
@@ -225,9 +207,6 @@ def _fmt_audio_track(
     elif downmix == DownmixMode.DOWN6:
         downmix_tag = "\\[-> 5.1]"
 
-    # Detector plaque is informational and independent of the downmix action:
-    # it stays visible whether or not a downmix is applied, so cancelling a
-    # downmix (dropping downmix_tag) never looks like it failed.
     detector_tag = ""
     if track.audio_profile is not None:
         p = track.audio_profile
@@ -237,7 +216,6 @@ def _fmt_audio_track(
             detector_tag = "\\[SUSP]"
 
     parts = [p for p in [lang, codec_layout, bitrate, title, detector_tag, downmix_tag] if p]
-    # Escape brackets so Rich doesn't interpret them as markup tags
     return f"\\[{mark}]  {'  '.join(parts)}"
 
 
@@ -250,49 +228,24 @@ def _fmt_subtitle_track(
     mark = "x" if selected else " "
     base_lang = track.language or "und"
     if relabel_to is not None and relabel_to != base_lang:
-        lang = f"{base_lang}->{relabel_to}".ljust(4)  # e.g. "eng->jpn"
+        lang = f"{base_lang}->{relabel_to}".ljust(4)
     else:
         lang = base_lang.ljust(4)
     codec = track.codec_name.upper()
     forced = "\\[FORCED]" if track.is_forced else ""
     title = f"'{track.title}'" if track.title else ""
     parts = [p for p in [lang, codec, forced, title] if p]
-    # Escape brackets so Rich doesn't interpret them as markup tags
     return f"\\[{mark}]  {'  '.join(parts)}"
-
-
-# ---------------------------------------------------------------------------
-# TrackSelection result
-# ---------------------------------------------------------------------------
 
 
 @dataclass
 class TrackSelection:
-    """Result from TrackSelectorScreen.
-
-    `tracks` — tracks the user selected (same as the old list[Track] return).
-    `downmix` — per-track downmix override keyed by (source_file, stream_index).
-                Always empty for subtitle screens.
-    `languages` — per-track relabel override keyed by (source_file, stream_index).
-                Only populated under --ignore-langs; empty otherwise.
-    """
-
     tracks: list[Track]
     downmix: dict[tuple[Path, int], DownmixMode]
     languages: dict[tuple[Path, int], str] = field(default_factory=dict)
 
 
-# ---------------------------------------------------------------------------
-# TrackSelectorScreen
-# ---------------------------------------------------------------------------
-
-
 class TrackSelectorScreen(Screen[TrackSelection]):
-    """Screen for selecting audio or subtitle tracks.
-
-    Returns a TrackSelection via dismiss().
-    """
-
     BINDINGS = [
         Binding("up", "move_up", "Up", show=False),
         Binding("down", "move_down", "Down", show=False),
@@ -323,13 +276,10 @@ class TrackSelectorScreen(Screen[TrackSelection]):
         self._preview_cb = preview_cb
         self._allow_relabel = allow_relabel
         self._lang_list = lang_list or []
-        # Pre-select tracks that are marked as default
         self._selected: list[bool] = [t.is_default for t in tracks]
         self._downmix: list[DownmixMode | None] = [None] * len(tracks)
-        # Parallel per-track relabel overrides (only used under --ignore-langs)
         self._lang_override: list[str | None] = [None] * len(tracks)
 
-        # Auto-preselect detector-suggested mode for FAKE tracks.
         if track_type == TrackType.AUDIO:
             for i, t in enumerate(tracks):
                 p = t.audio_profile
@@ -346,10 +296,6 @@ class TrackSelectorScreen(Screen[TrackSelection]):
                 self._downmix[i] = p.suggested
 
         self._cursor: int = 0
-
-    # ------------------------------------------------------------------
-    # Compose
-    # ------------------------------------------------------------------
 
     def compose(self) -> ComposeResult:
         v = self._movie.video
@@ -389,13 +335,8 @@ class TrackSelectorScreen(Screen[TrackSelection]):
 
         yield Footer()
 
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
-
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
-        del parameters  # part of Textual's check_action contract; unused here
-        # Disable + hide the 'l' hotkey from the footer unless relabelling is on.
+        del parameters
         return action != "set_language" or self._allow_relabel
 
     def _relabel_target(self, index: int) -> str | None:
@@ -430,10 +371,6 @@ class TrackSelectorScreen(Screen[TrackSelection]):
             downmix = self._downmix[self._cursor] if in_bounds else None
             panel.update(_render_detector_panel(track, downmix))
 
-    # ------------------------------------------------------------------
-    # Actions
-    # ------------------------------------------------------------------
-
     def action_move_up(self) -> None:
         lv = self.query_one("#track-list", ListView)
         lv.action_cursor_up()
@@ -465,7 +402,6 @@ class TrackSelectorScreen(Screen[TrackSelection]):
             return
         new_mode = DownmixMode(mode)
 
-        # Per-mode channel-count guards
         if new_mode == DownmixMode.STEREO and track.channels <= STEREO_CHANNELS:
             return
         if new_mode == DownmixMode.MONO and track.channels < STEREO_CHANNELS:
@@ -481,12 +417,6 @@ class TrackSelectorScreen(Screen[TrackSelection]):
         self._refresh_detector_panel()
 
     def action_clear_downmix(self) -> None:
-        """Drop any downmix on the track under the cursor, keeping the original.
-
-        Unlike ``set_downmix``, this is unconditional (no channel guards): it is
-        the one unambiguous way to undo an auto-applied or manual downmix,
-        including the mode auto-selected for a FAKE-surround track.
-        """
         if not self._tracks or self._track_type != TrackType.AUDIO:
             return
         self._downmix[self._cursor] = None
@@ -520,10 +450,6 @@ class TrackSelectorScreen(Screen[TrackSelection]):
         lang_map = build_language_map(self._tracks, self._selected, self._lang_override)
         self.dismiss(TrackSelection(tracks=selected_tracks, downmix=downmix_map, languages=lang_map))
 
-    # ------------------------------------------------------------------
-    # Event handlers
-    # ------------------------------------------------------------------
-
     def on_list_view_highlighted(self, event: ListView.Highlighted) -> None:
         if event.item is not None:
             item_id = event.item.id or ""
@@ -532,23 +458,10 @@ class TrackSelectorScreen(Screen[TrackSelection]):
                     self._cursor = int(item_id.removeprefix("track-item-"))
                     self._refresh_detector_panel()
 
-    def on_click(self, event: object) -> None:
-        """Handle click on the Done label."""
-        # The Static with id btn-done triggers action_done via the D keybinding
-        # No additional click handling needed — D key is the primary interaction
-
-
-# ---------------------------------------------------------------------------
-# PlaylistSelectorScreen
-# ---------------------------------------------------------------------------
+    def on_click(self, event: object) -> None: ...
 
 
 class PlaylistSelectorScreen(Screen[list[DiscTitle]]):
-    """Screen for selecting disc playlists to demux.
-
-    Pre-selects playlists > 10 minutes.
-    """
-
     BINDINGS = [
         Binding("up", "move_up", "Up", show=False),
         Binding("down", "move_down", "Down", show=False),
@@ -556,7 +469,7 @@ class PlaylistSelectorScreen(Screen[list[DiscTitle]]):
         Binding("d", "done", "Done"),
     ]
 
-    MIN_DURATION_S = 600  # 10 minutes
+    MIN_DURATION_S = 600
 
     def __init__(self, disc_label: str, playlists: list[DiscTitle]) -> None:
         super().__init__()
@@ -618,33 +531,14 @@ class PlaylistSelectorScreen(Screen[list[DiscTitle]]):
                     self._cursor = int(item_id.removeprefix("pl-item-"))
 
 
-# ---------------------------------------------------------------------------
-# FileSelection result
-# ---------------------------------------------------------------------------
-
-
 @dataclass
 class FileSelection:
-    """Result from FileSelectorScreen."""
-
     selected: list[Path]
-    sar_override: set[Path]  # files with SAR override (64:45)
-    # grain decisions for the grain-eligible files (path -> on/off); defaults empty
-    # for callers that don't populate it (e.g. mocked returns).
+    sar_override: set[Path]
     grain: dict[Path, bool] = field(default_factory=dict)
 
 
-# ---------------------------------------------------------------------------
-# FileSelectorScreen
-# ---------------------------------------------------------------------------
-
-
 class FileSelectorScreen(Screen[FileSelection]):
-    """Screen for selecting demuxed MKV files to process.
-
-    All files pre-selected. DVD files can be marked for SAR override.
-    """
-
     BINDINGS = [
         Binding("up", "move_up", "Up", show=False),
         Binding("down", "move_down", "Down", show=False),
@@ -657,11 +551,11 @@ class FileSelectorScreen(Screen[FileSelection]):
 
     def __init__(
         self,
-        files: list[tuple[Path, float, int]],  # (path, duration_s, size_bytes)
-        dvd_files: set[Path] | None = None,  # which files are from DVD (SAR toggle available)
-        grain_files: set[Path] | None = None,  # which files may be grain-toggled (SDR, any res)
-        grain_defaults: set[Path] | None = None,  # eligible files that start with grain ON
-        preview_cb: Callable[[Path, str | None], None] | None = None,  # (path, aspect_override)
+        files: list[tuple[Path, float, int]],
+        dvd_files: set[Path] | None = None,
+        grain_files: set[Path] | None = None,
+        grain_defaults: set[Path] | None = None,
+        preview_cb: Callable[[Path, str | None], None] | None = None,
     ) -> None:
         super().__init__()
         self._files = files
@@ -751,9 +645,7 @@ class FileSelectorScreen(Screen[FileSelection]):
     def action_done(self) -> None:
         selected = [f[0] for f, sel in zip(self._files, self._selected, strict=True) if sel]
         sar_set = {
-            f[0]
-            for f, sel, sar in zip(self._files, self._selected, self._sar_override, strict=True)
-            if sel and sar
+            f[0] for f, sel, sar in zip(self._files, self._selected, self._sar_override, strict=True) if sel and sar
         }
         grain = {
             f[0]: g
@@ -770,19 +662,10 @@ class FileSelectorScreen(Screen[FileSelection]):
                     self._cursor = int(item_id.removeprefix("file-item-"))
 
 
-# ---------------------------------------------------------------------------
-# Crop value parsing (pure function)
-# ---------------------------------------------------------------------------
-
-
 _CROP_FIELDS = 4
 
 
 def parse_crop_value(text: str, source_w: int, source_h: int) -> CropRect:
-    """Parse ``'w:h:x:y'`` crop string, validate, return CropRect.
-
-    Raises ValueError on any validation failure.
-    """
     parts = text.strip().split(":")
     if len(parts) != _CROP_FIELDS:
         raise ValueError("Expected w:h:x:y")
@@ -799,19 +682,7 @@ def parse_crop_value(text: str, source_w: int, source_h: int) -> CropRect:
     return CropRect(w=w, h=h, x=x, y=y)
 
 
-# ---------------------------------------------------------------------------
-# CropConfirmScreen
-# ---------------------------------------------------------------------------
-
-
 class CropConfirmScreen(Screen[CropRect | None]):
-    """Dialog for confirming detected crop values.
-
-    Dismisses with:
-    - CropRect  — user accepted or entered custom values
-    - None      — user rejected (no crop)
-    """
-
     BINDINGS = [
         Binding("escape", "reject", "Reject"),
         Binding("a", "accept", "Accept"),
@@ -846,7 +717,6 @@ class CropConfirmScreen(Screen[CropRect | None]):
         yield Footer()
 
     def on_mount(self) -> None:
-        # Hide input initially — must run after compose so the widget exists.
         inp = self.query_one("#crop-input", Input)
         inp.display = False
         inp.can_focus = False
@@ -888,18 +758,7 @@ class CropConfirmScreen(Screen[CropRect | None]):
             self._confirm_edit()
 
 
-# ---------------------------------------------------------------------------
-# LanguageSelectorScreen
-# ---------------------------------------------------------------------------
-
-
 class LanguageSelectorScreen(Screen[str]):
-    """Screen for choosing a language for an 'und' track.
-
-    Shows track info and a list of languages. User picks one with D.
-    Returns the selected ISO 639-3 language code via dismiss().
-    """
-
     BINDINGS = [
         Binding("up", "move_up", "Up", show=False),
         Binding("down", "move_down", "Down", show=False),
@@ -924,7 +783,6 @@ class LanguageSelectorScreen(Screen[str]):
     def compose(self) -> ComposeResult:
         yield Header()
 
-        # File header (same style as TrackSelectorScreen)
         if self._movie is not None:
             v = self._movie.video
             filename = self._movie.main_file.name
@@ -932,7 +790,6 @@ class LanguageSelectorScreen(Screen[str]):
             codec = v.codec_name.upper()
             yield Static(f"{filename}  |  {resolution}  {codec}", id="lang-header")
 
-        # Track description
         t = self._track
         if t.track_type == TrackType.AUDIO:
             codec = t.codec_name.upper()
@@ -944,8 +801,6 @@ class LanguageSelectorScreen(Screen[str]):
             codec = t.codec_name.upper()
             desc = f"Subtitle: {codec}"
 
-        # Under --ignore-langs the track keeps its ORIGINAL (possibly wrong) tag;
-        # surface it for orientation. Genuine 'und' tracks show nothing extra.
         if t.language and t.language != "und":
             desc = f"{desc}  (tagged: {t.language})"
 
@@ -983,14 +838,7 @@ class LanguageSelectorScreen(Screen[str]):
                     self._cursor = int(item_id.removeprefix("lang-item-"))
 
 
-# ---------------------------------------------------------------------------
-# FurnacePlanApp
-# ---------------------------------------------------------------------------
-
-
 class _PlanResult:
-    """Intermediate container for one movie's selections."""
-
     def __init__(self) -> None:
         self.audio_tracks: list[Track] = []
         self.subtitle_tracks: list[Track] = []
@@ -998,15 +846,6 @@ class _PlanResult:
 
 
 class FurnacePlanApp(App[list[_PlanResult]]):
-    """Main Textual application for the planning phase.
-
-    Iterates over each (Movie, output_path) pair, shows TrackSelectorScreen
-    for audio, then for subtitles, then CropConfirmScreen.
-
-    After all movies are processed, self.results holds a list of _PlanResult
-    objects in the same order as the input list.
-    """
-
     CSS = """
     #track-header {
         background: $surface;
@@ -1091,13 +930,6 @@ class FurnacePlanApp(App[list[_PlanResult]]):
         def _after_subtitles(selected_subs: TrackSelection | None) -> None:
             result.subtitle_tracks = selected_subs.tracks if selected_subs else []
             video = movie.video
-            # Only show crop screen if there is a detectable crop to confirm;
-            # callers may pre-populate a detected CropRect. Here we use a
-            # sentinel: if movie has no crop hint we skip the screen.
-            # The app does not run cropdetect itself; pass crop=None to skip.
-            # To use the crop screen, callers should subclass or pass crop via
-            # a wrapper. For now we always show the screen with a dummy crop
-            # (callers must supply actual detected crop externally).
             detected_crop = getattr(movie, "_detected_crop", None)
             if detected_crop is not None:
                 self.push_screen(

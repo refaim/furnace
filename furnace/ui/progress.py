@@ -1,5 +1,3 @@
-"""Post-run report printer (Rich)."""
-
 from __future__ import annotations
 
 from pathlib import Path
@@ -12,8 +10,6 @@ from furnace.ui.fmt import fmt_size
 
 
 class ReportPrinter:
-    """Print a final summary report after all jobs complete."""
-
     def print_report(self, plan: Plan, console: Console) -> None:
         done_jobs = [j for j in plan.jobs if j.status == JobStatus.DONE]
         error_jobs = [j for j in plan.jobs if j.status == JobStatus.ERROR]
@@ -52,7 +48,6 @@ class ReportPrinter:
             console.print(size_table)
             console.print()
 
-        # Per-file results
         if done_jobs:
             console.print("[bold]Files:[/bold]")
             for job in done_jobs:

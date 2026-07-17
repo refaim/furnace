@@ -17,20 +17,10 @@ _PLAYLIST_RE = re.compile(r"^(\d+)\)\s+(.+),\s+(\d+:\d{2}(?::\d{2})?)$")
 _TRACK_RE = re.compile(r"^(\d+):\s+(.+)$")
 _LANG_RE = re.compile(r"\[(\w{3})\]")
 _EAC3TO_PROGRESS_RE = re.compile(r"^process:\s*(\d+)%\s*$")
-# Broader pattern used for log suppression: matches both `process:` and
-# `analyze:` phases. The parser itself only emits samples for `process:`,
-# but `analyze:` lines should also be kept out of the log.
 _EAC3TO_ANY_PROGRESS_RE = re.compile(r"^(?:process|analyze):\s*\d+%\s*$")
 
 
 def _parse_eac3to_progress_line(line: str) -> ProgressSample | None:
-    """Parse an eac3to ``-progressnumbers`` line into a sample.
-
-    Format: ``process: NN%`` (integer percent, trailing %). During multi-phase
-    operations eac3to restarts from 0 for each phase; the executor handles
-    phase transitions explicitly via ``tracker.reset()``, so this parser only
-    captures the ``process:`` lines and ignores any ``analyze:`` prefix.
-    """
     m = _EAC3TO_PROGRESS_RE.match(line.strip())
     if not m:
         return None
@@ -39,25 +29,17 @@ def _parse_eac3to_progress_line(line: str) -> ProgressSample | None:
 
 
 def _is_eac3to_progress_line(line: str) -> bool:
-    """Return True for any ``process: NN%`` or ``analyze: NN%`` line.
-
-    Used by the adapter closure to suppress both phases' lines from the log
-    even though only ``process:`` contributes to structured progress.
-    """
     return _EAC3TO_ANY_PROGRESS_RE.match(line.strip()) is not None
 
 
 @dataclass(frozen=True)
 class Eac3toTrack:
-    """A track parsed from eac3to title listing."""
-
     number: int
     description: str
-    language: str | None  # e.g. "rus", "eng", None for video/chapters
-    extension: str  # e.g. ".mkv", ".dts", ".ac3", ".txt"
+    language: str | None
+    extension: str
 
 
-# Map eac3to codec descriptions to file extensions (raw copy, no re-encode)
 _CODEC_EXT_MAP: dict[str, str] = {
     "mpeg2": ".mkv",
     "h264": ".mkv",
@@ -83,12 +65,10 @@ _CODEC_EXT_MAP: dict[str, str] = {
 
 
 def _ext_for_track(description: str) -> str:
-    """Determine file extension from eac3to track description."""
     desc_lower = description.lower()
     for key, ext in _CODEC_EXT_MAP.items():
         if desc_lower.startswith(key):
             return ext
-    # Check for subtitle types that may not be at start
     if "pgs" in desc_lower:
         return ".sup"
     if "chapters" in desc_lower:
@@ -97,7 +77,6 @@ def _ext_for_track(description: str) -> str:
 
 
 def _parse_duration(s: str) -> float:
-    """Parse 'H:MM:SS' or 'M:SS' into total seconds."""
     parts = s.split(":")
     if len(parts) == len(["H", "MM", "SS"]):
         return int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2])
@@ -107,8 +86,6 @@ def _parse_duration(s: str) -> float:
 
 
 class Eac3toAdapter:
-    """Implements AudioDecoder and DiscDemuxerPort via eac3to."""
-
     def __init__(
         self,
         eac3to_path: Path,
@@ -143,13 +120,9 @@ class Eac3toAdapter:
         on_progress: Callable[[ProgressSample], None] | None = None,
         cwd: Path | None = None,
     ) -> tuple[int, str]:
-        """Common eac3to invocation with logging and progress."""
         cmd = [str(self._eac3to), *args, "-progressnumbers"]
 
         def _on_progress_line(line: str) -> bool:
-            # Suppress both `process: N%` and `analyze: N%` from the log,
-            # but only emit samples for the `process:` phase (the parser
-            # already filters). Unmatched lines pass through.
             if not _is_eac3to_progress_line(line):
                 return False
             sample = _parse_eac3to_progress_line(line)
@@ -165,8 +138,6 @@ class Eac3toAdapter:
             cwd=cwd,
         )
         return rc, output
-
-    # -- AudioDecoder protocol -------------------------------------------------
 
     def denormalize(
         self,
@@ -210,13 +181,6 @@ class Eac3toAdapter:
         output_path: Path,
         on_progress: Callable[[ProgressSample], None] | None = None,
     ) -> int:
-        """Transcode Wave64 (or any PCM input) to FLAC via eac3to.
-
-        eac3to picks the output format from the output file's extension;
-        passing ``.flac`` yields a FLAC stream. No ``-removeDialnorm`` is
-        emitted — PCM has no dialnorm metadata. Lossless: the resulting
-        FLAC decodes bit-identical to the source PCM.
-        """
         rc, _output = self._run(
             [str(input_path), str(output_path)],
             "w64_to_flac",
@@ -224,10 +188,7 @@ class Eac3toAdapter:
         )
         return rc
 
-    # -- DiscDemuxerPort protocol ----------------------------------------------
-
     def list_titles(self, disc_path: Path) -> list[DiscTitle]:
-        """Run eac3to on disc path, parse playlist listing."""
         cmd = [str(self._eac3to), str(disc_path)]
         rc, output = run_tool(cmd, on_output=self._on_output, log_path=self._log_path("list_titles"))
         if rc != 0:
@@ -241,12 +202,8 @@ class Eac3toAdapter:
         output_dir: Path,
         on_progress: Callable[[ProgressSample], None] | None = None,
     ) -> list[Path]:
-        """Demux one BD playlist to separate files in output_dir."""
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        # Resolve to absolute: we set cwd=output_dir below, so any relative
-        # disc_path would no longer resolve from the subprocess's new cwd,
-        # making eac3to fail with "HD DVD / Blu-Ray disc structure not found".
         disc_path = disc_path.resolve()
 
         rc, _output = self._run(
@@ -259,14 +216,8 @@ class Eac3toAdapter:
             raise RuntimeError(f"eac3to demux failed for {disc_path} title {title_num} (rc={rc})")
         return sorted(p for p in output_dir.iterdir() if p.is_file())
 
-    # -- Parsing ---------------------------------------------------------------
-
     @staticmethod
     def _parse_track_listing(output: str) -> list[Eac3toTrack]:
-        """Parse eac3to track listing (from running eac3to BDMV N)).
-
-        Example line: "3: DTS-HD Master Audio, [rus], 5.1 channels, 16 bits, 48kHz"
-        """
         results: list[Eac3toTrack] = []
         for raw_line in output.splitlines():
             line = raw_line.strip()
@@ -290,7 +241,6 @@ class Eac3toAdapter:
 
     @staticmethod
     def _parse_playlist_output(output: str) -> list[DiscTitle]:
-        """Parse eac3to listing output into DiscTitle objects."""
         results: list[DiscTitle] = []
         for raw_line in output.splitlines():
             line = raw_line.strip()

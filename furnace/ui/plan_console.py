@@ -1,11 +1,3 @@
-"""Structured terminal reporter for ``furnace plan``.
-
-Owns stdout for the entire plan command. Renders phase headers, per-row
-events, and a single floating progress bar at the bottom of the terminal.
-Raw tool output never flows here; the reporter is fed structured events by
-services and adapter progress parsers.
-"""
-
 from __future__ import annotations
 
 from pathlib import Path
@@ -21,12 +13,10 @@ _DISC_TYPE_NAMES: dict[DiscType, str] = {
     DiscType.DVD: "DVD",
 }
 
-_ASCII_SPINNER = "line"  # Rich built-in ASCII spinner: |/-\
+_ASCII_SPINNER = "line"
 
-# Visual nesting for demux titles under their disc — disc name remains flush left.
 _TITLE_INDENT = "  "
 
-# Per-status prefix for an analyze batch result line ("<name> -> <prefix><detail>").
 _BATCH_STATUS_PREFIX: dict[AnalyzeStatus, str] = {
     AnalyzeStatus.DONE: "",
     AnalyzeStatus.SKIPPED: "SKIPPED — ",
@@ -35,11 +25,6 @@ _BATCH_STATUS_PREFIX: dict[AnalyzeStatus, str] = {
 
 
 class _ChunkBarColumn(ProgressColumn):
-    """Bar built from full-height block chars throughout (no thin incomplete line).
-
-    Width is fixed at 40 cells.
-    """
-
     _WIDTH = 40
 
     def render(self, task: Task) -> Text:
@@ -52,11 +37,6 @@ class _ChunkBarColumn(ProgressColumn):
 
 
 class RichPlanReporter:
-    """Implements ``PlanReporter`` against a Rich ``Console``.
-
-    ``ascii_only=True`` forces ASCII bar/spinner glyphs (cmd.exe-safe).
-    """
-
     def __init__(
         self,
         *,
@@ -78,27 +58,11 @@ class RichPlanReporter:
         self._scan_started = False
         self._current_file: str | None = None
         self._plan_started = False
-        # Tracks whether any phase header has been emitted yet — controls the
-        # "blank line before phase header" rule for non-first phases.
         self._any_phase_started = False
-        # Per-disc detect state: set on detect_disc, cleared on
-        # detect_disc_titles_done. Used to render the persistent
-        # "<TYPE> <name> -> N title(s)" row once title listing finishes.
         self._current_detect_disc_type: DiscType | None = None
         self._current_detect_rel_path: str | None = None
 
     def _start_progress(self, *, has_progress: bool) -> Progress | None:
-        """Start a transient Rich Progress.
-
-        ``has_progress=True`` -> ``[Description, Bar, Percent]`` (bar on the right).
-        ``has_progress=False`` -> ``[Description, Spinner]`` (spinner where the bar
-        would have been). The two are mutually exclusive — never both at once.
-
-        Returns ``None`` on non-TTY consoles (e.g. when stdout is piped to a
-        file): a Live display in that mode would emit stray blank lines, so
-        the floating bar is suppressed entirely. Persistent rows still print
-        normally via plain ``console.print``.
-        """
         assert self._progress is None, "previous progress not stopped"  # noqa: S101
         if not self._console.is_terminal:
             return None
@@ -131,31 +95,20 @@ class RichPlanReporter:
             self._progress = None
 
     def _emit_phase_header(self, name: str) -> None:
-        """Print a bold phase header on its own line, flush left.
-
-        For every phase except the first one, an empty line is emitted first
-        to visually separate phase blocks.
-        """
         if self._any_phase_started:
             self._console.print()
         self._console.print(f"[bold]{name}[/bold]", highlight=False)
         self._any_phase_started = True
 
     def start(self) -> None:
-        """Print the header. Called once at the beginning of ``plan``."""
         self._console.print(f"Source: {self._source}", highlight=False)
         self._console.print(f"Output: {self._output}", highlight=False)
         self._console.print()
 
     def stop(self) -> None:
-        """Flush. Called once at end of ``plan``."""
         self._stop_progress()
 
-    # -- Detect ---------------------------------------------------------------
-
     def detect_disc(self, disc_type: DiscType, rel_path: str) -> None:
-        # Defensive: finalize any in-flight progress (caller misorder) before
-        # starting a new spinner row for this disc.
         self._stop_progress()
         if not self._detect_started:
             self._emit_phase_header("Detect")
@@ -165,8 +118,6 @@ class RichPlanReporter:
         type_name = _DISC_TYPE_NAMES[disc_type]
         progress = self._start_progress(has_progress=False)
         if progress is None:
-            # Non-TTY: no spinner. The persistent row is emitted by
-            # detect_disc_titles_done once title count is known.
             return
         desc = f"{type_name:<6}{rel_path} -> scanning"
         self._task_id = progress.add_task(desc, total=None)
@@ -175,8 +126,6 @@ class RichPlanReporter:
         self._stop_progress()
         if self._current_detect_rel_path is None:
             return
-        # _current_detect_disc_type is set in lockstep with rel_path; mypy needs
-        # the assert so it can narrow the Optional when indexing _DISC_TYPE_NAMES.
         assert self._current_detect_disc_type is not None  # noqa: S101
         type_name = _DISC_TYPE_NAMES[self._current_detect_disc_type]
         word = "title" if n_titles == 1 else "titles"
@@ -186,8 +135,6 @@ class RichPlanReporter:
         )
         self._current_detect_rel_path = None
         self._current_detect_disc_type = None
-
-    # -- Demux ---------------------------------------------------------------
 
     def _ensure_demux_header(self) -> None:
         if not self._demux_started:
@@ -215,7 +162,7 @@ class RichPlanReporter:
             return
         progress = self._start_progress(has_progress=has_progress)
         if progress is None:
-            return  # non-TTY: skip floating bar entirely
+            return
         title_label = f"title {self._current_title_num}"
         desc = f"{_TITLE_INDENT}{title_label} -> {label}"
         self._task_id = progress.add_task(desc, total=100 if has_progress else None)
@@ -245,8 +192,6 @@ class RichPlanReporter:
             )
         self._current_title_num = None
 
-    # -- Scan -----------------------------------------------------------------
-
     def _ensure_scan_header(self) -> None:
         if not self._scan_started:
             self._emit_phase_header("Scan")
@@ -262,13 +207,7 @@ class RichPlanReporter:
         self._ensure_scan_header()
         self._console.print(f"{name} -> SKIPPED — {reason}", highlight=False)
 
-    # -- Analyze --------------------------------------------------------------
-
     def analyze_batch_start(self, total: int) -> None:
-        """Begin the parallel analyze batch: header + a persistent count bar.
-
-        Called only from the pipeline's main thread; no locking needed.
-        """
         self._stop_progress()
         self._emit_phase_header("Analyze")
         if not self._console.is_terminal:
@@ -287,20 +226,10 @@ class RichPlanReporter:
         self._task_id = progress.add_task("", total=total)
 
     def analyze_batch_progress(self, completed: float) -> None:
-        """Set the batch bar's fractional completion (main thread only).
-
-        Driven by the pipeline's aggregated per-file progress; ``completed`` is a
-        float in ``[0, total]``. No-op on a non-TTY console (no bar to move).
-        """
         if self._progress is not None and self._task_id is not None:
             self._progress.update(self._task_id, completed=completed)
 
     def analyze_batch_item(self, name: str, detail: str, *, status: AnalyzeStatus) -> None:
-        """Print one file's result line above the bar.
-
-        The bar's fill is driven separately by :meth:`analyze_batch_progress`;
-        this only emits the persistent result line.
-        """
         line = f"{name} -> {_BATCH_STATUS_PREFIX[status]}{detail}"
         if self._progress is not None and self._task_id is not None:
             self._progress.console.print(line, highlight=False)
@@ -309,8 +238,6 @@ class RichPlanReporter:
 
     def analyze_batch_finish(self) -> None:
         self._stop_progress()
-
-    # -- Plan -----------------------------------------------------------------
 
     def _ensure_plan_header(self) -> None:
         if not self._plan_started:
@@ -331,15 +258,8 @@ class RichPlanReporter:
             )
         self._current_file = None
 
-    # -- Final / lifecycle ---------------------------------------------------
-
     def plan_saved(self, path: Path, n_jobs: int) -> None:
-        """No-op for visible output. Kept for Protocol compatibility.
-
-        The user explicitly does not want a final ``-> furnace-plan.json
-        (N jobs)`` line. We still stop any lingering progress for safety.
-        """
-        del path, n_jobs  # unused — method retained for Protocol compatibility
+        del path, n_jobs
         self._stop_progress()
 
     def interrupted(self) -> None:
@@ -350,5 +270,4 @@ class RichPlanReporter:
         self._stop_progress()
 
     def resume(self) -> None:
-        # Next progress-creating call recreates the Progress; nothing to do here
         return

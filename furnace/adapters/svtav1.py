@@ -1,16 +1,3 @@
-"""SVT-AV1 (libsvtav1 via bundled ffmpeg) video encoder adapter.
-
-Implements the Encoder protocol using ffmpeg + libsvtav1 for grainy SDR sources
-(any resolution) that NVENC's psychovisual profile smooths over. Outputs a raw AV1 OBU elementary
-stream (``-f obu``) -- mkvmerge handles muxing downstream, matching the NVEncC
-adapter's contract so the executor can swap encoders transparently.
-
-The tuned recipe (preset/CRF/svtav1-params) is load-bearing: it targets
-grain-preserving, near-transparent quality with mainline SVT-AV1 knobs only
-(no fork-specific psy-rd/spy-rd/noise-norm params). Do not edit the constants
-without re-measuring.
-"""
-
 from __future__ import annotations
 
 import logging
@@ -27,43 +14,16 @@ from .ffmpeg import _make_ffmpeg_progress_handler
 
 logger = logging.getLogger(__name__)
 
-# --- Load-bearing SVT-AV1 recipe (mainline libsvtav1 knobs only) ------------
-# preset 4: slow enough for high fidelity, and kept at every resolution. Measured
-# on the target machine: 1080p ~20.6 fps (~3 h/film), 4K ~5.7 fps (~7.8 h/film) --
-# slow but acceptable. A faster preset was rejected deliberately: the search hits
-# the same SSIMULACRA2 target whatever the preset, so a faster one only spends MORE
-# bits for that same quality, defeating the point of shrinking the library.
-# crf 23: constant-quality anchor for grain preservation.
-# svtav1-params: variance boost + quant-matrices + luma/AC biases tuned to keep
-# fine film grain alive. Deliberately excludes fork-only params (psy-rd, spy-rd,
-# noise-norm-strength) so the bundled mainline ffmpeg accepts the string.
 _SVT_PRESET = "4"
 _SVT_CRF = "23"
 _SVT_PARAMS = (
-    "tune=0:enable-variance-boost=1:variance-boost-strength=3:"
-    "enable-qm=1:qm-min=0:luminance-qp-bias=50:ac-bias=6.0"
+    "tune=0:enable-variance-boost=1:variance-boost-strength=3:enable-qm=1:qm-min=0:luminance-qp-bias=50:ac-bias=6.0"
 )
 
-# AV1 video_full_range_flag: 0 = studio/limited swing, 1 = full swing.
 _SVT_COLOR_RANGE: dict[str, int] = {"tv": 0, "pc": 1}
 
 
 def _color_svtav1_params(vp: VideoParams) -> str:
-    """CICP color-description appended to ``-svtav1-params``.
-
-    libsvtav1 does not propagate ffmpeg's ``-color_primaries`` / ``-color_trc``
-    into the AV1 sequence header (only matrix + range survive the ffmpeg flags),
-    so the full description is pinned here. Values are CICP code points; the
-    ``color-range`` key is the AV1 ``video_full_range_flag`` (0 studio / 1 full),
-    NOT the Matroska range enum.
-
-    This encoder now handles grainy SDR at ANY resolution, so the tag domain is
-    every SDR signal a remux/WEB-DL can carry (bt709/bt470bg/smpte170m plus SDR
-    BT.2020's bt2020-10/bt2020-12), not just DVD MPEG-2. ``transfer``/``primaries``
-    pass through source tags unvalidated, so a mistagged input carrying a CICP value
-    furnace has no code point for raises a clear ValueError instead of a cryptic
-    KeyError or a malformed OBU header.
-    """
     try:
         return (
             f"color-primaries={CICP_PRIMARIES[vp.color_primaries]}:"
@@ -80,12 +40,6 @@ def _color_svtav1_params(vp: VideoParams) -> str:
 
 
 class SvtAv1Adapter:
-    """Implements the Encoder protocol via ffmpeg + libsvtav1.
-
-    Outputs a raw AV1 OBU elementary stream (not MKV) -- mkvmerge handles
-    muxing, mirroring NVEncCAdapter so the executor treats both encoders alike.
-    """
-
     def __init__(
         self,
         ffmpeg: Path,
@@ -100,18 +54,7 @@ class SvtAv1Adapter:
     def set_log_dir(self, log_dir: Path | None) -> None:
         self._log_dir = log_dir
 
-    # ------------------------------------------------------------------
-    # Encoder settings string
-    # ------------------------------------------------------------------
-
     def _build_encoder_settings(self, vp: VideoParams, *, cq_override: int | None = None) -> str:
-        """Build the ENCODER_SETTINGS string for the MKV global tag.
-
-        Slash-separated: the SVT-AV1 recipe is always present, filters only
-        when applied (mirrors NVEncCAdapter's convention). ``cq_override`` (the
-        target-quality search result) replaces the default CRF in the ``crf=``
-        field so the tag mirrors the actual encode.
-        """
         effective_crf = str(cq_override) if cq_override is not None else _SVT_CRF
         parts: list[str] = [
             "av1_svt",
@@ -126,10 +69,6 @@ class SvtAv1Adapter:
             parts.append(f"crop={vp.crop.w}:{vp.crop.h}:{vp.crop.x}:{vp.crop.y}")
         return " / ".join(parts)
 
-    # ------------------------------------------------------------------
-    # Command building
-    # ------------------------------------------------------------------
-
     def _build_encode_cmd(
         self,
         input_path: Path,
@@ -138,38 +77,43 @@ class SvtAv1Adapter:
         *,
         cq_override: int | None = None,
     ) -> list[str | Path]:
-        """Build the full ffmpeg + libsvtav1 encode command (raw AV1 OBU out).
-
-        The output ``-r vp.fps_num/vp.fps_den`` pins the OBU to the coded film
-        rate that mkvmerge later pins the container to. For soft-telecine
-        NTSC-DVD sources plain ffmpeg applies the 2:3 pulldown on decode
-        (inflating 23.976 -> 29.97); this drops the duplicated frames. For
-        native content the input already decodes at that rate, so it is a
-        harmless no-op (no dup/drop). ``cq_override`` (the target-quality search
-        result) replaces the default CRF for this encode.
-
-        ``-map 0:v:0`` pins the first video stream so a multi-video-stream source
-        (e.g. cover art) can't pick a different stream than the metric reference
-        does -- ``build_reference`` and ``extract_window`` pin it the same way, so
-        all three stay on the same frames.
-        """
         effective_crf = str(cq_override) if cq_override is not None else _SVT_CRF
         return [
-            self._ffmpeg, "-hide_banner", "-i", input_path,
-            "-map", "0:v:0",
-            "-vf", build_vf(vp),
-            "-c:v", "libsvtav1", "-preset", _SVT_PRESET, "-crf", effective_crf,
-            "-g", str(vp.gop),
-            "-svtav1-params", f"{_SVT_PARAMS}:{_color_svtav1_params(vp)}",
-            "-color_range", vp.color_range, "-color_primaries", vp.color_primaries,
-            "-color_trc", vp.color_transfer, "-colorspace", vp.color_matrix,
-            "-r", f"{vp.fps_num}/{vp.fps_den}",
-            "-progress", "pipe:1", "-f", "obu", "-y", output_path,
+            self._ffmpeg,
+            "-hide_banner",
+            "-i",
+            input_path,
+            "-map",
+            "0:v:0",
+            "-vf",
+            build_vf(vp),
+            "-c:v",
+            "libsvtav1",
+            "-preset",
+            _SVT_PRESET,
+            "-crf",
+            effective_crf,
+            "-g",
+            str(vp.gop),
+            "-svtav1-params",
+            f"{_SVT_PARAMS}:{_color_svtav1_params(vp)}",
+            "-color_range",
+            vp.color_range,
+            "-color_primaries",
+            vp.color_primaries,
+            "-color_trc",
+            vp.color_transfer,
+            "-colorspace",
+            vp.color_matrix,
+            "-r",
+            f"{vp.fps_num}/{vp.fps_den}",
+            "-progress",
+            "pipe:1",
+            "-f",
+            "obu",
+            "-y",
+            output_path,
         ]
-
-    # ------------------------------------------------------------------
-    # Encode execution
-    # ------------------------------------------------------------------
 
     def encode(
         self,
@@ -181,12 +125,6 @@ class SvtAv1Adapter:
         rpu_path: Path | None = None,
         cq_override: int | None = None,
     ) -> EncodeResult:
-        """Encode via ffmpeg + libsvtav1, parsing ffmpeg ``-progress`` for progress.
-
-        ``rpu_path`` is accepted for Encoder-protocol parity but ignored --
-        SVT-AV1 grain jobs are SDR. ``cq_override`` (the target-quality search
-        result) replaces the default CRF for this encode.
-        """
         _ = rpu_path
         cmd = self._build_encode_cmd(input_path, output_path, video_params, cq_override=cq_override)
         str_cmd = [str(c) for c in cmd]

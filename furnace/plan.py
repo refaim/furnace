@@ -28,8 +28,6 @@ PLAN_VERSION = "2"
 
 
 class _PlanEncoder(json.JSONEncoder):
-    """Custom JSON encoder that handles Path, Enum, and dataclass objects."""
-
     def default(self, obj: object) -> object:
         if isinstance(obj, Path):
             return str(obj)
@@ -39,7 +37,6 @@ class _PlanEncoder(json.JSONEncoder):
 
 
 def atomic_write(path: Path, data: str) -> None:
-    """Write data to a temp file in the same directory, then rename atomically."""
     dir_path = path.parent
     fd, tmp_path = tempfile.mkstemp(dir=str(dir_path), suffix=".tmp")
     try:
@@ -53,7 +50,6 @@ def atomic_write(path: Path, data: str) -> None:
 
 
 def save_plan(plan: Plan, path: Path) -> None:
-    """Serialize Plan to JSON using custom encoder. Pretty-print with indent=2."""
     data = json.dumps(dataclasses.asdict(plan), cls=_PlanEncoder, indent=2, ensure_ascii=False)
     atomic_write(path, data)
 
@@ -162,7 +158,6 @@ def _load_job(raw: dict[str, Any]) -> Job:
 
 
 def load_plan(path: Path) -> Plan:
-    """Read JSON, validate version, reconstruct all nested dataclasses."""
     with path.open("r", encoding="utf-8") as f:
         raw = json.load(f)
 
@@ -189,11 +184,9 @@ def update_job_status(
     output_size: int | None = None,
     chosen_cq: int | None = None,
 ) -> None:
-    """Read JSON, find job by id, update status fields, write back atomically."""
     with plan_path.open("r", encoding="utf-8") as f:
         raw = json.load(f)
 
-    # Only overwrite fields that were actually supplied (None = leave as-is).
     updates: dict[str, float | int] = {
         key: value
         for key, value in (

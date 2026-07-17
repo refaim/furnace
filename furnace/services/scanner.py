@@ -47,7 +47,6 @@ class Scanner:
         dest: Path,
         names_map: dict[str, str] | None = None,
     ) -> list[ScanResult]:
-        """Recursive walk. For each video file: find satellites, build output path, create ScanResult."""
         results: list[ScanResult] = []
 
         if source.is_file():
@@ -68,7 +67,6 @@ class Scanner:
         for path in sorted(source.rglob("*")):
             if not path.is_file():
                 continue
-            # Skip .furnace_demux directory
             if ".furnace_demux" in path.parts:
                 continue
             if path.suffix.lower() not in VIDEO_EXTENSIONS:
@@ -91,7 +89,6 @@ class Scanner:
         return results
 
     def find_satellites(self, video_path: Path) -> list[Path]:
-        """Same directory, filename startswith(video_stem), extension in SATELLITE_EXTENSIONS."""
         stem = video_path.stem
         directory = video_path.parent
         satellites: list[Path] = []
@@ -108,13 +105,11 @@ class Scanner:
 
     @staticmethod
     def clean_filename(name: str) -> str:
-        """Remove Windows forbidden chars, double quotes -> single, trailing dot removed."""
         result = []
         for ch in name:
             if ch in WINDOWS_FORBIDDEN_CHARS:
                 if ch == '"':
                     result.append("'")
-                # skip other forbidden chars
             else:
                 result.append(ch)
         return "".join(result).rstrip(".")
@@ -126,36 +121,28 @@ class Scanner:
         dest_root: Path,
         names_map: dict[str, str] | None,
     ) -> Path:
-        """Mirror directory structure + rename + clean."""
-        # Get relative path from source root
         try:
             relative = source.relative_to(source_root)
         except ValueError:
             relative = Path(source.name)
 
-        # Apply names_map rename to the filename stem (without extension)
         original_name = source.name
         new_stem: str | None = None
         if names_map:
             new_stem = names_map.get(original_name)
 
         if new_stem is not None:
-            # names_map provides the full new name (without extension implied)
-            # The map value is the new stem (no extension)
             clean_stem = Scanner.clean_filename(new_stem)
             new_filename = clean_stem + ".mkv"
         else:
-            # Keep original stem, force .mkv extension, clean the name
             clean_stem = Scanner.clean_filename(source.stem)
             new_filename = clean_stem + ".mkv"
 
-        # Mirror directory structure
         relative_dir = relative.parent
         return dest_root / relative_dir / new_filename
 
     @staticmethod
     def load_names_map(path: Path) -> dict[str, str]:
-        """Parse rename file: 'old.mkv = New Name' format."""
         names_map: dict[str, str] = {}
         with path.open("r", encoding="utf-8") as f:
             for raw_line in f:

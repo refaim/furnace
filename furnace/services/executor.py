@@ -47,7 +47,6 @@ logger = logging.getLogger(__name__)
 
 MAX_STDERR_LINES = 6
 
-# Extension mapping for audio codec names to file extensions
 _AUDIO_CODEC_EXT: dict[str, str] = {
     "aac": ".m4a",
     "ac3": ".ac3",
@@ -67,34 +66,14 @@ _AUDIO_CODEC_EXT: dict[str, str] = {
     "amr_nb": ".amr",
 }
 
-# Extension mapping for subtitle codec names
 _SUBTITLE_CODEC_EXT: dict[str, str] = {
     "subrip": ".srt",
     "ass": ".ass",
     "hdmv_pgs_subtitle": ".sup",
-    "dvd_subtitle": ".mkv",  # VOBSUB can't be extracted raw; wrap in MKV
+    "dvd_subtitle": ".mkv",
 }
 
 
-# Codecs eac3to decodes correctly on its own. Consulted only inside the
-# DECODE_ENCODE branch: a listed codec is extracted and handed to eac3to,
-# anything else is pre-decoded to WAV by ffmpeg first -- either way the CHANNEL
-# downmix (multichannel -> stereo) stays eac3to's. Membership says nothing about
-# which action a codec gets: mp2/mp3 are listed but default to FFMPEG_ENCODE and
-# never reach eac3to. Nor does it govern the final stereo -> mono averaging,
-# which is always ffmpeg's (FFmpegAdapter.stereo_to_mono_wav).
-#
-# AAC is deliberately NOT here. eac3to lists AAC as a supported source, but it
-# has no AAC decoder of its own -- it hands the stream to the Nero "Audio
-# Decoder 2" DirectShow filter, which mangles multichannel AAC. Measured on a
-# real 5.1 AAC track: one channel comes back as digital silence and the rest
-# arrive in AAC/MPEG order (C,L,R,Ls,Rs,LFE) inside a WAV tagged 5.1, and
-# eac3to has no channel remap for AAC (it only ships them for MLP and ArcSoft
-# DTS). Its own -downStereo therefore mixes the wrong channels: L/R landed
-# 7.9 dB apart with a genuine Nero 7 filter and 17.6 dB apart with the one
-# bundled with eac3to, where a correct downmix sits 0.12 dB apart. eac3to
-# returns 0 throughout, so routing AAC here would corrupt audio silently --
-# and "eac3to -test" reports the broken filter as "works fine".
 _EAC3TO_SUPPORTED_SRC: frozenset[str] = frozenset(
     {
         "ac3",
@@ -112,26 +91,13 @@ _EAC3TO_SUPPORTED_SRC: frozenset[str] = frozenset(
 
 
 def _codec_supported_by_eac3to(codec_name: str) -> bool:
-    """Return True if eac3to can decode this source codec unaided."""
     return codec_name.lower() in _EAC3TO_SUPPORTED_SRC
 
 
-# Codecs whose ffmpeg decoder applies dynamic-range compression by default
-# (drc_scale=1) -- only the (E-)AC3 decoders do. Decoding these with ffmpeg
-# would bake the DRC ("night mode" loudness flattening) into the output, so a
-# stereo (E-)AC3 source bound for mono is decoded by eac3to (full range,
-# -removeDialnorm) instead, exactly like the multichannel downmix path. DTS,
-# TrueHD, AAC, MP3, FLAC etc. decode full range in ffmpeg already.
 _FFMPEG_DRC_CODECS: frozenset[str] = frozenset({"ac3", "eac3"})
 
 
 def _video_intermediate_name(*, passthrough: bool) -> str:
-    """Filename for the encoder/copier video output before final muxing.
-
-    Encode -> raw AV1 OBU elementary stream (mkvmerge muxes it and preserves
-    the Dolby Vision RPU; a direct NVEncC MKV mux can drop the T.35 OBU).
-    Passthrough -> MKV (verbatim ffmpeg stream copy of the source codec).
-    """
     return "video.mkv" if passthrough else "video.obu"
 
 
@@ -150,7 +116,7 @@ class Executor:
         video_copier: VideoCopier | None = None,
         grain_encoder: Encoder | None = None,
         target_quality: TargetQualityService | None = None,
-        progress: Any | None = None,  # RunApp or similar (optional, avoids circular import)
+        progress: Any | None = None,
         log_dir: Path | None = None,
     ) -> None:
         self._encoder = encoder
@@ -180,12 +146,6 @@ class Executor:
         self,
         total_s: float | None = None,
     ) -> tuple[ProgressTracker, Callable[[ProgressSample], None]]:
-        """Create a tracker + wrapper callback for a long-running step.
-
-        Returns the tracker (so caller can `reset()` it between sub-phases) and
-        a callback that the adapter receives as `on_progress`. The callback adds
-        each sample to the tracker and pushes the snapshot to the TUI.
-        """
         tracker = ProgressTracker(total_s=total_s)
 
         def _on_progress(sample: ProgressSample) -> None:
@@ -196,7 +156,6 @@ class Executor:
         return tracker, _on_progress
 
     def _set_adapters_log_dir(self, job_name: str) -> None:
-        """Create per-job log subdirectory and update all adapters."""
         if self._log_dir is None:
             return
         job_log_dir = self._log_dir / job_name
@@ -211,10 +170,6 @@ class Executor:
         plan: Plan,
         plan_path: Path,
     ) -> None:
-        """Execute all pending/error jobs sequentially.
-        Update JSON after each via update_job_status.
-        Check _shutdown_event between jobs.
-        """
         pending_jobs = [job for job in plan.jobs if job.status in (JobStatus.PENDING, JobStatus.ERROR)]
 
         logger.debug(
@@ -230,7 +185,6 @@ class Executor:
 
             logger.debug("Starting job %s -> %s", job.id, job.output_file)
 
-            # Set per-job log directory for all adapters
             job_name = Path(job.output_file).stem
             self._set_adapters_log_dir(job_name)
 
@@ -258,8 +212,6 @@ class Executor:
             except (OSError, RuntimeError, ValueError, KeyError, subprocess.SubprocessError) as exc:
                 error_msg = str(exc)
                 logger.exception("Job %s failed", job.id)
-                # Persist a QVBR already chosen before the failure so a re-run
-                # reuses it instead of repeating the probe search.
                 update_job_status(
                     plan_path,
                     job.id,
@@ -269,7 +221,6 @@ class Executor:
                 )
 
     def _execute_job(self, job: Job) -> None:
-        """Full pipeline for one job."""
         output_path = Path(job.output_file)
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -277,7 +228,6 @@ class Executor:
         try:
             self._run_pipeline(job, output_path, temp_dir)
         finally:
-            # Always clean up temp files (ignore_errors swallows any rmtree failure)
             shutil.rmtree(temp_dir, ignore_errors=True)
 
     def _run_pipeline(
@@ -286,16 +236,9 @@ class Executor:
         output_path: Path,
         temp_dir: Path,
     ) -> None:
-        """Inner pipeline logic (separated so finally in _execute_job always runs).
-
-        Order: audio -> subtitles -> video -> mux -> tag -> mkclean
-        Audio/subs are fast (seconds), processed first so everything is ready
-        when the long video encode finishes.
-        """
         main_source = Path(job.source_files[0])
         self._cumulative_audio_size = 0
 
-        # Step 1: Process audio tracks (fast)
         if self._shutdown_event.is_set():
             return
 
@@ -315,12 +258,10 @@ class Executor:
                 "delay_ms": audio_instr.delay_ms if audio_instr.action == AudioAction.COPY else 0,
             }
             audio_files.append((audio_path, audio_meta))
-            # Track cumulative output size
             if self._progress is not None and audio_path.exists():
                 self._cumulative_audio_size += audio_path.stat().st_size
                 self._progress.update_output_size(self._cumulative_audio_size)
 
-        # Step 2: Process subtitle tracks (fast)
         if self._shutdown_event.is_set():
             return
 
@@ -346,8 +287,6 @@ class Executor:
 
         passthrough = job.video_params.passthrough
 
-        # Step 3: DV RPU extraction (if needed) — skipped for passthrough jobs
-        # (their video stream is copied verbatim, RPU and all).
         rpu_path: Path | None = None
         if job.video_params.dv_mode is not None and not passthrough:
             if self._shutdown_event.is_set():
@@ -369,8 +308,6 @@ class Executor:
             if rc != 0:
                 raise RuntimeError(f"DV RPU extraction failed with return code {rc}")
 
-        # Step 4: Video step (slow — main bottleneck). Passthrough copies the
-        # source stream verbatim; otherwise re-encode via NVEncC.
         if self._shutdown_event.is_set():
             return
 
@@ -382,7 +319,6 @@ class Executor:
 
         def video_on_progress(sample: ProgressSample) -> None:
             base_video_on_progress(sample)
-            # Preserve the output-size update alongside the video step progress
             try:
                 video_size = video_output.stat().st_size if video_output.exists() else 0
             except OSError:
@@ -409,21 +345,8 @@ class Executor:
                 raise RuntimeError(f"Video passthrough copy failed with return code {rc}")
             encoder_settings = "video stream copied (passthrough)"
         else:
-            # The encoder for a job is chosen from `vp.grain` + the presence of a
-            # grain encoder. The target-quality service picks the knob domain (CRF
-            # vs QVBR) from the same two facts; cli wires BOTH from the one SVT
-            # adapter instance, so the executor's encoder and the service's knob
-            # can never disagree about which path (grain/SVT vs non-grain/NVEnc) a
-            # job takes.
             enc = self._grain_encoder if (job.video_params.grain and self._grain_encoder is not None) else self._encoder
 
-            # Target-quality search: probe the knob (QVBR/CRF) that hits the
-            # domain target, then encode the final at it with NO metrics. The
-            # "Search quality" status is emitted here unconditionally (every
-            # re-encode has a matching TUI step) even when the search itself is
-            # skipped -- cached/unknown-duration/no-service -- so the step list
-            # stays 1:1 with the status calls; the search's own logging lives in
-            # ``_maybe_search_target_quality``.
             if self._progress is not None:
                 self._progress.update_status("Searching quality...")
             cq_override = self._maybe_search_target_quality(job, main_source, temp_dir)
@@ -448,7 +371,6 @@ class Executor:
 
             encoder_settings = rc_result.encoder_settings
 
-        # Step 5: Mux
         if self._shutdown_event.is_set():
             return
 
@@ -458,7 +380,6 @@ class Executor:
             self._progress.update_status("Muxing...")
             self._progress.add_tool_line("[furnace] Muxing tracks")
 
-        # Build attachments list: (path, filename, mime_type)
         attachments: list[tuple[Path, str, str]] = []
         for att_dict in job.attachments:
             att_path = Path(att_dict["source_file"])
@@ -473,7 +394,6 @@ class Executor:
                 temp_dir,
             )
 
-        # Build video metadata for container-level color/HDR flags
         video_meta: dict[str, Any] = {}
         vp = job.video_params
         if vp.color_range:
@@ -485,17 +405,12 @@ class Executor:
         if vp.color_matrix:
             video_meta["color_matrix"] = vp.color_matrix
         if vp.hdr and vp.hdr.content_light:
-            # content_light format: "MaxCLL=X,MaxFALL=Y"
             for part in vp.hdr.content_light.split(","):
                 if part.startswith("MaxCLL="):
                     video_meta["hdr_max_cll"] = part.split("=", 1)[1]
                 elif part.startswith("MaxFALL="):
                     video_meta["hdr_max_fall"] = part.split("=", 1)[1]
 
-        # A re-encode writes a raw AV1 OBU (no container frame rate), so pin the
-        # source rate for mkvmerge or the track defaults to 25 fps and drifts
-        # out of sync with the audio. Passthrough writes an MKV that already
-        # carries timing, so it needs no override.
         if not passthrough:
             video_meta["fps_num"] = vp.fps_num
             video_meta["fps_den"] = vp.fps_den
@@ -516,7 +431,6 @@ class Executor:
         if self._progress is not None and muxed_path.exists():
             self._progress.update_output_size(muxed_path.stat().st_size)
 
-        # Step 6: Set ENCODER tag
         if self._shutdown_event.is_set():
             return
 
@@ -529,7 +443,6 @@ class Executor:
         if rc != 0:
             logger.warning("mkvpropedit returned %d for %s", rc, muxed_path)
 
-        # Step 7: mkclean
         if self._shutdown_event.is_set():
             return
 
@@ -546,23 +459,10 @@ class Executor:
         if self._progress is not None and cleaned_path.exists():
             self._progress.update_output_size(cleaned_path.stat().st_size)
 
-        # Move cleaned output to final destination
         shutil.move(str(cleaned_path), str(output_path))
         logger.debug("Job output written to %s", output_path)
 
     def _maybe_search_target_quality(self, job: Job, source: Path, temp_dir: Path) -> int | None:
-        """Search the target-quality knob (QVBR for NVEnc, CRF for grain/SVT), or
-        return None to skip.
-
-        Structurally skipped (silently) when no target-quality service is
-        configured or the service can't search this job -- notably a grain job
-        with no SVT/metrics adapters, which falls back to the fixed CRF recipe. A
-        job that already carries a ``chosen_cq`` (a prior run searched it) reuses
-        it, so re-running an errored job never repeats the probe search. When the
-        source duration is unknown -- so probe windows can't be laid out -- the
-        search is skipped LOUDLY and the encode falls back to the encoder's
-        default knob (no metrics). Records the chosen knob on the job.
-        """
         if self._target_quality is None or not self._target_quality.can_search(job.video_params):
             return None
 
@@ -574,8 +474,7 @@ class Executor:
 
         if job.duration_s <= 0:
             logger.warning(
-                "Target-quality skipped for %s: source duration unknown; "
-                "encoding at the encoder's default knob",
+                "Target-quality skipped for %s: source duration unknown; encoding at the encoder's default knob",
                 source.name,
             )
             if self._progress is not None:
@@ -586,11 +485,6 @@ class Executor:
 
         logger.info("Searching target quality (%s) for %s", knob, source.name)
 
-        # Mute the raw per-probe ffmpeg/nvencc output for the duration of the
-        # search -- dozens of tiny probe encodes would otherwise flood the log --
-        # and let the search narrate its own progress through the (never-muted)
-        # furnace channel instead. The unmute is in a finally so a probe blowing
-        # up mid-search still restores the raw-output channel for the encode.
         if self._progress is not None:
             self._progress.mute_tool_output()
         try:
@@ -614,7 +508,10 @@ class Executor:
         else:
             logger.warning(
                 "Target-quality band not hit for %s; using closest %s %d (score %.3f)",
-                source.name, knob, result.knob, result.score,
+                source.name,
+                knob,
+                result.knob,
+                result.score,
             )
             if self._progress is not None:
                 self._progress.add_tool_line(
@@ -624,22 +521,10 @@ class Executor:
         return result.knob
 
     def _search_narration(self, message: str) -> None:
-        """Sink for the target-quality search's progress lines.
-
-        Routed through ``add_tool_line`` (the run TUI's never-muted furnace
-        channel) so the search stays legible while ``_maybe_search_target_quality``
-        mutes the raw per-probe ffmpeg/nvencc output. A no-op when there is no
-        progress object (headless/tests)."""
         if self._progress is not None:
             self._progress.add_tool_line(f"[furnace] {message}")
 
     def _process_audio_track(self, instr: AudioInstruction, temp_dir: Path, job: Job) -> Path:
-        """Returns path to processed audio file.
-        COPY: extract_track from container
-        DENORM: extract_track -> denormalize (with delay)
-        DECODE_ENCODE: extract_track -> decode_lossless (with delay) -> encode_aac
-        FFMPEG_ENCODE: ffmpeg_to_wav -> encode_aac
-        """
         source_path = Path(instr.source_file)
         track_idx = instr.stream_index
 
@@ -699,10 +584,6 @@ class Executor:
 
                 is_stereo = instr.channels == STEREO_CHANNELS
 
-                # Stereo source whose ffmpeg decoder applies no DRC: average to
-                # mono with ffmpeg directly. (E-)AC3 is excluded -- its ffmpeg
-                # decoder bakes in dynamic-range compression -- and falls through
-                # to the eac3to decode route below, like multichannel sources.
                 if is_stereo and instr.codec_name.lower() not in _FFMPEG_DRC_CODECS:
                     if self._progress is not None:
                         self._progress.add_tool_line(
@@ -777,8 +658,6 @@ class Executor:
                             f"ffmpeg pre-decode (MONO) failed with rc={rc} for stream {track_idx}",
                         )
 
-                # Already stereo (an (E-)AC3 routed here only to dodge ffmpeg's
-                # DRC) needs no channel downmix; multichannel collapses to stereo.
                 decode_downmix = None if is_stereo else DownmixMode.STEREO
                 if self._progress is not None:
                     eac3to_step = (
@@ -925,19 +804,14 @@ class Executor:
         raise ValueError(f"Unknown AudioAction: {instr.action}")
 
     def _process_subtitle_track(self, instr: SubtitleInstruction, temp_dir: Path, job: Job) -> Path:
-        """COPY: extract from container (ffmpeg).
-        COPY_RECODE: extract + charset detection + recode to UTF-8.
-        """
         source_path = Path(instr.source_file)
         track_idx = instr.stream_index
 
         ext = _SUBTITLE_CODEC_EXT.get(instr.codec_name, ".sub")
 
         if instr.action == SubtitleAction.COPY:
-            # For external satellite files, just return as-is
             if source_path.suffix.lower() in {".srt", ".ass", ".ssa", ".sup", ".sub"}:
                 return source_path
-            # Extract from container
             out_path = temp_dir / f"sub_{track_idx}{ext}"
             _, on_progress = self._make_progress_callback(total_s=job.duration_s or None)
             rc = self._audio_extractor.extract_track(
@@ -951,11 +825,9 @@ class Executor:
             return out_path
 
         if instr.action == SubtitleAction.COPY_RECODE:
-            # For external satellite files, just recode them
             if source_path.suffix.lower() in {".srt", ".ass", ".ssa"}:
                 extracted = source_path
             else:
-                # Extract from container first
                 extracted = temp_dir / f"sub_{track_idx}_raw{ext}"
                 _, on_progress = self._make_progress_callback(total_s=job.duration_s or None)
                 rc = self._audio_extractor.extract_track(
@@ -969,10 +841,8 @@ class Executor:
 
             out_path = temp_dir / f"sub_{track_idx}_utf8{ext}"
 
-            # Recode to UTF-8
             source_encoding = instr.source_encoding or "utf-8"
             if source_encoding.lower().replace("-", "") == "utf8":
-                # Already UTF-8, just copy
                 shutil.copy2(str(extracted), str(out_path))
             else:
                 try:
@@ -993,7 +863,6 @@ class Executor:
         raise ValueError(f"Unknown SubtitleAction: {instr.action}")
 
     def _extract_chapters_file(self, source: Path, job_dir: Path) -> Path | None:
-        """Extract chapters from source MKV via ffprobe, fix mojibake, write OGM file."""
         try:
             probe = self._prober.probe(source)
         except RuntimeError:
@@ -1009,7 +878,6 @@ class Executor:
         return ogm_path
 
     def graceful_shutdown(self) -> None:
-        """Called on ESC. Kill ffmpeg process tree via psutil."""
         logger.debug("Graceful shutdown requested")
         self._shutdown_event.set()
         try:

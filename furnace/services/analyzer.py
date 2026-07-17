@@ -39,21 +39,17 @@ from furnace.core.rules import parse_audio_codec, parse_subtitle_codec
 
 _PROFILEABLE_CHANNEL_COUNTS = frozenset({2, 6, 8})
 
-_ISO_639_3_LENGTH = 3  # ISO 639-3 language codes are exactly three letters
+_ISO_639_3_LENGTH = 3
 
 logger = logging.getLogger(__name__)
 
-# Text-based subtitle codecs that need encoding detection
 _TEXT_SUBTITLE_CODECS: set[SubtitleCodecId] = {SubtitleCodecId.SRT, SubtitleCodecId.ASS}
 
 
 def _hdr_class(video: VideoInfo) -> str:
-    """Short HDR class label used in the per-file analyze summary."""
     if video.hdr.is_dolby_vision:
         bl_map = {1: "HDR10", 2: "SDR", 4: "HLG"}
-        compat = (
-            int(video.hdr.dv_bl_compatibility) if video.hdr.dv_bl_compatibility else 0
-        )
+        compat = int(video.hdr.dv_bl_compatibility) if video.hdr.dv_bl_compatibility else 0
         bl = bl_map.get(compat, "none")
         prof = video.hdr.dv_profile if video.hdr.dv_profile is not None else "?"
         return f"DV P{prof} (BL={bl})"
@@ -69,10 +65,6 @@ def _format_analyze_summary(
     audio_tracks: list[Track],
     subtitle_tracks: list[Track],
 ) -> str:
-    """Build the one-line summary shown for a successfully analyzed file.
-
-    Format: ``codec WxH FPSfps HDR-CLASS [interlaced], N audio (langs), N subs``
-    """
     fps = video.fps_num // video.fps_den if video.fps_den else 0
     hdr = _hdr_class(video)
     parts = [
@@ -86,11 +78,7 @@ def _format_analyze_summary(
     head = " ".join(parts)
 
     audio_langs = sorted({t.language for t in audio_tracks if t.language})
-    audio = (
-        f"{len(audio_tracks)} audio ({','.join(audio_langs)})"
-        if audio_langs
-        else f"{len(audio_tracks)} audio"
-    )
+    audio = f"{len(audio_tracks)} audio ({','.join(audio_langs)})" if audio_langs else f"{len(audio_tracks)} audio"
     subs = f"{len(subtitle_tracks)} subs"
     return f"{head}, {audio}, {subs}"
 
@@ -106,34 +94,16 @@ class Analyzer:
         *,
         on_progress: Callable[[float], None] | None = None,
     ) -> AnalysisOutcome:
-        """Probe main file + satellites. Parse video/audio/subtitle/attachments.
-
-        Returns an ``AnalysisOutcome``:
-        - ``DONE`` with the built ``Movie`` and a one-line summary on success.
-        - ``SKIPPED`` (movie ``None``) when the file is already encoded, has no
-          video stream, or uses unsupported codecs.
-        - ``FAILED`` (movie ``None``) when probing/parsing fails or the content
-          is HDR10+.
-
-        ``on_progress`` (when supplied) receives the analyze-phase fraction in
-        ``[0, 1]``: it advances by one step per completed heavy stage (idet, the
-        pulldown probe, the grain probe, then one per profileable audio track)
-        and is called once more with ``1.0`` when analysis finishes. Files with
-        no heavy stages report only the final ``1.0``. Used by the parallel
-        pipeline to drive a smooth batch bar.
-        """
         main_file = scan_result.main_file
         output_path = scan_result.output_path
         name = main_file.name
 
-        # Check skip conditions on the output path
         encoder_tag = self._prober.get_encoder_tag(main_file)
         skip, reason = should_skip_file(output_path, encoder_tag, force=self._force)
         if skip:
             logger.info("Skipping %s: %s", name, reason)
             return AnalysisOutcome(None, AnalyzeStatus.SKIPPED, reason)
 
-        # Probe the main file
         try:
             probe_data = self._prober.probe(main_file)
         except (OSError, RuntimeError, ValueError):
@@ -144,7 +114,6 @@ class Analyzer:
         format_data = probe_data.get("format", {})
         chapters = probe_data.get("chapters", [])
 
-        # Find the video stream
         video_streams = [s for s in streams if s.get("codec_type") == "video"]
         if not video_streams:
             logger.warning("No video stream found in %s, skipping", name)
@@ -157,12 +126,9 @@ class Analyzer:
             logger.exception("Failed to parse video info for %s", main_file)
             return AnalysisOutcome(None, AnalyzeStatus.FAILED, "parse failed")
 
-        # HDR10+ not supported
         if video_info.hdr.is_hdr10_plus:
             return AnalysisOutcome(None, AnalyzeStatus.FAILED, "HDR10+ not supported")
-        # DV content proceeds to planning (no skip)
 
-        # Parse tracks from main file
         audio_streams = [s for s in streams if s.get("codec_type") == "audio"]
         subtitle_streams = [s for s in streams if s.get("codec_type") == "subtitle"]
         attachment_streams = [s for s in streams if s.get("codec_type") == "attachment"]
@@ -173,28 +139,22 @@ class Analyzer:
 
         has_chapters = bool(chapters)
 
-        # Process satellite files
         for sat_path in scan_result.satellite_files:
             ext = sat_path.suffix.lower()
             if ext in {".srt", ".ass", ".ssa", ".sup"}:
-                # Treat as external subtitle
                 sat_track = self._parse_external_subtitle(sat_path, len(subtitle_tracks))
                 if sat_track is not None:
                     subtitle_tracks.append(sat_track)
             elif ext in {".ac3", ".dts", ".eac3", ".flac", ".m4a", ".mp3", ".wav"}:
-                # Treat as external audio
                 sat_track = self._parse_external_audio(sat_path, len(audio_tracks))
                 if sat_track is not None:
                     audio_tracks.append(sat_track)
 
-        # Check for unknown codecs
         codec_warning = check_unsupported_codecs(audio_tracks, subtitle_tracks)
         if codec_warning:
             logger.warning("Skipping %s: %s", main_file.name, codec_warning)
             return AnalysisOutcome(None, AnalyzeStatus.SKIPPED, codec_warning)
 
-        # Detect interlace: ffprobe field_order + idet when ambiguous
-        # Use r_frame_rate (field rate) for interlace detection, not avg_frame_rate
         field_order_raw = video_stream.get("field_order")
         r_fps_str = video_stream.get("r_frame_rate", "0/1")
         if "/" in r_fps_str:
@@ -206,16 +166,17 @@ class Analyzer:
             r_den = 1
         fps = r_num / r_den if r_den else 0.0
 
-        # Plan the heavy analysis stages so the batch progress bar advances across
-        # them: idet (when needed), the pulldown probe (when needed) plus one per
-        # profileable audio track. ``_emit`` reports the running fraction after
-        # each stage completes.
         idet_will_run = needs_idet(field_order_raw, fps, video_info.height)
         field_rate_will_run = needs_field_rate_probe(
-            field_order_raw, video_info.fps_num, video_info.fps_den,
+            field_order_raw,
+            video_info.fps_num,
+            video_info.fps_den,
         )
         pulldown_will_run = needs_pulldown_probe(
-            video_info.codec_name, video_info.fps_num, video_info.fps_den, video_info.height,
+            video_info.codec_name,
+            video_info.fps_num,
+            video_info.fps_den,
+            video_info.height,
         )
         grain_will_run = needs_grain_probe(video_info.color_transfer)
         n_profileable = sum(1 for t in audio_tracks if t.channels in _PROFILEABLE_CHANNEL_COUNTS)
@@ -247,20 +208,15 @@ class Analyzer:
         else:
             logger.debug("%s: progressive content", name)
 
-        # Field-separated storage: a muxer can store each FIELD as its own
-        # container block, so the block count measures the field rate and
-        # ffprobe reports 1080i25 as 50 fps. Decoders pair the fields back into
-        # 25 frames and the deinterlacers are single-rate, so the plan must
-        # carry the coded frame rate — with the field rate the mux pins
-        # --default-duration twice too fast and the video outruns the audio by
-        # 2x. Measured, never assumed: a progressive 50p mis-flagged tt would
-        # play at half speed if halved on the flag alone. Fail-soft like idet.
         if field_rate_will_run:
             frame_rate = None
             try:
                 frames, packets = self._prober.sample_field_pairing(main_file)
                 frame_rate = detect_field_separated(
-                    video_info.fps_num, video_info.fps_den, frames, packets,
+                    video_info.fps_num,
+                    video_info.fps_den,
+                    frames,
+                    packets,
                 )
             except (OSError, RuntimeError, ValueError) as exc:
                 logger.warning("field pairing probe failed for %s: %s", name, exc)
@@ -268,17 +224,13 @@ class Analyzer:
                 video_info.fps_num, video_info.fps_den = frame_rate
                 logger.info(
                     "%s: field-separated storage, using coded frame rate %d/%d",
-                    name, video_info.fps_num, video_info.fps_den,
+                    name,
+                    video_info.fps_num,
+                    video_info.fps_den,
                 )
             stages_done += 1
             _emit()
 
-        # Soft telecine: an NTSC DVD can hide 24000/1001 film behind pulldown
-        # flags. NVEncC's decode ignores the flags and encodes the coded film
-        # frames, so the plan must carry the coded rate — with the display rate
-        # the muxed track plays 25% fast and drifts out of sync with the audio.
-        # Runs even when deinterlacing: nnedi is single-rate, so the encoder
-        # still emits one frame per coded frame. Fail-soft like idet.
         if pulldown_will_run:
             film_rate = None
             try:
@@ -290,17 +242,13 @@ class Analyzer:
                 video_info.fps_num, video_info.fps_den = film_rate
                 logger.info(
                     "%s: soft telecine detected, using coded film rate %d/%d",
-                    name, video_info.fps_num, video_info.fps_den,
+                    name,
+                    video_info.fps_num,
+                    video_info.fps_den,
                 )
             stages_done += 1
             _emit()
 
-        # Grain: film sources (SDR, any resolution) need the SVT-AV1 grain path or
-        # NVENC strips their grain (waxy faces) — and, at the non-grain target,
-        # over-encodes what is left, ballooning the file past a compact source.
-        # Verdict is advisory — the file selector TUI can override per file.
-        # Fail-soft toward GRAINY: wrongly-on costs file size, wrongly-off costs
-        # visible quality.
         if grain_will_run:
             try:
                 flicker = self._prober.sample_grain(main_file, video_info.duration_s)
@@ -312,17 +260,17 @@ class Analyzer:
             stages_done += 1
             _emit()
 
-        # Detect forced subtitles (in-place mutation)
         detect_forced_subtitles(subtitle_tracks)
 
-        # Profile audio tracks with supported channel layouts; attach a
-        # classification verdict. Errors are swallowed and leave audio_profile=None.
         for track in audio_tracks:
             if track.channels not in _PROFILEABLE_CHANNEL_COUNTS:
                 continue
             logger.info(
                 "Profiling audio track %d (%s %s %dch)",
-                track.index, track.codec_name, track.language, track.channels,
+                track.index,
+                track.codec_name,
+                track.language,
+                track.channels,
             )
             try:
                 metrics = self._prober.profile_audio_track(
@@ -334,12 +282,16 @@ class Analyzer:
                 track.audio_profile = classify_audio(metrics)
             except Exception as exc:  # noqa: BLE001 -- fail-soft by design
                 logger.warning(
-                    "profile_audio_track failed for track %d: %s", track.index, exc,
+                    "profile_audio_track failed for track %d: %s",
+                    track.index,
+                    exc,
                 )
             else:
                 logger.info(
                     "Profiled track %d: %s (score %d)",
-                    track.index, track.audio_profile.verdict.value, track.audio_profile.score,
+                    track.index,
+                    track.audio_profile.verdict.value,
+                    track.audio_profile.score,
                 )
             stages_done += 1
             _emit()
@@ -363,17 +315,12 @@ class Analyzer:
         return AnalysisOutcome(movie, AnalyzeStatus.DONE, summary)
 
     def _parse_video_info(self, stream: dict[str, Any], format_data: dict[str, Any], path: Path) -> VideoInfo:
-        """Extract VideoInfo from ffprobe stream data."""
         index = stream.get("index", 0)
         codec_name = stream.get("codec_name", "unknown")
         width = int(stream.get("width", 0))
         height = int(stream.get("height", 0))
         pixel_area = width * height
 
-        # FPS: prefer avg_frame_rate, fall back to r_frame_rate. ffprobe
-        # reports an unknown rate as "0/0"; treat that as absent so a re-encode
-        # never carries fps_num=0 (which would make mkvmerge default the muxed
-        # track to 25 fps and drift the audio out of sync).
         fps_str = stream.get("avg_frame_rate")
         if not fps_str or fps_str == "0/0":
             fps_str = stream.get("r_frame_rate", "25/1")
@@ -387,7 +334,6 @@ class Analyzer:
             fps_num = int(float(fps_str))
             fps_den = 1
 
-        # Duration: from stream, fallback to format
         duration_s = 0.0
         if "duration" in stream:
             with contextlib.suppress(ValueError, TypeError):
@@ -396,17 +342,14 @@ class Analyzer:
             with contextlib.suppress(ValueError, TypeError):
                 duration_s = float(format_data["duration"])
 
-        # Interlace — set to False here, real detection via idet in analyze()
         interlaced = False
 
-        # Color info
         color_primaries_raw = stream.get("color_primaries")
         color_transfer_raw = stream.get("color_transfer")
         color_matrix_raw = stream.get("color_space")
         color_range_raw = stream.get("color_range")
         pix_fmt = stream.get("pix_fmt", "yuv420p")
 
-        # Bitrate: from stream, fallback to format
         bitrate = 0
         if "bit_rate" in stream:
             with contextlib.suppress(ValueError, TypeError):
@@ -415,11 +358,6 @@ class Analyzer:
             with contextlib.suppress(ValueError, TypeError):
                 bitrate = int(format_data["bit_rate"])
 
-        # HDR metadata — merge stream-level (DOVI configuration record) and
-        # frame-level (Mastering display / Content light / DV RPU) side data.
-        # For PQ/HLG content the two layers are complementary: MKV remuxes of
-        # UHD Blu-Ray DV P7 carry DOVI config at packet level but MDCV/CLL only
-        # at frame level. SDR content skips the frame probe as an optimization.
         stream_side_data: list[dict[str, Any]] = stream.get("side_data_list") or []
         frame_side_data: list[dict[str, Any]] = []
         if color_transfer_raw in ("smpte2084", "arib-std-b67"):
@@ -427,7 +365,6 @@ class Analyzer:
         side_data = [*stream_side_data, *frame_side_data]
         hdr = detect_hdr(stream, side_data)
 
-        # SAR (sample aspect ratio)
         sar_num, sar_den = 1, 1
         sar_raw = stream.get("sample_aspect_ratio", "1:1")
         if sar_raw and ":" in sar_raw:
@@ -461,9 +398,6 @@ class Analyzer:
         )
 
     def _parse_audio_tracks(self, streams: list[dict[str, Any]], path: Path) -> list[Track]:
-        """Parse audio tracks. codec_name + profile -> AudioCodecId.
-        delay_ms from start_pts (see _detect_audio_delay).
-        """
         tracks: list[Track] = []
         for stream in streams:
             index = stream.get("index", 0)
@@ -488,7 +422,6 @@ class Analyzer:
                 except (ValueError, TypeError):
                     sample_rate = None
 
-            # Bitrate: from stream tags or stream bit_rate
             bitrate: int | None = None
             raw_bitrate = stream.get("bit_rate") or tags.get("BPS") or tags.get("BPS-eng")
             if raw_bitrate is not None:
@@ -518,7 +451,6 @@ class Analyzer:
         return tracks
 
     def _parse_subtitle_tracks(self, streams: list[dict[str, Any]], path: Path) -> list[Track]:
-        """Parse subtitles. Detect encoding via charset_normalizer for text subs."""
         tracks: list[Track] = []
         for stream in streams:
             index = stream.get("index", 0)
@@ -533,7 +465,6 @@ class Analyzer:
             is_default = bool(disposition.get("default", 0))
             is_forced = bool(disposition.get("forced", 0))
 
-            # Frame/caption count for forced detection
             num_frames: int | None = None
             raw_frames = tags.get("NUMBER_OF_FRAMES") or tags.get("NUMBER_OF_FRAMES-eng")
             if raw_frames is not None:
@@ -560,7 +491,6 @@ class Analyzer:
         return tracks
 
     def _parse_external_subtitle(self, path: Path, base_index: int) -> Track | None:
-        """Parse an external subtitle file (satellite). Detect encoding for text subs."""
         ext = path.suffix.lower()
         codec_name_map = {
             ".srt": "subrip",
@@ -571,23 +501,18 @@ class Analyzer:
         codec_name = codec_name_map.get(ext, "unknown")
         codec_id = parse_subtitle_codec(codec_name)
 
-        # Infer language from filename stem (e.g. movie.rus.srt -> rus)
         stem = path.stem
-        # stem may have video stem as prefix; look for language code after dot
         language = "und"
         parts = stem.split(".")
         if len(parts) >= len(["stem", "lang"]):
-            # last part or second-to-last may be language
             for part in reversed(parts[1:]):
                 if len(part) == _ISO_639_3_LENGTH and part.isalpha():
                     language = part.lower()
                     break
 
-        # Is_forced from filename
         name_lower = path.name.lower()
         is_forced = any(kw in name_lower for kw in ["forced", "форсир", "forsed"])
 
-        # Encoding detection for text subs
         encoding: str | None = None
         if codec_id in _TEXT_SUBTITLE_CODECS:
             encoding = self._detect_text_encoding(path)
@@ -608,7 +533,6 @@ class Analyzer:
         )
 
     def _parse_external_audio(self, path: Path, base_index: int) -> Track | None:
-        """Parse an external audio satellite file."""
         try:
             probe_data = self._prober.probe(path)
         except (OSError, RuntimeError, ValueError) as exc:
@@ -624,13 +548,11 @@ class Analyzer:
         if not tracks:
             return None
 
-        # Use the first track but override the index with base_index
         track = tracks[0]
         track.index = base_index
         return track
 
     def _parse_attachments(self, streams: list[dict[str, Any]], path: Path) -> list[Attachment]:
-        """Extract attachments (fonts) from streams."""
         attachments: list[Attachment] = []
         for stream in streams:
             tags = stream.get("tags", {})
@@ -647,13 +569,6 @@ class Analyzer:
         return attachments
 
     def _detect_audio_delay(self, stream: dict[str, Any]) -> int:
-        """Determine audio delay in milliseconds.
-
-        For MKV containers start_pts is already in ms (time_base=1/1000),
-        so use it directly as integer ms.
-        Fallback: start_time (in seconds) * 1000.
-        Default: 0.
-        """
         if "start_pts" in stream:
             return int(stream["start_pts"])
         if "start_time" in stream:
@@ -661,7 +576,6 @@ class Analyzer:
         return 0
 
     def _detect_text_encoding(self, path: Path) -> str | None:
-        """Detect encoding of a text subtitle file using charset_normalizer."""
         try:
             result = _from_path(path)
             best = result.best()

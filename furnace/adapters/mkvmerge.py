@@ -13,35 +13,25 @@ from ._subprocess import OutputCallback, run_tool
 
 logger = logging.getLogger(__name__)
 
-# mkvmerge exit codes: 0=ok, 1=warnings, 2+=errors
 MKVMERGE_ERROR_RC = 2
 
 _MKVMERGE_PROGRESS_RE = re.compile(r"^Progress:\s*(\d+)%\s*$")
 
 
 def _parse_mkvmerge_progress_line(line: str) -> ProgressSample | None:
-    """Parse an mkvmerge progress line into a sample.
-
-    Format (confirmed by existing UI regex at run_tui.py:48): ``Progress: NN%``.
-    """
     m = _MKVMERGE_PROGRESS_RE.match(line.strip())
     if not m:
         return None
     return ProgressSample(fraction=int(m.group(1)) / 100.0)
 
 
-# Matroska Range enum (0 unspecified / 1 broadcast / 2 full) -- container-
-# specific, unlike the CICP primaries/transfer/matrix code points which are
-# shared with the encoder via furnace.core.color.
 _COLOR_RANGE_MAP: dict[str, str] = {
-    "tv": "1",  # broadcast / limited (16-235)
-    "pc": "2",  # full (0-255)
+    "tv": "1",
+    "pc": "2",
 }
 
 
 class MkvmergeAdapter:
-    """Implements Muxer."""
-
     def __init__(self, mkvmerge_path: Path, on_output: OutputCallback = None, log_dir: Path | None = None) -> None:
         self._mkvmerge = mkvmerge_path
         self._on_output = on_output
@@ -61,18 +51,6 @@ class MkvmergeAdapter:
         video_meta: dict[str, Any] | None = None,
         on_progress: Callable[[ProgressSample], None] | None = None,
     ) -> int:
-        """Build and run full mkvmerge command.
-
-        audio_files: list of (path, {language, default, delay_ms})
-        subtitle_files: list of (path, {language, default, forced, encoding})
-        attachments: list of (path, filename, mime_type)
-        video_meta: optional dict with color/HDR metadata for container-level
-            flags, plus optional ``fps_num``/``fps_den`` to pin the video
-            track's frame rate (needed for raw AV1 OBU input)
-
-        Note: ENCODER tag is NOT set here. It is set separately via
-        MkvpropeditAdapter after muxing.
-        """
         cmd = self._build_mux_cmd(
             video_path,
             audio_files,
@@ -118,49 +96,39 @@ class MkvmergeAdapter:
             str(self._mkvmerge),
             "--output",
             str(output_path),
-            # Strip all existing tags and statistics
             "--no-track-tags",
             "--no-global-tags",
             "--disable-track-statistics-tags",
-            # Clean title (remove source junk like "Ripped by...")
             "--title",
             "",
-            # Normalize language codes (fre→fra, chi→zho)
             "--normalize-language-ietf",
             "canonical",
         ]
 
-        # Video track: track 0 of video_path
         video_flags: list[str] = [
             "--track-name",
-            "0:",  # remove track name
+            "0:",
             "--language",
-            "0:und",  # undetermined language for video
+            "0:und",
         ]
 
-        # Color and HDR metadata at container level (duplicates VUI from stream)
         if video_meta:
-            # --color-range
             cr = video_meta.get("color_range")
             if cr and cr in _COLOR_RANGE_MAP:
                 video_flags += ["--color-range", f"0:{_COLOR_RANGE_MAP[cr]}"]
 
-            # --color-primaries
             cp = video_meta.get("color_primaries")
             if cp and cp in CICP_PRIMARIES:
                 video_flags += ["--color-primaries", f"0:{CICP_PRIMARIES[cp]}"]
 
-            # --color-transfer-characteristics
             ct = video_meta.get("color_transfer")
             if ct and ct in CICP_TRANSFER:
                 video_flags += ["--color-transfer-characteristics", f"0:{CICP_TRANSFER[ct]}"]
 
-            # --color-matrix-coefficients
             cm = video_meta.get("color_matrix")
             if cm and cm in CICP_MATRIX:
                 video_flags += ["--color-matrix-coefficients", f"0:{CICP_MATRIX[cm]}"]
 
-            # --max-content-light / --max-frame-light (HDR10 only)
             max_cll = video_meta.get("hdr_max_cll")
             max_fall = video_meta.get("hdr_max_fall")
             if max_cll is not None:
@@ -168,20 +136,15 @@ class MkvmergeAdapter:
             if max_fall is not None:
                 video_flags += ["--max-frame-light", f"0:{max_fall}"]
 
-            # --default-duration: a raw AV1 OBU elementary stream carries no
-            # frame rate, so mkvmerge would default the track to 25 fps. Pin
-            # the real source rate (num/den fps, 'p' = progressive) so playback
-            # speed matches the audio instead of drifting.
             fps_num = video_meta.get("fps_num")
             fps_den = video_meta.get("fps_den")
             if fps_num and fps_den:
                 video_flags += ["--default-duration", f"0:{fps_num}/{fps_den}p"]
 
-        video_flags += ["--no-chapters"]  # chapters come only from chapters_source
+        video_flags += ["--no-chapters"]
         video_flags.append(str(video_path))
         cmd += video_flags
 
-        # Audio tracks
         for audio_path, audio_meta in audio_files:
             lang = audio_meta.get("language", "und")
             is_default = audio_meta.get("default", False)
@@ -198,7 +161,6 @@ class MkvmergeAdapter:
             cmd += ["--no-chapters"]
             cmd.append(str(audio_path))
 
-        # Subtitle tracks
         for sub_path, sub_meta in subtitle_files:
             lang = sub_meta.get("language", "und")
             is_default = sub_meta.get("default", False)
@@ -218,7 +180,6 @@ class MkvmergeAdapter:
             cmd += ["--no-chapters"]
             cmd.append(str(sub_path))
 
-        # Attachments
         for att_path, att_filename, att_mime in attachments:
             cmd += [
                 "--attachment-name",
@@ -229,11 +190,9 @@ class MkvmergeAdapter:
                 str(att_path),
             ]
 
-        # Chapters (always OGM .txt file, prepared by executor)
         if chapters_source is not None:
             cmd += ["--chapters", str(chapters_source)]
 
-        # Track order: video first (0:0), then audio, then subtitles
         audio_count = len(audio_files)
         track_order_parts: list[str] = [
             "0:0",

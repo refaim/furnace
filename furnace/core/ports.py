@@ -24,11 +24,7 @@ from .models import (
 
 @runtime_checkable
 class Prober(Protocol):
-    """Extract metadata from media files."""
-
-    def probe(self, path: Path) -> dict[str, Any]:
-        """Return raw ffprobe JSON (streams + format + chapters)."""
-        ...
+    def probe(self, path: Path) -> dict[str, Any]: ...
 
     def detect_crop(
         self,
@@ -39,20 +35,9 @@ class Prober(Protocol):
         is_dvd: bool = False,
         hdr_transfer: str | None = None,
         on_progress: Callable[[ProgressSample], None] | None = None,
-    ) -> CropRect | None:
-        """Run cropdetect, return detected values (before alignment).
+    ) -> CropRect | None: ...
 
-        ``hdr_transfer`` is the source's color transfer string ('smpte2084'
-        or 'arib-std-b67') when the input needs HDR tonemapping before
-        cropdetect; ``None`` for SDR.
-
-        ``on_progress`` is called after each sample point.
-        """
-        ...
-
-    def get_encoder_tag(self, path: Path) -> str | None:
-        """Read MKV tag ENCODER. None if absent."""
-        ...
+    def get_encoder_tag(self, path: Path) -> str | None: ...
 
     def run_idet(
         self,
@@ -60,50 +45,15 @@ class Prober(Protocol):
         duration_s: float,
         *,
         on_progress: Callable[[ProgressSample], None] | None = None,
-    ) -> float:
-        """Run idet analysis. Returns interlaced frame ratio (0.0 to 1.0).
+    ) -> float: ...
 
-        ``on_progress`` is called after each sample point with a fraction
-        (``points_done / total_points``).
-        """
-        ...
+    def probe_hdr_side_data(self, path: Path) -> list[dict[str, Any]]: ...
 
-    def probe_hdr_side_data(self, path: Path) -> list[dict[str, Any]]:
-        """Read side_data_list from the first video frame."""
-        ...
+    def sample_repeat_pict(self, path: Path, duration_s: float) -> list[int]: ...
 
-    def sample_repeat_pict(self, path: Path, duration_s: float) -> list[int]:
-        """Sample per-frame repeat_pict flags at multiple timeline points.
+    def sample_field_pairing(self, path: Path) -> tuple[int, int]: ...
 
-        Returns the decoder's repeat_pict value for each sampled frame
-        (0 = plain frame, 1 = one repeated field — soft-telecine pulldown).
-        Windows that fail to decode are skipped, so the list may be shorter
-        than the nominal sample size (empty when every window failed).
-        """
-        ...
-
-    def sample_field_pairing(self, path: Path) -> tuple[int, int]:
-        """Count decoded frames against demuxed packets over one sample window.
-
-        Returns ``(frames, packets)``. Field-separated storage (each field its
-        own container block) yields two packets per decoded frame;
-        ``core.detect.detect_field_separated`` reduces the pair to a coded
-        frame rate. A probe that fails returns ``(0, 0)``, which that function
-        reads as "too small to trust" and leaves the reported rate alone.
-        """
-        ...
-
-    def sample_grain(self, path: Path, duration_s: float) -> list[float]:
-        """Measure film-grain amplitude across the timeline.
-
-        Samples several short windows and returns one static-block temporal
-        flicker value per window: high for real film grain, near zero for a
-        denoised transfer. Windows that fail to decode or carry too few usable
-        blocks are skipped, so the list may be shorter than the nominal sample
-        size (empty when every window failed). ``core.detect.classify_grain``
-        reduces the list to a boolean GRAINY verdict.
-        """
-        ...
+    def sample_grain(self, path: Path, duration_s: float) -> list[float]: ...
 
     def profile_audio_track(
         self,
@@ -113,23 +63,11 @@ class Prober(Protocol):
         duration_s: float,
         *,
         on_progress: Callable[[ProgressSample], None] | None = None,
-    ) -> AudioMetrics:
-        """Sample PCM windows from an audio stream, compute per-channel RMS
-        and pairwise correlations, and return raw measurements.
-
-        channels must be 2, 6, or 8; other counts raise ValueError.
-        duration_s is used to pick sample offsets.
-        ``on_progress`` is called after each window decode with a fraction.
-
-        Raises RuntimeError if no windows decoded successfully.
-        """
-        ...
+    ) -> AudioMetrics: ...
 
 
 @runtime_checkable
 class Encoder(Protocol):
-    """Video encoding via NVEncC (QVBR) or SVT-AV1 (CRF)."""
-
     def encode(
         self,
         input_path: Path,
@@ -139,20 +77,11 @@ class Encoder(Protocol):
         on_progress: Callable[[ProgressSample], None] | None = None,
         rpu_path: Path | None = None,
         cq_override: int | None = None,
-    ) -> EncodeResult:
-        """Encode video. Returns EncodeResult with return code and settings.
-        ``cq_override`` (the target-quality search result) replaces the encoder's
-        default quality knob (QVBR for NVEnc, CRF for SVT) for this encode."""
-        ...
+    ) -> EncodeResult: ...
 
 
 @runtime_checkable
 class InlineQualityProbe(Protocol):
-    """Encode a short window at a candidate knob and self-measure one perceptual
-    metric inline, returning the aggregate score. The NVEnc target-quality probe
-    path (implemented by NVEncCAdapter); QVBR is scene-adaptive so a mean over
-    hard sample windows suffices -- no external reference or VapourSynth."""
-
     def probe(
         self,
         input_path: Path,
@@ -161,18 +90,11 @@ class InlineQualityProbe(Protocol):
         *,
         qvbr: int,
         metric: str,
-    ) -> float:
-        """Encode ``input_path`` (a short window) at ``qvbr`` with the job's
-        geometry and a single perceptual ``metric`` measured inline; return the
-        aggregate score. Raises on encode failure or a missing metric."""
-        ...
+    ) -> float: ...
 
 
 @runtime_checkable
 class PerceptualMetrics(Protocol):
-    """GPU perceptual metric scoring for the SVT-AV1 grain path.
-    Implemented by VshipMetricsAdapter (VapourSynth + Vship)."""
-
     def measure(
         self,
         reference: Path,
@@ -183,51 +105,21 @@ class PerceptualMetrics(Protocol):
         fps_den: int,
         pool: MetricPool = MetricPool.MEAN,
         metrics: frozenset[str] = METRIC_NAMES,
-    ) -> MetricScores:
-        """Score ``distorted`` against ``reference``, both already at the same geometry.
-
-        A pure comparator: it does NOT crop/scale/deinterlace. The caller brings
-        the reference to the encoded geometry upstream (via
-        ``WindowExtractor.build_reference``, which reuses the encode's own ffmpeg
-        filtergraph), so a crop can't phase-shift the reference against the
-        encode. ``pool`` selects mean (readout) or low-percentile (worst-case, for
-        the CRF search) frame pooling. ``metrics`` selects which perceptual metrics
-        to compute (the CRF search asks for only its driver metric); the
-        unrequested fields come back None.
-
-        Fail-soft: any failure returns an all-None ``MetricScores``. One check is
-        loud (outside the guard): an unknown metric name raises rather than
-        mis-score."""
-        ...
+    ) -> MetricScores: ...
 
 
 @runtime_checkable
 class VideoCopier(Protocol):
-    """Copy a video stream verbatim (passthrough) instead of re-encoding.
-    Implemented by FFmpegAdapter."""
-
     def copy_video(
         self,
         input_path: Path,
         output_path: Path,
         on_progress: Callable[[ProgressSample], None] | None = None,
-    ) -> int:
-        """Copy the first video stream byte-for-byte into a new MKV.
-
-        ffmpeg -map 0:v:0 -c:v copy. Audio/subs/chapters are dropped here;
-        the muxer reassembles them downstream. ``on_progress`` is called per
-        ``-progress pipe:1`` block. Returns the ffmpeg exit code.
-        """
-        ...
+    ) -> int: ...
 
 
 @runtime_checkable
 class WindowExtractor(Protocol):
-    """Read the source for target-quality probing: extract a probe window, build
-    a geometry-matched lossless reference for the grain metric, and report
-    per-window source bitrate for grain hard-scene selection.
-    Implemented by FFmpegAdapter."""
-
     def extract_window(
         self,
         input_path: Path,
@@ -235,75 +127,37 @@ class WindowExtractor(Protocol):
         *,
         start_s: float,
         frames: int,
-    ) -> int:
-        """Stream-copy ``frames`` video frames from ``start_s`` into ``output_path``
-        (an MKV). ``-ss`` before ``-i`` (keyframe seek), ``-frames:v`` count,
-        ``-c:v copy``. Returns the exit code."""
-        ...
+    ) -> int: ...
 
     def build_reference(
         self,
         input_path: Path,
         output_path: Path,
         video_params: VideoParams,
-    ) -> int:
-        """Materialise a lossless reference at the encoded geometry for the grain
-        perceptual metric.
+    ) -> int: ...
 
-        Applies the SAME geometry filtergraph the SVT-AV1 encode uses
-        (deinterlace -> crop -> scale -> 10-bit -> square SAR) but writes it
-        losslessly (FFV1), so the reference differs from the encoded OBU only by
-        AV1's lossy compression -- same resampler, same crop, same deinterlace.
-        The perceptual metric then compares two already-geometry-matched clips,
-        so a crop can't phase-shift the reference against the encode. Returns the
-        exit code."""
-        ...
-
-    def window_bitrates(self, source: Path, window_s: float) -> list[tuple[float, float]]:
-        """Per-window source bitrate proxy for grain hard-scene selection: read the
-        video packet sizes once (no decode) and bin them into consecutive
-        non-overlapping ``window_s`` windows. Returns ``(window_start_s, kbytes)``
-        per populated window in time order; empty if the packets can't be read."""
-        ...
+    def window_bitrates(self, source: Path, window_s: float) -> list[tuple[float, float]]: ...
 
 
 @runtime_checkable
 class DoviProcessor(Protocol):
-    """Extract/convert Dolby Vision RPU metadata via dovi_tool."""
-
     def extract_rpu(
         self,
         input_path: Path,
         output_rpu: Path,
         mode: DvMode,
-    ) -> int:
-        """Extract RPU from HEVC stream.
-
-        mode=COPY: extract as-is (no -m flag).
-        mode=TO_8_1: convert P7 FEL -> single-layer 8.1 RPU (-m 2).
-        The RPU is codec-independent; for AV1 output the encoder re-tags it as
-        Dolby Vision Profile 10.1.
-        Returns exit code.
-        """
-        ...
+    ) -> int: ...
 
 
 @runtime_checkable
 class AudioExtractor(Protocol):
-    """Extract audio tracks from container and decode exotic codecs.
-    Implemented by FFmpegAdapter."""
-
     def extract_track(
         self,
         input_path: Path,
         stream_index: int,
         output_path: Path,
         on_progress: Callable[[ProgressSample], None] | None = None,
-    ) -> int:
-        """Extract audio track from container to a separate file.
-        ffmpeg -i input -map 0:{index} -c:a copy output
-        """
-        ...
+    ) -> int: ...
 
     def ffmpeg_to_wav(
         self,
@@ -311,11 +165,7 @@ class AudioExtractor(Protocol):
         stream_index: int,
         output_wav: Path,
         on_progress: Callable[[ProgressSample], None] | None = None,
-    ) -> int:
-        """Decode exotic codec to WAV via ffmpeg.
-        ffmpeg -i input -map 0:{index} -f wav -rf64 auto output.wav
-        """
-        ...
+    ) -> int: ...
 
     def stereo_to_mono_wav(
         self,
@@ -324,40 +174,18 @@ class AudioExtractor(Protocol):
         output_wav: Path,
         delay_ms: int,
         on_progress: Callable[[ProgressSample], None] | None = None,
-    ) -> int:
-        """Average a stereo source to a mono WAV via ffmpeg's
-        ``pan=mono|c0=0.5*FL+0.5*FR`` filter.
-
-        ``delay_ms`` is applied via ``adelay`` (pad leading silence) when
-        positive or by ``atrim`` when negative. No limiter is used —
-        averaging cannot exceed unity for normalised PCM, since
-        ``|0.5L + 0.5R| <= max(|L|, |R|) <= 1.0``. Multichannel collapse
-        is the caller's responsibility (typically eac3to ``-downStereo``).
-
-        ``on_progress`` receives a ``ProgressSample`` per ``-progress pipe:1``
-        block; matches the contract of the peer ``extract_track`` and
-        ``ffmpeg_to_wav`` methods so the run TUI's progress bar advances
-        during the ffmpeg pan step.
-
-        Returns the ffmpeg exit code.
-        """
-        ...
+    ) -> int: ...
 
 
 @runtime_checkable
 class AudioDecoder(Protocol):
-    """Denormalization and lossless audio decoding via eac3to.
-    Implemented by Eac3toAdapter."""
-
     def denormalize(
         self,
         input_path: Path,
         output_path: Path,
         delay_ms: int,
         on_progress: Callable[[ProgressSample], None] | None = None,
-    ) -> int:
-        """eac3to denormalize (AC3/EAC3/DTS core)."""
-        ...
+    ) -> int: ...
 
     def decode_lossless(
         self,
@@ -367,31 +195,21 @@ class AudioDecoder(Protocol):
         on_progress: Callable[[ProgressSample], None] | None = None,
         *,
         downmix: DownmixMode | None = None,
-    ) -> int:
-        """eac3to decode lossless -> WAV. With downmix set, also emits the
-        corresponding eac3to flags."""
-        ...
+    ) -> int: ...
 
 
 @runtime_checkable
 class AacEncoder(Protocol):
-    """Encode WAV to AAC via qaac64.
-    Implemented by QaacAdapter."""
-
     def encode_aac(
         self,
         input_wav: Path,
         output_m4a: Path,
         on_progress: Callable[[ProgressSample], None] | None = None,
-    ) -> int:
-        """qaac64 encode WAV -> AAC."""
-        ...
+    ) -> int: ...
 
 
 @runtime_checkable
 class Muxer(Protocol):
-    """Assemble the final MKV."""
-
     def mux(
         self,
         video_path: Path,
@@ -402,62 +220,34 @@ class Muxer(Protocol):
         output_path: Path,
         video_meta: dict[str, Any] | None = None,
         on_progress: Callable[[ProgressSample], None] | None = None,
-    ) -> int:
-        """Assemble MKV. Returns return code.
-
-        audio_files: list of (path, {language, default, delay_ms})
-        subtitle_files: list of (path, {language, default, forced, encoding})
-        attachments: list of (path, filename, mime_type)
-        video_meta: optional dict with color/HDR metadata for container-level flags
-            {color_range, color_primaries, color_transfer, hdr_max_cll, hdr_max_fall,
-            fps_num, fps_den}
-        """
-        ...
+    ) -> int: ...
 
 
 @runtime_checkable
 class Tagger(Protocol):
-    """Set MKV tags via mkvpropedit."""
-
-    def set_encoder_tag(self, mkv_path: Path, tag_value: str, encoder_settings: str | None = None) -> int:
-        """Set global ENCODER tag (and ENCODER_SETTINGS if provided). Returns return code."""
-        ...
+    def set_encoder_tag(self, mkv_path: Path, tag_value: str, encoder_settings: str | None = None) -> int: ...
 
 
 @runtime_checkable
 class Cleaner(Protocol):
-    """Optimize MKV index."""
-
     def clean(
         self,
         input_path: Path,
         output_path: Path,
         on_progress: Callable[[ProgressSample], None] | None = None,
-    ) -> int:
-        """mkclean. Returns return code."""
-        ...
+    ) -> int: ...
 
 
 @runtime_checkable
 class Previewer(Protocol):
-    """Preview tracks in mpv."""
+    def preview_audio(self, video_path: Path, audio_path: Path, stream_index: int) -> None: ...
 
-    def preview_audio(self, video_path: Path, audio_path: Path, stream_index: int) -> None:
-        """Open mpv with the specified audio."""
-        ...
-
-    def preview_subtitle(self, video_path: Path, sub_path: Path, stream_index: int) -> None:
-        """Open mpv with the specified subtitles."""
-        ...
+    def preview_subtitle(self, video_path: Path, sub_path: Path, stream_index: int) -> None: ...
 
 
 @runtime_checkable
 class DiscDemuxerPort(Protocol):
-    """Demux disc structures (DVD/Blu-ray) to MKV."""
-
-    def list_titles(self, disc_path: Path) -> list[DiscTitle]:
-        """List titles from a disc structure."""
-        ...
+    def list_titles(self, disc_path: Path) -> list[DiscTitle]: ...
 
     def demux_title(
         self,
@@ -465,47 +255,24 @@ class DiscDemuxerPort(Protocol):
         title_num: int,
         output_dir: Path,
         on_progress: Callable[[ProgressSample], None] | None = None,
-    ) -> list[Path]:
-        """Demux one title to MKV file(s) in output_dir. Returns paths to created files."""
-        ...
+    ) -> list[Path]: ...
 
 
 @runtime_checkable
 class PcmTranscoder(Protocol):
-    """Transcode uncompressed PCM (Wave64) to FLAC.
-
-    Used by DiscDemuxer to normalize eac3to's Wave64 output to a format
-    mkvmerge can mux (FLAC). Lossless — the resulting stream decodes
-    bit-identical to the source PCM. Implemented by Eac3toAdapter.
-    """
-
     def transcode_to_flac(
         self,
         input_path: Path,
         output_path: Path,
         on_progress: Callable[[ProgressSample], None] | None = None,
-    ) -> int:
-        """Transcode a PCM input (Wave64 or WAV) to FLAC. Returns exit code."""
-        ...
+    ) -> int: ...
 
 
 @runtime_checkable
 class PlanReporter(Protocol):
-    """Structured terminal output for ``furnace plan``.
-
-    State is implicit for the strictly-serial phases: after
-    ``plan_file_start(name)`` or ``demux_title_start(n)``, the subsequent
-    progress / ``*_done`` calls apply to that latest-started item. The
-    ``analyze`` phase runs files in parallel and is reported as a single
-    batch (``analyze_batch_start`` -> per-file ``analyze_batch_item`` ->
-    ``analyze_batch_finish``).
-    """
-
-    # Detect
     def detect_disc(self, disc_type: DiscType, rel_path: str) -> None: ...
     def detect_disc_titles_done(self, n_titles: int) -> None: ...
 
-    # Demux
     def demux_disc_cached(self, label: str) -> None: ...
     def demux_disc_start(self, label: str) -> None: ...
     def demux_title_start(self, title_num: int) -> None: ...
@@ -514,24 +281,19 @@ class PlanReporter(Protocol):
     def demux_title_done(self) -> None: ...
     def demux_title_failed(self, reason: str) -> None: ...
 
-    # Scan
     def scan_file(self, name: str) -> None: ...
     def scan_skipped(self, name: str, reason: str) -> None: ...
 
-    # Analyze (parallel batch — called only from the orchestrator's main thread)
     def analyze_batch_start(self, total: int) -> None: ...
     def analyze_batch_progress(self, completed: float) -> None: ...
     def analyze_batch_item(self, name: str, detail: str, *, status: AnalyzeStatus) -> None: ...
     def analyze_batch_finish(self) -> None: ...
 
-    # Plan
     def plan_file_start(self, name: str) -> None: ...
     def plan_file_done(self, summary: str) -> None: ...
 
-    # Final
     def plan_saved(self, path: Path, n_jobs: int) -> None: ...
     def interrupted(self) -> None: ...
 
-    # Lifecycle (for interactive Textual TUI pauses)
     def pause(self) -> None: ...
     def resume(self) -> None: ...

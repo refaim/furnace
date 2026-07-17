@@ -83,15 +83,15 @@ class SubtitleCodecId(enum.Enum):
 
 
 class AudioAction(enum.Enum):
-    COPY = "copy"  # AAC -- copy as-is
-    DENORM = "denorm"  # AC3/EAC3/DTS core -- eac3to denormalize
-    DECODE_ENCODE = "decode_encode"  # lossless -> eac3to WAV -> qaac64 AAC
-    FFMPEG_ENCODE = "ffmpeg_encode"  # exotic codecs -> ffmpeg WAV -> qaac64 AAC
+    COPY = "copy"
+    DENORM = "denorm"
+    DECODE_ENCODE = "decode_encode"
+    FFMPEG_ENCODE = "ffmpeg_encode"
 
 
 class SubtitleAction(enum.Enum):
-    COPY = "copy"  # PGS, VOBSUB -- binary, passthrough
-    COPY_RECODE = "copy_recode"  # SRT, ASS -- recode to UTF-8
+    COPY = "copy"
+    COPY_RECODE = "copy_recode"
 
 
 class JobStatus(enum.Enum):
@@ -107,23 +107,15 @@ class AnalyzeStatus(enum.Enum):
 
 
 class DvBlCompatibility(enum.IntEnum):
-    """Dolby Vision base layer compatibility."""
-
-    NONE = 0  # no fallback (Profile 5)
-    HDR10 = 1  # HDR10 fallback
-    SDR = 2  # SDR fallback
-    HLG = 4  # HLG fallback
+    NONE = 0
+    HDR10 = 1
+    SDR = 2
+    HLG = 4
 
 
 class DvMode(enum.IntEnum):
-    """DV RPU extraction mode. Values match dovi_tool -m flag.
-
-    Note: the extracted RPU is single-layer/8.1-style; for AV1 output NVEncC
-    re-tags it as Dolby Vision Profile 10.1 (--dolby-vision-profile 10.1).
-    """
-
-    COPY = 0  # extract RPU as-is (no -m flag)
-    TO_8_1 = 2  # convert P7 FEL -> single-layer 8.1 RPU (-m 2); AV1 output tags 10.1
+    COPY = 0
+    TO_8_1 = 2
 
 
 class DiscType(enum.Enum):
@@ -133,8 +125,8 @@ class DiscType(enum.Enum):
 
 @dataclass(frozen=True)
 class HdrMetadata:
-    mastering_display: str | None = None  # MDCV string: "G(...)B(...)R(...)WP(...)L(...)"
-    content_light: str | None = None  # "MaxCLL=X,MaxFALL=Y"
+    mastering_display: str | None = None
+    content_light: str | None = None
     is_dolby_vision: bool = False
     is_hdr10_plus: bool = False
     dv_profile: int | None = None
@@ -156,32 +148,17 @@ class EncodeResult:
 
 
 class MetricPool(enum.Enum):
-    """How per-frame perceptual scores are pooled into one value.
-
-    MEAN — the average (a readout of overall quality). LOW — a low percentile
-    (worst-case), for the SVT-AV1 CRF search: CRF is constant between scenes, so
-    the hardest scene, not the average, governs the chosen CRF. LOW targets
-    higher-is-better metrics (SSIMULACRA2, CVVDP); it is not meaningful for
-    Butteraugli (lower-is-better) and that field is unused with LOW.
-    """
-
     MEAN = "mean"
     LOW = "low"
 
 
 @dataclass(frozen=True)
 class MetricScores:
-    """Pooled GPU perceptual scores for one encode; any field is None on failure."""
-
     ssimulacra2: float | None = None
     butteraugli: float | None = None
     cvvdp: float | None = None
 
 
-# The perceptual metric names (the higher-is-better-or-not scores in
-# ``MetricScores``). Canonical set, owned by core so the ``PerceptualMetrics``
-# port and its adapter share one source of truth for the "compute all" default
-# and name validation — they cannot drift.
 METRIC_NAMES: frozenset[str] = frozenset({"ssimulacra2", "butteraugli", "cvvdp"})
 
 
@@ -200,8 +177,6 @@ class DiscSource:
 
 @dataclass(frozen=True)
 class DiscTitle:
-    """One playlist/VTS entry from eac3to listing."""
-
     number: int
     duration_s: float
     raw_label: str
@@ -209,55 +184,52 @@ class DiscTitle:
 
 @dataclass
 class Track:
-    index: int  # ffprobe stream index
+    index: int
     track_type: TrackType
-    codec_name: str  # raw ffprobe codec_name
-    codec_id: AudioCodecId | SubtitleCodecId | None  # parsed enum
-    language: str  # ISO 639-3 (rus, eng, und)
+    codec_name: str
+    codec_id: AudioCodecId | SubtitleCodecId | None
+    language: str
     title: str
     is_default: bool
     is_forced: bool
-    source_file: Path  # main file or a satellite
+    source_file: Path
 
-    # audio-specific
     channels: int | None = None
-    channel_layout: str | None = None  # e.g. "5.1(side)"
-    bitrate: int | None = None  # bps
+    channel_layout: str | None = None
+    bitrate: int | None = None
     sample_rate: int | None = None
-    delay_ms: int = 0  # derived from ffprobe start_pts
-    profile: str | None = None  # AAC profile (LC, HE, HE-AAC v2)
+    delay_ms: int = 0
+    profile: str | None = None
 
-    # subtitle-specific
-    num_frames: int | None = None  # forced detection: frame count (binary subs)
-    num_captions: int | None = None  # forced detection: caption count (text subs)
-    encoding: str | None = None  # detected text-subtitle encoding
+    num_frames: int | None = None
+    num_captions: int | None = None
+    encoding: str | None = None
 
-    # audio detector result (None when not analysed or unsupported layout)
     audio_profile: AudioProfile | None = None
 
 
 @dataclass
 class VideoInfo:
     index: int
-    codec_name: str  # h264, hevc, mpeg2video, ...
+    codec_name: str
     width: int
     height: int
-    pixel_area: int  # width * height, recalculated after crop for CQ
+    pixel_area: int
     fps_num: int
     fps_den: int
     duration_s: float
     interlaced: bool
     color_matrix_raw: str | None
-    color_range: str | None  # "tv" | "pc" | None
+    color_range: str | None
     color_transfer: str | None
     color_primaries: str | None
-    pix_fmt: str  # yuv420p, yuv420p10le, ...
+    pix_fmt: str
     hdr: HdrMetadata
     source_file: Path
-    bitrate: int = 0  # video stream bitrate in bps
-    sar_num: int = 1  # sample aspect ratio numerator
-    sar_den: int = 1  # sample aspect ratio denominator
-    grainy: bool = False  # grain probe verdict, SDR any res (True = preserve grain)
+    bitrate: int = 0
+    sar_num: int = 1
+    sar_den: int = 1
+    grainy: bool = False
 
 
 @dataclass
@@ -283,7 +255,7 @@ class Movie:
 class AnalysisOutcome:
     movie: Movie | None
     status: AnalyzeStatus
-    detail: str  # DONE: summary line; SKIPPED/FAILED: reason
+    detail: str
 
 
 @dataclass
@@ -294,10 +266,10 @@ class AudioInstruction:
     action: AudioAction
     delay_ms: int
     is_default: bool
-    codec_name: str  # source codec, informational
+    codec_name: str
     channels: int | None
     bitrate: int | None
-    downmix: DownmixMode | None = None  # None = no downmix applied
+    downmix: DownmixMode | None = None
 
 
 @dataclass
@@ -309,58 +281,58 @@ class SubtitleInstruction:
     is_default: bool
     is_forced: bool
     codec_name: str
-    source_encoding: str | None  # source encoding, for recoding
+    source_encoding: str | None
 
 
 @dataclass
 class VideoParams:
     cq: int
-    crop: CropRect | None  # None = no crop
+    crop: CropRect | None
     deinterlace: bool
     color_matrix: str
-    color_range: str  # always "tv"
+    color_range: str
     color_transfer: str
     color_primaries: str
-    hdr: HdrMetadata | None  # HDR metadata for passthrough
-    gop: int  # GOP size (fps * 5)
+    hdr: HdrMetadata | None
+    gop: int
     fps_num: int
     fps_den: int
-    source_width: int  # pre-crop, informational
+    source_width: int
     source_height: int
-    source_codec: str = ""  # ffprobe codec_name (h264, hevc, mpeg2video...)
-    source_bitrate: int = 0  # video stream bitrate in bps (from ffprobe)
-    sar_num: int = 1  # sample aspect ratio numerator
-    sar_den: int = 1  # sample aspect ratio denominator
-    dv_mode: DvMode | None = None  # None=no DV, COPY=as-is, TO_8_1=P7->single-layer (AV1 out=10.1)
-    passthrough: bool = False  # True = copy video stream verbatim (no re-encode)
-    grain: bool = False  # True = tune the encode to preserve film grain (SDR only)
+    source_codec: str = ""
+    source_bitrate: int = 0
+    sar_num: int = 1
+    sar_den: int = 1
+    dv_mode: DvMode | None = None
+    passthrough: bool = False
+    grain: bool = False
 
 
 @dataclass
 class Job:
-    id: str  # uuid4
-    source_files: list[str]  # [main_file, *satellites]
+    id: str
+    source_files: list[str]
     output_file: str
     video_params: VideoParams
     audio: list[AudioInstruction]
     subtitles: list[SubtitleInstruction]
-    attachments: list[dict[str, str]]  # [{filename, mime_type, source_file}]
+    attachments: list[dict[str, str]]
     copy_chapters: bool
-    chapters_source: str | None  # path to chapters file
+    chapters_source: str | None
     status: JobStatus = JobStatus.PENDING
     error: str | None = None
     source_size: int = 0
-    output_size: int | None = None  # None until encoding completes
-    duration_s: float = 0.0  # source video duration in seconds; 0.0 means unknown
-    chosen_cq: int | None = None  # target-quality search result (QVBR/CRF); None until searched
+    output_size: int | None = None
+    duration_s: float = 0.0
+    chosen_cq: int | None = None
 
 
 @dataclass
 class Plan:
-    version: str  # "1"
-    furnace_version: str  # "0.1.0"
-    created_at: str  # ISO datetime
-    source: str  # source path/directory
-    destination: str  # output directory
-    demux_dir: str | None = None  # path to .furnace_demux/ or None
+    version: str
+    furnace_version: str
+    created_at: str
+    source: str
+    destination: str
+    demux_dir: str | None = None
     jobs: list[Job] = field(default_factory=list)
