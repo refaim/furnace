@@ -1,5 +1,11 @@
 # Furnace — Developer Guide
 
+## Code Style
+
+- **No comments, no docstrings. Ever.** Not in `furnace/`, not in `tests/`. No module, class or function docstrings; no explanatory, sectioning or rationale comments. Code, names and tests carry the meaning. This is absolute — do not reintroduce them, not even "just this one".
+- The only `#` lines permitted are functional directives the tools require: `# noqa`, `# type: ignore`, `# pragma: no cover`, `# ruff:`/`# mypy:` config. Nothing else.
+- Rationale that would have gone in a comment goes in the commit message or a memory file, never in the source.
+
 ## Versioning (SemVer)
 
 Format: `MAJOR.MINOR.PATCH`

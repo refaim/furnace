@@ -1,8 +1,12 @@
 SOURCES := furnace tests
 
-.PHONY: check lint typecheck test
+.PHONY: check lint typecheck test format
 
 check: lint typecheck test
+
+format:
+	uv run ruff check --fix-only --select I $(SOURCES)
+	uv run ruff format $(SOURCES)
 
 lint:
 	uv run ruff check $(SOURCES)
