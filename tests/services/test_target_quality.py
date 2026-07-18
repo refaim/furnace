@@ -1,4 +1,3 @@
-"""Tests for the TargetQualityService orchestration (NVEnc QVBR search)."""
 from __future__ import annotations
 
 import re
@@ -10,16 +9,16 @@ from unittest.mock import MagicMock
 import pytest
 
 from furnace.core.models import EncodeResult, MetricPool, MetricScores, VideoParams
-from furnace.core.target_quality import KnobSearchResult, probe_windows
+from furnace.core.target_quality import (
+    KnobSearchResult,
+    pool_grain_windows,
+    probe_windows,
+)
 from furnace.services.target_quality import TargetQualityService, _SearchNarrator, _windows
 from tests.conftest import make_video_params
 
 
 class _FakeExtractor:
-    """Records extract_window / build_reference calls and returns fixed return
-    codes. ``bitrates`` is what ``window_bitrates`` reports (empty by default ->
-    even sampling); ``ref_rc`` is the return code of ``build_reference``."""
-
     def __init__(
         self,
         rc: int = 0,
@@ -41,9 +40,7 @@ class _FakeExtractor:
         start_s: float,
         frames: int,
     ) -> int:
-        self.calls.append(
-            {"input": input_path, "output": output_path, "start_s": start_s, "frames": frames}
-        )
+        self.calls.append({"input": input_path, "output": output_path, "start_s": start_s, "frames": frames})
         return self.rc
 
     def build_reference(
@@ -52,9 +49,7 @@ class _FakeExtractor:
         output_path: Path,
         video_params: object,
     ) -> int:
-        self.reference_calls.append(
-            {"input": input_path, "output": output_path, "video_params": video_params}
-        )
+        self.reference_calls.append({"input": input_path, "output": output_path, "video_params": video_params})
         return self.ref_rc
 
     def window_bitrates(self, source: Path, window_s: float) -> list[tuple[float, float]]:  # noqa: ARG002
@@ -62,8 +57,6 @@ class _FakeExtractor:
 
 
 class _FakeProbe:
-    """Returns score_fn(qvbr), recording every probe call."""
-
     def __init__(self, score_fn: Callable[[int], float]) -> None:
         self._score_fn = score_fn
         self.calls: list[dict[str, object]] = []
@@ -81,9 +74,9 @@ class _FakeProbe:
         return self._score_fn(qvbr)
 
 
-def _service(rc: int = 0, score_fn: Callable[[int], float] | None = None) -> tuple[
-    TargetQualityService, _FakeExtractor, _FakeProbe
-]:
+def _service(
+    rc: int = 0, score_fn: Callable[[int], float] | None = None
+) -> tuple[TargetQualityService, _FakeExtractor, _FakeProbe]:
     extractor = _FakeExtractor(rc=rc)
     probe = _FakeProbe(score_fn if score_fn is not None else (lambda q: 120.0 - q))
     return TargetQualityService(extractor, probe), extractor, probe
@@ -91,12 +84,10 @@ def _service(rc: int = 0, score_fn: Callable[[int], float] | None = None) -> tup
 
 class TestTargetQualitySearch:
     def test_extracts_three_windows(self, tmp_path: Path) -> None:
-        """A long source yields three evenly-spaced extracted windows."""
         service, extractor, _probe = _service()
         vp = make_video_params(source_width=1920, source_height=1080)
         service.search(Path("movie.mkv"), vp, duration_s=7200.0, work_dir=tmp_path)
         assert len(extractor.calls) == 3
-        # 18s at the default 24fps -> 432 frames per window.
         assert all(c["frames"] == 432 for c in extractor.calls)
 
     def test_returns_knob_search_result_in_bounds(self, tmp_path: Path) -> None:
@@ -107,10 +98,8 @@ class TestTargetQualitySearch:
         assert 16 <= result.knob <= 44
 
     def test_full_pass_extracts_one_bounded_window(self, tmp_path: Path) -> None:
-        """A short source extracts ONE window bounded to the reported duration
-        (not the raw file) -- guards against an under-reported duration."""
         service, extractor, probe = _service()
-        vp = make_video_params(source_width=1920, source_height=1080)  # 24fps
+        vp = make_video_params(source_width=1920, source_height=1080)
         service.search(Path("short.mkv"), vp, duration_s=40.0, work_dir=tmp_path)
         assert len(extractor.calls) == 1
         assert extractor.calls[0]["start_s"] == 0.0
@@ -145,7 +134,6 @@ class TestTargetQualitySearch:
         assert all(c["metric"] == "ssimulacra2" for c in probe.calls)
 
     def test_probe_runs_once_per_window_per_knob(self, tmp_path: Path) -> None:
-        """Each probed knob measures all three windows (mean pooling)."""
         service, _extractor, probe = _service()
         vp = make_video_params(source_width=1920, source_height=1080)
         service.search(Path("m.mkv"), vp, duration_s=7200.0, work_dir=tmp_path)
@@ -158,49 +146,42 @@ class TestTargetQualitySearch:
         }
 
     def test_frames_from_fractional_fps(self, tmp_path: Path) -> None:
-        """23.976 fps (24000/1001) -> round(18 * 23.976) = 432 frames."""
         service, extractor, _probe = _service()
         vp = make_video_params(
-            source_width=1920, source_height=1080, fps_num=24000, fps_den=1001,
+            source_width=1920,
+            source_height=1080,
+            fps_num=24000,
+            fps_den=1001,
         )
         service.search(Path("m.mkv"), vp, duration_s=7200.0, work_dir=tmp_path)
         assert all(c["frames"] == 432 for c in extractor.calls)
 
     def test_mean_pooling_across_windows(self, tmp_path: Path) -> None:
-        """probe_fn returns the mean score across windows: with a per-window
-        constant probe, the search still converges and records probes."""
-        # score depends only on knob (same for every window) so the mean == score.
         service, _extractor, _probe = _service(score_fn=lambda q: 120.0 - q)
         vp = make_video_params(source_width=1920, source_height=1080)
         result = service.search(Path("m.mkv"), vp, duration_s=7200.0, work_dir=tmp_path)
-        # First probe is the midpoint of [16, 44] = 30 -> score 90.
         assert result.probes[0][1] == pytest.approx(90.0)
 
 
-# ---------------------------------------------------------------------------
-# Grain (SVT-AV1) path: encode window at CRF -> measure worst-case SSIMULACRA2
-# ---------------------------------------------------------------------------
-
-
 def _crf_from_obu(path: Path) -> int:
-    """Parse the CRF encoded in a probe OBU name (tq_grain_q{crf}_w{j}.obu)."""
     m = re.search(r"_q(\d+)_", path.name)
     assert m is not None
     return int(m.group(1))
 
 
 def _win_from_obu(path: Path) -> int:
-    """Parse the window index in a probe OBU name (tq_grain_q{crf}_w{j}.obu)."""
     m = re.search(r"_w(\d+)\.obu$", path.name)
     assert m is not None
     return int(m.group(1))
 
 
 def _grain_service(
-    *, enc_rc: int = 0, score_none: bool = False,
+    *,
+    enc_rc: int = 0,
+    score_none: bool = False,
 ) -> tuple[TargetQualityService, MagicMock, MagicMock]:
     extractor = _FakeExtractor()
-    inline = MagicMock()  # unused on the grain path
+    inline = MagicMock()
     grain_enc = MagicMock()
     grain_enc.encode.return_value = EncodeResult(return_code=enc_rc, encoder_settings="svt")
     metrics = MagicMock()
@@ -226,14 +207,8 @@ class TestCanSearch:
     def test_grain_needs_both_deps(self) -> None:
         vp = _grain_vp()
         assert TargetQualityService(_FakeExtractor(), MagicMock()).can_search(vp) is False
-        assert (
-            TargetQualityService(_FakeExtractor(), MagicMock(), grain_encoder=MagicMock()).can_search(vp)
-            is False
-        )
-        assert (
-            TargetQualityService(_FakeExtractor(), MagicMock(), metrics=MagicMock()).can_search(vp)
-            is False
-        )
+        assert TargetQualityService(_FakeExtractor(), MagicMock(), grain_encoder=MagicMock()).can_search(vp) is False
+        assert TargetQualityService(_FakeExtractor(), MagicMock(), metrics=MagicMock()).can_search(vp) is False
         assert (
             TargetQualityService(
                 _FakeExtractor(), MagicMock(), grain_encoder=MagicMock(), metrics=MagicMock()
@@ -247,37 +222,24 @@ class TestGrainSearch:
         svc, grain_enc, metrics = _grain_service()
         result = svc.search(Path("grain.mkv"), _grain_vp(), duration_s=7200.0, work_dir=tmp_path)
         assert isinstance(result, KnobSearchResult)
-        assert 14 <= result.knob <= 34  # CRF bounds
-        # SVT probe encodes at the candidate CRF with no metrics on the encode.
+        assert 14 <= result.knob <= 34
         enc_kwargs = grain_enc.encode.call_args.kwargs
         assert enc_kwargs["cq_override"] == result.probes[-1][0]
-        # ...and scoring uses worst-case (low-percentile) pooling.
         assert all(c.kwargs["pool"] is MetricPool.LOW for c in metrics.measure.call_args_list)
 
     def test_converges_toward_target(self, tmp_path: Path) -> None:
-        """score = 100 - crf, grain target ~71 -> crf ~29 (within [14,34])."""
         svc, _enc, _metrics = _grain_service()
         result = svc.search(Path("grain.mkv"), _grain_vp(), duration_s=7200.0, work_dir=tmp_path)
         assert 28 <= result.knob <= 32
 
     def test_grain_extracts_ten_windows(self, tmp_path: Path) -> None:
-        """A long grain source yields TEN windows (vs three for the NVEnc path): CRF
-        is one value for the whole movie, so the search must see the hard scenes --
-        three windows miss them and it rails to too-high a CRF (мыло). (Default fake:
-        no source bitrate reported -> even fallback, still ten windows.)"""
         svc, _enc, _metrics = _grain_service()
         svc.search(Path("grain.mkv"), _grain_vp(), duration_s=7200.0, work_dir=tmp_path)
-        # The extractor is not exposed by _grain_service; assert via the probe's
-        # per-window OBU indices instead: windows 0..9 are each encoded.
         indices = {_win_from_obu(c.args[1]) for c in _metrics.measure.call_args_list}
         assert indices == set(range(10))
 
     def test_grain_vbr_selects_hardest_windows(self, tmp_path: Path) -> None:
-        """A VBR source (wide-spread bitrate) samples the HIGHEST-bitrate windows --
-        the hard scenes the source marked with bits -- not evenly-spaced ones."""
-        # 12 interior candidates in a 7200s source; two low-bitrate, ten hot. Wide
-        # spread -> VBR -> the ten hot offsets are chosen (90s gap << 500s spacing).
-        offsets = [500.0 + 500.0 * i for i in range(12)]  # 500..6000, all interior
+        offsets = [500.0 + 500.0 * i for i in range(12)]
         low = {2500.0, 4000.0}
         bitrates = [(o, 1.0 if o in low else 100.0) for o in offsets]
         extractor = _FakeExtractor(bitrates=bitrates)
@@ -293,11 +255,8 @@ class TestGrainSearch:
         assert extracted == sorted(o for o in offsets if o not in low)
 
     def test_grain_cbr_uses_even_windows(self, tmp_path: Path) -> None:
-        """A CBR source (flat bitrate) ignores the uninformative bitrate and samples
-        evenly: on CBR the bitrate can't locate the hard scenes (it points anywhere),
-        but hard scenes are common, so even sampling catches them."""
         offsets = [500.0 + 500.0 * i for i in range(12)]
-        bitrates = [(o, 100.0) for o in offsets]  # flat -> CBR
+        bitrates = [(o, 100.0) for o in offsets]
         extractor = _FakeExtractor(bitrates=bitrates)
         grain_enc = MagicMock()
         grain_enc.encode.return_value = EncodeResult(return_code=0, encoder_settings="svt")
@@ -312,38 +271,27 @@ class TestGrainSearch:
         assert even is not None
         assert extracted == sorted(even)
 
-    def test_grain_min_pooled_across_windows(self, tmp_path: Path) -> None:
-        """Across-window pooling is a strict MIN -- the hardest sampled scene governs
-        the one whole-movie CRF (a mean would let an easy window mask a hard one and
-        pick too-high a CRF -> мыло). The selection already targets the hard scenes."""
+    def test_grain_percentile_pooled_across_windows(self, tmp_path: Path) -> None:
         extractor = _FakeExtractor()
         grain_enc = MagicMock()
         grain_enc.encode.return_value = EncodeResult(return_code=0, encoder_settings="svt")
         metrics = MagicMock()
-        # score = (100 - crf) - window_index -> higher index = harder (lower p5).
         metrics.measure.side_effect = lambda reference, distorted, **kw: MetricScores(
             ssimulacra2=(100.0 - _crf_from_obu(distorted)) - _win_from_obu(distorted)
         )
-        svc = TargetQualityService(
-            extractor, MagicMock(), grain_encoder=grain_enc, metrics=metrics
-        )
+        svc = TargetQualityService(extractor, MagicMock(), grain_encoder=grain_enc, metrics=metrics)
         result = svc.search(Path("grain.mkv"), _grain_vp(), duration_s=7200.0, work_dir=tmp_path)
-        # First probe: midpoint of [14,34] = 24. Windows 0..9 -> 76, 75, ..., 67.
-        # min pooling records the hardest = 67 (mean would record 71.5).
-        assert result.probes[0][1] == pytest.approx(67.0)
+        scores = [76.0 - i for i in range(10)]
+        assert result.probes[0][1] == pytest.approx(pool_grain_windows(scores))
+        assert result.probes[0][1] == pytest.approx(68.8)
 
     def test_grain_full_pass_single_window(self, tmp_path: Path) -> None:
-        """A short grain source is a single full-pass window (before any bitrate
-        read): its own score governs the min pool."""
         svc, _enc, metrics = _grain_service()
         result = svc.search(Path("grain.mkv"), _grain_vp(), duration_s=40.0, work_dir=tmp_path)
         assert all(_win_from_obu(c.args[1]) == 0 for c in metrics.measure.call_args_list)
         assert result.probes[0][1] == pytest.approx(100.0 - result.probes[0][0])
 
     def test_reference_built_once_per_window(self, tmp_path: Path) -> None:
-        """The geometry-matched reference is identical across every probed CRF, so
-        it is built ONCE per window (10), not once per (window, knob) -- and each
-        measure scores against that window's own prebuilt reference."""
         extractor = _FakeExtractor()
         grain_enc = MagicMock()
         grain_enc.encode.return_value = EncodeResult(return_code=0, encoder_settings="svt")
@@ -353,13 +301,9 @@ class TestGrainSearch:
         )
         svc = TargetQualityService(extractor, MagicMock(), grain_encoder=grain_enc, metrics=metrics)
         svc.search(Path("grain.mkv"), _grain_vp(), duration_s=7200.0, work_dir=tmp_path)
-        # One reference per window, reused across the several knob probes.
         assert len(extractor.reference_calls) == 10
-        assert len(metrics.measure.call_args_list) > 10  # multiple knobs x 10 windows
-        assert {c["output"] for c in extractor.reference_calls} == {
-            tmp_path / f"tq_ref_w{j}.mkv" for j in range(10)
-        }
-        # Each probe scores the encode against its window's prebuilt reference.
+        assert len(metrics.measure.call_args_list) > 10
+        assert {c["output"] for c in extractor.reference_calls} == {tmp_path / f"tq_ref_w{j}.mkv" for j in range(10)}
         for c in metrics.measure.call_args_list:
             win = _win_from_obu(c.args[1])
             assert c.args[0] == tmp_path / f"tq_ref_w{win}.mkv"
@@ -368,9 +312,7 @@ class TestGrainSearch:
         extractor = _FakeExtractor(ref_rc=1)
         grain_enc = MagicMock()
         grain_enc.encode.return_value = EncodeResult(return_code=0, encoder_settings="svt")
-        svc = TargetQualityService(
-            extractor, MagicMock(), grain_encoder=grain_enc, metrics=MagicMock()
-        )
+        svc = TargetQualityService(extractor, MagicMock(), grain_encoder=grain_enc, metrics=MagicMock())
         with pytest.raises(RuntimeError, match="reference build failed"):
             svc.search(Path("grain.mkv"), _grain_vp(), duration_s=7200.0, work_dir=tmp_path)
 
@@ -385,16 +327,9 @@ class TestGrainSearch:
             svc.search(Path("grain.mkv"), _grain_vp(), duration_s=7200.0, work_dir=tmp_path)
 
     def test_search_without_grain_deps_raises(self, tmp_path: Path) -> None:
-        """Defensive: search on a grain job without the SVT/metrics deps raises
-        (the executor gates this via can_search, but the guard is loud)."""
         svc = TargetQualityService(_FakeExtractor(), MagicMock())
         with pytest.raises(RuntimeError, match="requires an SVT encoder"):
             svc.search(Path("grain.mkv"), _grain_vp(), duration_s=7200.0, work_dir=tmp_path)
-
-
-# ---------------------------------------------------------------------------
-# Search narration: meaningful TUI lines while raw ffmpeg/nvencc output is muted
-# ---------------------------------------------------------------------------
 
 
 class TestWindowsHelper:
@@ -409,8 +344,11 @@ class TestSearchNarrator:
     def test_opening_reports_plan(self) -> None:
         events: list[str] = []
         narrator = _SearchNarrator(
-            emit=events.append, label="QVBR", metric="SSIMULACRA2",
-            window_count=3, pool_word="mean",
+            emit=events.append,
+            label="QVBR",
+            metric="SSIMULACRA2",
+            window_count=3,
+            pool_word="mean",
         )
         narrator.opening(81.0)
         assert events == ["Probing QVBR -> SSIMULACRA2 ~81.0 (3 windows, mean-pooled)"]
@@ -418,8 +356,11 @@ class TestSearchNarrator:
     def test_window_reports_per_window_score(self) -> None:
         events: list[str] = []
         narrator = _SearchNarrator(
-            emit=events.append, label="CRF", metric="SSIMULACRA2",
-            window_count=10, pool_word="worst-case",
+            emit=events.append,
+            label="CRF",
+            metric="SSIMULACRA2",
+            window_count=10,
+            pool_word="worst-case",
         )
         narrator.window(24, 3, 69.14)
         assert events == ["CRF 24: window 3/10 = 69.1"]
@@ -427,8 +368,11 @@ class TestSearchNarrator:
     def test_result_reports_pooled_score(self) -> None:
         events: list[str] = []
         narrator = _SearchNarrator(
-            emit=events.append, label="CRF", metric="SSIMULACRA2",
-            window_count=10, pool_word="worst-case",
+            emit=events.append,
+            label="CRF",
+            metric="SSIMULACRA2",
+            window_count=10,
+            pool_word="worst-case",
         )
         narrator.result(24, 67.0)
         assert events == ["CRF 24 -> SSIMULACRA2 67.0"]
@@ -436,35 +380,36 @@ class TestSearchNarrator:
 
 class TestSearchNarrationWiring:
     def test_nvenc_search_narrates_opening_windows_and_result(self, tmp_path: Path) -> None:
-        """The NVEnc path narrates an opening plan line, one line per probed
-        window (mean-pooled) and a pooled result per knob."""
         service, _extractor, _probe = _service(score_fn=lambda q: 120.0 - q)
         vp = make_video_params(source_width=1920, source_height=1080)
         events: list[str] = []
         service.search(
-            Path("m.mkv"), vp, duration_s=7200.0, work_dir=tmp_path, on_event=events.append,
+            Path("m.mkv"),
+            vp,
+            duration_s=7200.0,
+            work_dir=tmp_path,
+            on_event=events.append,
         )
-        # First probe is the midpoint of [16, 44] = 30 -> score 90 for every window.
         assert "Probing QVBR -> SSIMULACRA2 ~81.0 (3 windows, mean-pooled)" in events
         assert "QVBR 30: window 1/3 = 90.0" in events
         assert "QVBR 30: window 3/3 = 90.0" in events
         assert "QVBR 30 -> SSIMULACRA2 90.0" in events
 
     def test_grain_search_narrates_worst_case_pooling(self, tmp_path: Path) -> None:
-        """The grain path narrates worst-case pooling across ten windows."""
         svc, _enc, _metrics = _grain_service()
         events: list[str] = []
         svc.search(
-            Path("grain.mkv"), _grain_vp(), duration_s=7200.0, work_dir=tmp_path,
+            Path("grain.mkv"),
+            _grain_vp(),
+            duration_s=7200.0,
+            work_dir=tmp_path,
             on_event=events.append,
         )
-        # First probe: midpoint of [14, 34] = 24 -> score 76 for every window.
-        assert "Probing CRF -> SSIMULACRA2 ~71.0 (10 windows, worst-case-pooled)" in events
+        assert "Probing CRF -> SSIMULACRA2 ~70.0 (10 windows, worst-case-pooled)" in events
         assert "CRF 24: window 10/10 = 76.0" in events
         assert "CRF 24 -> SSIMULACRA2 76.0" in events
 
     def test_search_without_on_event_is_silent_and_succeeds(self, tmp_path: Path) -> None:
-        """Omitting ``on_event`` routes narration to a no-op sink (default path)."""
         service, _extractor, _probe = _service()
         vp = make_video_params(source_width=1920, source_height=1080)
         result = service.search(Path("m.mkv"), vp, duration_s=7200.0, work_dir=tmp_path)
