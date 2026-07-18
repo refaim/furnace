@@ -458,6 +458,11 @@ class TestBuildTargetText:
         assert "CRF target" in _build_target_text(make_job(video_params=vp))
         assert "CRF 30" in _build_target_text(make_job(video_params=vp, chosen_cq=30))
 
+    def test_grain_hd_target_shows_qvbr(self) -> None:
+        vp = make_video_params(grain=True, source_width=1920, source_height=1080)
+        assert "QVBR target" in _build_target_text(make_job(video_params=vp))
+        assert "QVBR 32" in _build_target_text(make_job(video_params=vp, chosen_cq=32))
+
     def test_passthrough_target_shows_copy(self) -> None:
         vp = make_video_params(
             passthrough=True,

@@ -1147,7 +1147,7 @@ class TestRunPipelineTargetQuality:
         executor._target_quality = svc
         mocks.cleaner.clean.side_effect = _fake_clean_writing
         job = _pipeline_job(tmp_path)
-        job.video_params = make_video_params(grain=True)
+        job.video_params = make_video_params(grain=True, source_width=720, source_height=576)
         output_path = Path(job.output_file)
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -1156,6 +1156,27 @@ class TestRunPipelineTargetQuality:
         svc.search.assert_called_once()
         assert mocks.encoder.encode.call_args.kwargs["cq_override"] == 20
         assert job.chosen_cq == 20
+
+    def test_grain_hd_uses_fixed_qvbr_without_searching(
+        self,
+        executor_with_mocks: tuple[Executor, SimpleNamespace],
+        tmp_path: Path,
+    ) -> None:
+        executor, mocks = executor_with_mocks
+        svc = MagicMock()
+        svc.can_search.return_value = True
+        executor._target_quality = svc
+        mocks.cleaner.clean.side_effect = _fake_clean_writing
+        job = _pipeline_job(tmp_path)
+        job.video_params = make_video_params(grain=True, source_width=1920, source_height=1080)
+        output_path = Path(job.output_file)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        executor._run_pipeline(job, output_path, tmp_path)
+
+        svc.search.assert_not_called()
+        assert mocks.encoder.encode.call_args.kwargs["cq_override"] == 32
+        assert job.chosen_cq == 32
 
     def test_grain_skipped_when_service_cannot_search(
         self,
@@ -1168,7 +1189,7 @@ class TestRunPipelineTargetQuality:
         executor._target_quality = svc
         mocks.cleaner.clean.side_effect = _fake_clean_writing
         job = _pipeline_job(tmp_path)
-        job.video_params = make_video_params(grain=True)
+        job.video_params = make_video_params(grain=True, source_width=720, source_height=576)
         output_path = Path(job.output_file)
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -3477,12 +3498,24 @@ def _grain_executor(
     return executor, mocks
 
 
-def _grain_job(tmp_path: Path, *, grain: bool, passthrough: bool = False) -> Any:
+def _grain_job(
+    tmp_path: Path,
+    *,
+    grain: bool,
+    passthrough: bool = False,
+    source_width: int = 1920,
+    source_height: int = 1080,
+) -> Any:
     return make_job(
         job_id="grain-job",
         source_files=["/src/movie.mkv"],
         output_file=str(tmp_path / "output" / "movie.mkv"),
-        video_params=make_video_params(grain=grain, passthrough=passthrough),
+        video_params=make_video_params(
+            grain=grain,
+            passthrough=passthrough,
+            source_width=source_width,
+            source_height=source_height,
+        ),
         audio=[],
         subtitles=[],
         attachments=[],
@@ -3493,10 +3526,10 @@ def _grain_job(tmp_path: Path, *, grain: bool, passthrough: bool = False) -> Any
 
 
 class TestGrainEncoderRouting:
-    def test_grain_job_routes_to_grain_encoder(self, tmp_path: Path) -> None:
+    def test_grain_sd_routes_to_grain_encoder(self, tmp_path: Path) -> None:
         grain_enc = MagicMock()
         executor, mocks = _grain_executor(grain_encoder=grain_enc)
-        job = _grain_job(tmp_path, grain=True)
+        job = _grain_job(tmp_path, grain=True, source_width=720, source_height=576)
         output_path = Path(job.output_file)
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -3504,6 +3537,20 @@ class TestGrainEncoderRouting:
 
         grain_enc.encode.assert_called_once()
         assert not mocks.encoder.encode.called
+
+    def test_grain_hd_routes_to_main_encoder_at_fixed_qvbr(self, tmp_path: Path) -> None:
+        grain_enc = MagicMock()
+        executor, mocks = _grain_executor(grain_encoder=grain_enc)
+        job = _grain_job(tmp_path, grain=True, source_width=1920, source_height=1080)
+        output_path = Path(job.output_file)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        executor._run_pipeline(job, output_path, tmp_path)
+
+        mocks.encoder.encode.assert_called_once()
+        assert not grain_enc.encode.called
+        assert mocks.encoder.encode.call_args.kwargs["cq_override"] == 32
+        assert job.chosen_cq == 32
 
     def test_non_grain_job_routes_to_main_encoder(self, tmp_path: Path) -> None:
         grain_enc = MagicMock()
@@ -3517,9 +3564,9 @@ class TestGrainEncoderRouting:
         mocks.encoder.encode.assert_called_once()
         assert not grain_enc.encode.called
 
-    def test_grain_job_falls_back_to_main_when_no_grain_encoder(self, tmp_path: Path) -> None:
+    def test_grain_sd_falls_back_to_main_when_no_grain_encoder(self, tmp_path: Path) -> None:
         executor, mocks = _grain_executor(grain_encoder=None)
-        job = _grain_job(tmp_path, grain=True)
+        job = _grain_job(tmp_path, grain=True, source_width=720, source_height=576)
         output_path = Path(job.output_file)
         output_path.parent.mkdir(parents=True, exist_ok=True)
 

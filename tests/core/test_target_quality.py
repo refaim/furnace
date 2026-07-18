@@ -5,10 +5,13 @@ import math
 
 import pytest
 
+from furnace.core.models import CropRect
 from furnace.core.target_quality import (
     GRAIN_POOL_PERCENTILE,
     KnobSearchResult,
     TargetSpec,
+    fixed_grain_knob,
+    grain_uses_svt,
     interior_windows,
     linear_interpolate,
     natural_cubic_spline,
@@ -419,9 +422,9 @@ class TestResolveTarget:
     def test_grain_uses_crf_bounds_and_ssimulacra2(self) -> None:
         spec = resolve_target(make_video_params(grain=True, source_width=720, source_height=576))
         assert spec.metric == "ssimulacra2"
-        assert spec.knob_lo == 14
+        assert spec.knob_lo == 24
         assert spec.knob_hi == 34
-        assert spec.knob_lo < 23 < spec.knob_hi
+        assert spec.knob_lo < spec.knob_hi
         assert spec.target_lo < 70.0 < spec.target_hi
 
     def test_grain_samples_ten_windows(self) -> None:
@@ -436,15 +439,56 @@ class TestResolveTarget:
         ):
             assert resolve_target(vp).window_count == 3
 
-    def test_grain_overrides_resolution_bucket(self) -> None:
-        spec = resolve_target(make_video_params(grain=True, source_width=1920, source_height=1080))
-        assert spec.knob_hi == 34
+    def test_grain_hd_is_not_resolvable_here(self) -> None:
+        with pytest.raises(ValueError, match="SD-only"):
+            resolve_target(make_video_params(grain=True, source_width=1920, source_height=1080))
 
     def test_grain_hdr_raises_loudly(self) -> None:
         for transfer in ("smpte2084", "arib-std-b67"):
             vp = make_video_params(grain=True, color_transfer=transfer, color_matrix="bt2020nc")
             with pytest.raises(ValueError, match="grain target-quality is unsupported on HDR"):
                 resolve_target(vp)
+
+
+class TestGrainRouting:
+    def test_grain_sd_uses_svt(self) -> None:
+        assert grain_uses_svt(make_video_params(grain=True, source_width=720, source_height=576)) is True
+
+    def test_grain_hd_does_not_use_svt(self) -> None:
+        assert grain_uses_svt(make_video_params(grain=True, source_width=1920, source_height=1080)) is False
+
+    def test_height_720_counts_as_hd(self) -> None:
+        assert grain_uses_svt(make_video_params(grain=True, source_width=1280, source_height=720)) is False
+        assert grain_uses_svt(make_video_params(grain=True, source_width=1024, source_height=719)) is True
+
+    def test_non_grain_never_uses_svt(self) -> None:
+        assert grain_uses_svt(make_video_params(source_width=720, source_height=576)) is False
+        assert grain_uses_svt(make_video_params(source_width=1920, source_height=1080)) is False
+
+    def test_fixed_knob_only_for_hd_grain(self) -> None:
+        assert fixed_grain_knob(make_video_params(grain=True, source_width=1920, source_height=1080)) == 32
+
+    def test_no_fixed_knob_for_sd_grain(self) -> None:
+        assert fixed_grain_knob(make_video_params(grain=True, source_width=720, source_height=576)) is None
+
+    def test_no_fixed_knob_for_non_grain(self) -> None:
+        assert fixed_grain_knob(make_video_params(source_width=1920, source_height=1080)) is None
+        assert fixed_grain_knob(make_video_params(source_width=720, source_height=576)) is None
+
+    def test_svt_and_fixed_are_complementary_for_grain(self) -> None:
+        for w, h in ((720, 576), (1920, 1080), (1280, 720)):
+            vp = make_video_params(grain=True, source_width=w, source_height=h)
+            assert grain_uses_svt(vp) == (fixed_grain_knob(vp) is None)
+
+    def test_routing_uses_final_not_source_height(self) -> None:
+        vp = make_video_params(
+            grain=True,
+            source_width=1920,
+            source_height=1080,
+            crop=CropRect(w=1920, h=704, x=0, y=188),
+        )
+        assert grain_uses_svt(vp) is True
+        assert fixed_grain_knob(vp) is None
 
 
 class TestProbeWindows:

@@ -241,9 +241,11 @@ _QVBR_LO = 16
 _QVBR_HI = 44
 _MAX_PROBES = 4
 
-_CRF_LO = 14
 _CRF_HI = 34
 _GRAIN_TARGET = 70.0
+_GRAIN_SD_CRF_FLOOR = 24
+_GRAIN_HD_MIN_HEIGHT = 720
+_GRAIN_HD_QVBR = 32
 
 _FULL_PASS_FRACTION = 0.85
 
@@ -280,10 +282,16 @@ def resolve_target(vp: VideoParams) -> TargetSpec:
                 f"(transfer {vp.color_transfer!r}): SSIMULACRA2 does not score PQ/HLG "
                 f"correctly; HDR belongs on the NVEnc/CVVDP path"
             )
+        if not grain_uses_svt(vp):
+            raise ValueError(
+                f"grain target-quality search is SD-only; HD grain "
+                f"(final height >= {_GRAIN_HD_MIN_HEIGHT}) encodes at a fixed NVENC QVBR "
+                f"and must not reach resolve_target"
+            )
         return _spec(
             "ssimulacra2",
             _GRAIN_TARGET,
-            _CRF_LO,
+            _GRAIN_SD_CRF_FLOOR,
             _CRF_HI,
             window_count=_GRAIN_WINDOW_COUNT,
         )
@@ -302,6 +310,19 @@ def resolve_target(vp: VideoParams) -> TargetSpec:
         _QVBR_HI,
         window_count=_NVENC_WINDOW_COUNT,
     )
+
+
+def grain_uses_svt(vp: VideoParams) -> bool:
+    if not vp.grain:
+        return False
+    _, final_h = final_output_dimensions(vp)
+    return final_h < _GRAIN_HD_MIN_HEIGHT
+
+
+def fixed_grain_knob(vp: VideoParams) -> int | None:
+    if vp.grain and not grain_uses_svt(vp):
+        return _GRAIN_HD_QVBR
+    return None
 
 
 def _spec(

@@ -222,7 +222,7 @@ class TestGrainSearch:
         svc, grain_enc, metrics = _grain_service()
         result = svc.search(Path("grain.mkv"), _grain_vp(), duration_s=7200.0, work_dir=tmp_path)
         assert isinstance(result, KnobSearchResult)
-        assert 14 <= result.knob <= 34
+        assert 24 <= result.knob <= 34
         enc_kwargs = grain_enc.encode.call_args.kwargs
         assert enc_kwargs["cq_override"] == result.probes[-1][0]
         assert all(c.kwargs["pool"] is MetricPool.LOW for c in metrics.measure.call_args_list)
@@ -281,9 +281,9 @@ class TestGrainSearch:
         )
         svc = TargetQualityService(extractor, MagicMock(), grain_encoder=grain_enc, metrics=metrics)
         result = svc.search(Path("grain.mkv"), _grain_vp(), duration_s=7200.0, work_dir=tmp_path)
-        scores = [76.0 - i for i in range(10)]
+        scores = [71.0 - i for i in range(10)]
         assert result.probes[0][1] == pytest.approx(pool_grain_windows(scores))
-        assert result.probes[0][1] == pytest.approx(68.8)
+        assert result.probes[0][1] == pytest.approx(63.8)
 
     def test_grain_full_pass_single_window(self, tmp_path: Path) -> None:
         svc, _enc, metrics = _grain_service()
@@ -406,8 +406,8 @@ class TestSearchNarrationWiring:
             on_event=events.append,
         )
         assert "Probing CRF -> SSIMULACRA2 ~70.0 (10 windows, worst-case-pooled)" in events
-        assert "CRF 24: window 10/10 = 76.0" in events
-        assert "CRF 24 -> SSIMULACRA2 76.0" in events
+        assert "CRF 29: window 10/10 = 71.0" in events
+        assert "CRF 29 -> SSIMULACRA2 71.0" in events
 
     def test_search_without_on_event_is_silent_and_succeeds(self, tmp_path: Path) -> None:
         service, _extractor, _probe = _service()

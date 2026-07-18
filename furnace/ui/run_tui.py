@@ -23,6 +23,7 @@ from furnace.core.models import (
 )
 from furnace.core.progress import TrackerSnapshot
 from furnace.core.quality import final_output_dimensions
+from furnace.core.target_quality import grain_uses_svt
 from furnace.ui.fmt import fmt_size
 
 BAR_WIDTH = 40
@@ -186,7 +187,7 @@ def _build_target_text(job: Job) -> str:
         lines.append(f"Video: {codec} {vp.source_width}x{vp.source_height} (copy)")
     else:
         final_w, final_h = final_output_dimensions(vp)
-        knob = "CRF" if vp.grain else "QVBR"
+        knob = "CRF" if grain_uses_svt(vp) else "QVBR"
         value = str(job.chosen_cq) if job.chosen_cq is not None else "target"
         lines.append(f"Video: AV1 {final_w}x{final_h} {knob} {value}")
 

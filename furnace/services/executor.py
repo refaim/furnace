@@ -40,6 +40,7 @@ from furnace.core.ports import (
     VideoCopier,
 )
 from furnace.core.progress import ProgressSample, ProgressTracker
+from furnace.core.target_quality import fixed_grain_knob, grain_uses_svt
 from furnace.plan import update_job_status
 from furnace.services.target_quality import TargetQualityService
 
@@ -345,11 +346,20 @@ class Executor:
                 raise RuntimeError(f"Video passthrough copy failed with return code {rc}")
             encoder_settings = "video stream copied (passthrough)"
         else:
-            enc = self._grain_encoder if (job.video_params.grain and self._grain_encoder is not None) else self._encoder
+            enc = (
+                self._grain_encoder
+                if (grain_uses_svt(job.video_params) and self._grain_encoder is not None)
+                else self._encoder
+            )
 
             if self._progress is not None:
                 self._progress.update_status("Searching quality...")
-            cq_override = self._maybe_search_target_quality(job, main_source, temp_dir)
+            fixed = fixed_grain_knob(job.video_params)
+            if fixed is not None:
+                cq_override: int | None = fixed
+                job.chosen_cq = fixed
+            else:
+                cq_override = self._maybe_search_target_quality(job, main_source, temp_dir)
             if self._progress is not None and cq_override is not None:
                 self._progress.set_chosen_quality(cq_override)
 
@@ -466,7 +476,7 @@ class Executor:
         if self._target_quality is None or not self._target_quality.can_search(job.video_params):
             return None
 
-        knob = "CRF" if job.video_params.grain else "QVBR"
+        knob = "CRF" if grain_uses_svt(job.video_params) else "QVBR"
 
         if job.chosen_cq is not None:
             logger.info("Reusing cached target-quality %s %d for %s", knob, job.chosen_cq, source.name)
