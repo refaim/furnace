@@ -422,7 +422,7 @@ class TestResolveTarget:
     def test_grain_uses_crf_bounds_and_ssimulacra2(self) -> None:
         spec = resolve_target(make_video_params(grain=True, source_width=720, source_height=576))
         assert spec.metric == "ssimulacra2"
-        assert spec.knob_lo == 24
+        assert spec.knob_lo == 26
         assert spec.knob_hi == 34
         assert spec.knob_lo < spec.knob_hi
         assert spec.target_lo < 70.0 < spec.target_hi
