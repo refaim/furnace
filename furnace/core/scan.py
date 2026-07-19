@@ -70,6 +70,7 @@ class VideoSummary:
     width: int | None = None
     height: int | None = None
     color_matrix: str | None = None
+    color_transfer: str | None = None
 
 
 @dataclass(frozen=True)
@@ -120,6 +121,7 @@ def summarize_streams(
             width=vs.get("width"),
             height=vs.get("height"),
             color_matrix=vs.get("color_space"),
+            color_transfer=vs.get("color_transfer"),
         )
     else:
         video = VideoSummary(None, None, None)

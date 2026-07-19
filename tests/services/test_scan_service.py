@@ -81,7 +81,7 @@ class TestRowBuilding:
             ScanRow(
                 path=movie,
                 furnace_version=(1, 19, 3),
-                video=VideoSummary(codec="hevc", bit_depth=10, hdr="HDR10"),
+                video=VideoSummary(codec="hevc", bit_depth=10, hdr="HDR10", color_transfer="smpte2084"),
                 audio=(
                     AudioTrackSummary(language="rus", codec="eac3", channels=6),
                     AudioTrackSummary(language=None, codec="aac", channels=2),
@@ -463,6 +463,41 @@ class TestOutdated:
 
         reasons = [d.reason for d in rows[0].defects]
         assert reasons == ["fps drift", "crop 4px", "grain loss", "color tags"]
+
+    def test_pre_target_quality_hdr_flagged_soft_qvbr(self, tmp_path: Path) -> None:
+        movie = tmp_path / "xmen.mkv"
+        movie.touch()
+        probe = make_probe(
+            encoder="Furnace v2.9.0",
+            encoder_settings="av1_nvenc / NVEncC=8.00 / main",
+            video="av1",
+            height=1600,
+            color_space="bt2020nc",
+            color_transfer="smpte2084",
+        )
+        service, _ = make_service({movie: probe})
+
+        rows, _ = service.scan(tmp_path, outdated=True)
+
+        assert [d.reason for d in rows[0].defects] == ["soft QVBR (HDR)"]
+        assert rows[0].defects[0].fix is Fix.RE_ENCODE
+
+    def test_current_hdr_encode_not_flagged(self, tmp_path: Path) -> None:
+        movie = tmp_path / "fresh.mkv"
+        movie.touch()
+        probe = make_probe(
+            encoder="Furnace v2.19.1",
+            encoder_settings="av1_nvenc / NVEncC=8.00 / main",
+            video="av1",
+            height=1600,
+            color_space="bt2020nc",
+            color_transfer="smpte2084",
+        )
+        service, _ = make_service({movie: probe})
+
+        rows, _ = service.scan(tmp_path, outdated=True)
+
+        assert rows == []
 
     def test_normal_mode_does_not_attach_defects(self, tmp_path: Path) -> None:
         movie = tmp_path / "old.mkv"

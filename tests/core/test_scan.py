@@ -191,7 +191,23 @@ def test_summarize_streams_video_with_bit_depth_and_hdr() -> None:
         ]
     }
     video, _, _ = summarize_streams(probe)
-    assert video == VideoSummary(codec="hevc", bit_depth=10, hdr="HDR10")
+    assert video == VideoSummary(codec="hevc", bit_depth=10, hdr="HDR10", color_transfer="smpte2084")
+
+
+def test_summarize_streams_populates_color_transfer() -> None:
+    probe = {
+        "streams": [
+            {"codec_type": "video", "codec_name": "av1", "color_transfer": "smpte2084"},
+        ]
+    }
+    video, _, _ = summarize_streams(probe)
+    assert video.color_transfer == "smpte2084"
+
+
+def test_summarize_streams_missing_color_transfer_is_none() -> None:
+    probe = {"streams": [{"codec_type": "video", "codec_name": "av1"}]}
+    video, _, _ = summarize_streams(probe)
+    assert video.color_transfer is None
 
 
 def test_summarize_streams_video_dolby_vision_from_side_data() -> None:

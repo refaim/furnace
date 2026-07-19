@@ -24,6 +24,7 @@ def classify(**overrides: object) -> tuple[Defect, ...]:
         "codec": "av1",
         "height": 1080,
         "color_matrix": "bt709",
+        "color_transfer": None,
         "audio_channels": (6,),
     }
     params.update(overrides)
@@ -212,6 +213,56 @@ class TestSoftQvbr:
         assert "soft QVBR" not in _reasons(
             classify(encoder_family=EncoderFamily.AV1_SVT, version=(2, 1, 5), height=2160)
         )
+
+
+class TestSoftQvbrHdr:
+    def test_fires_for_pre_target_quality_hdr10(self) -> None:
+        defects = classify(
+            encoder_family=EncoderFamily.AV1_NVENC,
+            version=(2, 9, 0),
+            height=1600,
+            color_matrix="bt2020nc",
+            color_transfer="smpte2084",
+        )
+        assert Defect("soft QVBR (HDR)", Severity.QUALITY, Fix.RE_ENCODE) in defects
+
+    def test_fires_for_hlg(self) -> None:
+        assert "soft QVBR (HDR)" in _reasons(classify(version=(2, 9, 0), color_transfer="arib-std-b67"))
+
+    def test_boundary_version_2_11_0_does_not_fire(self) -> None:
+        assert "soft QVBR (HDR)" not in _reasons(classify(version=(2, 11, 0), color_transfer="smpte2084"))
+
+    def test_above_target_quality_does_not_fire(self) -> None:
+        assert "soft QVBR (HDR)" not in _reasons(classify(version=(2, 19, 1), color_transfer="smpte2084"))
+
+    def test_sdr_transfer_does_not_fire(self) -> None:
+        assert "soft QVBR (HDR)" not in _reasons(classify(version=(2, 9, 0), color_transfer="bt709"))
+
+    def test_none_transfer_does_not_fire(self) -> None:
+        assert "soft QVBR (HDR)" not in _reasons(classify(version=(2, 9, 0), color_transfer=None))
+
+    def test_svt_family_does_not_fire(self) -> None:
+        assert "soft QVBR (HDR)" not in _reasons(
+            classify(encoder_family=EncoderFamily.AV1_SVT, version=(2, 9, 0), color_transfer="smpte2084")
+        )
+
+    def test_passthrough_does_not_fire(self) -> None:
+        assert "soft QVBR (HDR)" not in _reasons(
+            classify(encoder_family=EncoderFamily.PASSTHROUGH, version=(2, 9, 0), color_transfer="smpte2084")
+        )
+
+    def test_fires_independent_of_height(self) -> None:
+        assert "soft QVBR (HDR)" in _reasons(classify(version=(2, 9, 0), height=None, color_transfer="smpte2084"))
+
+    def test_pre_2_2_0_hdr_uhd_stacks_both_qvbr_reasons(self) -> None:
+        defects = classify(
+            encoder_family=EncoderFamily.AV1_NVENC,
+            version=(2, 1, 5),
+            height=2160,
+            color_matrix="bt2020nc",
+            color_transfer="smpte2084",
+        )
+        assert _reasons(defects) == ["soft QVBR", "soft QVBR (HDR)"]
 
 
 class TestGrainLoss:

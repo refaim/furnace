@@ -4,7 +4,7 @@ import enum
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-from .detect import _HD_MIN_HEIGHT, _NTSC_HEIGHTS
+from .detect import _HD_MIN_HEIGHT, _NTSC_HEIGHTS, is_hdr_transfer
 
 _SOFT_QVBR_MIN_HEIGHT = 1440
 
@@ -51,6 +51,7 @@ _CROP_4PX_FIXED = (2, 1, 2)
 _FPS_DRIFT_FIXED = (2, 1, 4)
 _SOFT_TELECINE_FIXED = (2, 6, 0)
 _SOFT_QVBR_FIXED = (2, 2, 0)
+_TARGET_QUALITY_FIXED = (2, 11, 0)
 _GRAIN_LOSS_FIXED = (2, 7, 0)
 _COLOR_TAGS_FIXED = (2, 7, 2)
 _MONO_DOWNMIX_VERSION = (2, 0, 0)
@@ -68,6 +69,7 @@ def classify_outdated(
     codec: str | None,
     height: int | None,
     color_matrix: str | None,
+    color_transfer: str | None,
     audio_channels: Sequence[int | None],
 ) -> tuple[Defect, ...]:
     if unreadable:
@@ -102,6 +104,13 @@ def classify_outdated(
         and height >= _SOFT_QVBR_MIN_HEIGHT
     ):
         defects.append(Defect("soft QVBR", Severity.QUALITY, Fix.RE_ENCODE))
+
+    if (
+        encoder_family is EncoderFamily.AV1_NVENC
+        and version < _TARGET_QUALITY_FIXED
+        and is_hdr_transfer(color_transfer)
+    ):
+        defects.append(Defect("soft QVBR (HDR)", Severity.QUALITY, Fix.RE_ENCODE))
 
     if (
         encoder_family is EncoderFamily.AV1_NVENC
