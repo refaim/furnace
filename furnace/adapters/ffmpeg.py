@@ -240,7 +240,7 @@ class FFmpegAdapter:
             parts.append(
                 "zscale=tin=linear:min=2020_ncl:pin=2020:t=bt709:m=bt709:p=bt709:r=tv",
             )
-            parts.append("format=yuv420p")
+        parts.append("format=yuv420p")
         parts.append(
             f"cropdetect={self._CROP_DETECT_LIMIT}:{self._CROP_DETECT_ROUND}:0",
         )

@@ -8,8 +8,8 @@ import pytest
 
 from furnace.adapters.ffmpeg import FFmpegAdapter
 
-_SDR_VF = "cropdetect=40:2:0"
-_SDR_VF_INTERLACED = "yadif,cropdetect=40:2:0"
+_SDR_VF = "format=yuv420p,cropdetect=40:2:0"
+_SDR_VF_INTERLACED = "yadif,format=yuv420p,cropdetect=40:2:0"
 
 _PQ_CHAIN = (
     "zscale=tin=smpte2084:min=2020_ncl:pin=2020:t=linear:npl=100,"
@@ -65,3 +65,19 @@ def test_detect_crop_filter_chain(
     assert mock_run.call_count == 20
     for i in range(mock_run.call_count):
         assert _captured_vf(mock_run.call_args_list, i) == expected_vf
+
+
+@pytest.mark.parametrize("hdr_transfer", [None, "smpte2084", "arib-std-b67"])
+def test_cropdetect_downconverts_to_8bit_before_detect(hdr_transfer: str | None) -> None:
+    adapter = FFmpegAdapter(Path("ffmpeg"), Path("ffprobe"))
+    fake_result = MagicMock()
+    fake_result.stderr = "[Parsed_cropdetect_0 @ 0x0] crop=3840:1600:0:280\n"
+    fake_result.returncode = 0
+    with patch(
+        "furnace.adapters.ffmpeg.subprocess.run",
+        return_value=fake_result,
+    ) as mock_run:
+        adapter.detect_crop(Path("x.mkv"), duration_s=1000.0, hdr_transfer=hdr_transfer)
+    filters = _captured_vf(mock_run.call_args_list, 0).split(",")
+    assert filters.count("format=yuv420p") == 1
+    assert filters.index("format=yuv420p") == filters.index("cropdetect=40:2:0") - 1

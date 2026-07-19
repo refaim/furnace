@@ -80,6 +80,76 @@ def _minimal_job(**kwargs: Any) -> Any:
     return make_job(**defaults)
 
 
+class TestVerifyAudioNotTruncated:
+    @staticmethod
+    def _probe(source: dict[str, Any], produced_path: Path, produced: dict[str, Any]) -> Any:
+        def _side_effect(path: Any) -> dict[str, Any]:
+            return produced if Path(path) == produced_path else source
+
+        return _side_effect
+
+    def test_raises_when_produced_far_shorter(
+        self,
+        executor_with_mocks: tuple[Executor, SimpleNamespace],
+        tmp_path: Path,
+    ) -> None:
+        executor, mocks = executor_with_mocks
+        produced = tmp_path / "audio_1.m4a"
+        mocks.prober.probe.side_effect = self._probe(
+            {"streams": [{"index": 1, "tags": {"DURATION": "02:02:25.152000000"}}]},
+            produced,
+            {"streams": [{"index": 0, "duration": "1794.4"}]},
+        )
+        instr = make_audio_instruction(action=AudioAction.DECODE_ENCODE, stream_index=1, codec_name="ac3")
+        with pytest.raises(RuntimeError, match="truncated"):
+            executor._verify_audio_not_truncated(instr, produced)
+
+    def test_passes_when_full_length(
+        self,
+        executor_with_mocks: tuple[Executor, SimpleNamespace],
+        tmp_path: Path,
+    ) -> None:
+        executor, mocks = executor_with_mocks
+        produced = tmp_path / "audio_1.m4a"
+        mocks.prober.probe.side_effect = self._probe(
+            {"streams": [{"index": 1, "tags": {"DURATION": "02:02:25.152000000"}}]},
+            produced,
+            {"streams": [{"index": 0, "duration": "7345.1"}]},
+        )
+        instr = make_audio_instruction(action=AudioAction.DECODE_ENCODE, stream_index=1, codec_name="ac3")
+        executor._verify_audio_not_truncated(instr, produced)
+
+    def test_skips_when_source_duration_unknown(
+        self,
+        executor_with_mocks: tuple[Executor, SimpleNamespace],
+        tmp_path: Path,
+    ) -> None:
+        executor, mocks = executor_with_mocks
+        produced = tmp_path / "audio_1.m4a"
+        mocks.prober.probe.side_effect = self._probe(
+            {"chapters": []},
+            produced,
+            {"streams": [{"index": 0, "duration": "1794.4"}]},
+        )
+        instr = make_audio_instruction(action=AudioAction.DECODE_ENCODE, stream_index=1, codec_name="ac3")
+        executor._verify_audio_not_truncated(instr, produced)
+
+    def test_skips_when_produced_duration_unknown(
+        self,
+        executor_with_mocks: tuple[Executor, SimpleNamespace],
+        tmp_path: Path,
+    ) -> None:
+        executor, mocks = executor_with_mocks
+        produced = tmp_path / "audio_1.m4a"
+        mocks.prober.probe.side_effect = self._probe(
+            {"streams": [{"index": 1, "tags": {"DURATION": "02:02:25.152000000"}}]},
+            produced,
+            {"chapters": []},
+        )
+        instr = make_audio_instruction(action=AudioAction.DECODE_ENCODE, stream_index=1, codec_name="ac3")
+        executor._verify_audio_not_truncated(instr, produced)
+
+
 class TestProcessAudioTrackCopy:
     def test_copy_success_returns_path(
         self,
@@ -761,6 +831,31 @@ class TestRunPipelineHappyPath:
         mocks.tagger.set_encoder_tag.assert_called_once()
         mocks.cleaner.clean.assert_called_once()
         assert output_path.exists()
+
+
+class TestRunPipelineAudioTruncation:
+    def test_truncated_audio_aborts_before_mux(
+        self,
+        executor_with_mocks: tuple[Executor, SimpleNamespace],
+        tmp_path: Path,
+    ) -> None:
+        executor, mocks = executor_with_mocks
+        audio_instr = make_audio_instruction(action=AudioAction.DENORM, codec_name="ac3", stream_index=1)
+        job = _pipeline_job(tmp_path, audio=[audio_instr])
+
+        def probe(path: Any) -> dict[str, Any]:
+            if str(path) == audio_instr.source_file:
+                return {"chapters": [], "streams": [{"index": 1, "tags": {"DURATION": "02:02:25.152000000"}}]}
+            return {"streams": [{"index": 0, "duration": "1794.4"}]}
+
+        mocks.prober.probe.side_effect = probe
+        output_path = Path(job.output_file)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        with pytest.raises(RuntimeError, match="truncated"):
+            executor._run_pipeline(job, output_path, tmp_path)
+
+        mocks.muxer.mux.assert_not_called()
 
 
 class TestRunPipelineWithDvRpu:

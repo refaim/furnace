@@ -15,6 +15,7 @@ from typing import Any
 import psutil
 
 from furnace import VERSION as FURNACE_VERSION
+from furnace.core.audio_integrity import audio_is_truncated, probe_audio_duration
 from furnace.core.chapters import chapters_have_mojibake, write_ogm_chapters
 from furnace.core.models import (
     STEREO_CHANNELS,
@@ -47,6 +48,8 @@ from furnace.services.target_quality import TargetQualityService
 logger = logging.getLogger(__name__)
 
 MAX_STDERR_LINES = 6
+
+_PRODUCED_AUDIO_STREAM_INDEX = 0
 
 _AUDIO_CODEC_EXT: dict[str, str] = {
     "aac": ".m4a",
@@ -253,6 +256,7 @@ class Executor:
                 self._progress.update_status(status_msg)
                 self._progress.add_tool_line(f"[furnace] {status_msg}")
             audio_path = self._process_audio_track(audio_instr, temp_dir, job)
+            self._verify_audio_not_truncated(audio_instr, audio_path)
             audio_meta = {
                 "language": audio_instr.language,
                 "default": audio_instr.is_default,
@@ -533,6 +537,30 @@ class Executor:
     def _search_narration(self, message: str) -> None:
         if self._progress is not None:
             self._progress.add_tool_line(f"[furnace] {message}")
+
+    def _verify_audio_not_truncated(self, instr: AudioInstruction, produced: Path) -> None:
+        source_s = probe_audio_duration(
+            self._prober.probe(Path(instr.source_file)),
+            instr.stream_index,
+            allow_container_fallback=False,
+        )
+        produced_s = probe_audio_duration(self._prober.probe(produced), _PRODUCED_AUDIO_STREAM_INDEX)
+        if source_s is None or produced_s is None:
+            logger.warning(
+                "Cannot verify audio length for stream %d of %s (source=%s, produced=%s); skipping truncation check",
+                instr.stream_index,
+                instr.source_file,
+                source_s,
+                produced_s,
+            )
+            return
+        if audio_is_truncated(source_s, produced_s):
+            raise RuntimeError(
+                f"Audio truncated: stream {instr.stream_index} of {instr.source_file} "
+                f"encoded to {produced_s:.1f}s but source runs {source_s:.1f}s "
+                f"({produced_s / source_s * 100:.0f}%); refusing to mux incomplete audio "
+                f"(a decoder likely bailed on a corrupt frame)"
+            )
 
     def _process_audio_track(self, instr: AudioInstruction, temp_dir: Path, job: Job) -> Path:
         source_path = Path(instr.source_file)
