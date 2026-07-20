@@ -256,11 +256,12 @@ class Executor:
                 self._progress.update_status(status_msg)
                 self._progress.add_tool_line(f"[furnace] {status_msg}")
             audio_path = self._process_audio_track(audio_instr, temp_dir, job)
-            self._verify_audio_not_truncated(audio_instr, audio_path)
+            audio_path, repaired = self._verify_and_repair_audio(audio_instr, audio_path, temp_dir, job)
+            keeps_source_delay = audio_instr.action == AudioAction.COPY and not repaired
             audio_meta = {
                 "language": audio_instr.language,
                 "default": audio_instr.is_default,
-                "delay_ms": audio_instr.delay_ms if audio_instr.action == AudioAction.COPY else 0,
+                "delay_ms": audio_instr.delay_ms if keeps_source_delay else 0,
             }
             audio_files.append((audio_path, audio_meta))
             if self._progress is not None and audio_path.exists():
@@ -507,7 +508,7 @@ class Executor:
                 job.video_params,
                 job.duration_s,
                 temp_dir,
-                on_event=self._search_narration,
+                on_event=self._narrate,
             )
         finally:
             if self._progress is not None:
@@ -534,33 +535,157 @@ class Executor:
                 )
         return result.knob
 
-    def _search_narration(self, message: str) -> None:
+    def _narrate(self, message: str) -> None:
         if self._progress is not None:
             self._progress.add_tool_line(f"[furnace] {message}")
 
-    def _verify_audio_not_truncated(self, instr: AudioInstruction, produced: Path) -> None:
-        source_s = probe_audio_duration(
+    def _verify_and_repair_audio(
+        self,
+        instr: AudioInstruction,
+        produced: Path,
+        temp_dir: Path,
+        job: Job,
+    ) -> tuple[Path, bool]:
+        declared_s = probe_audio_duration(
             self._prober.probe(Path(instr.source_file)),
             instr.stream_index,
             allow_container_fallback=False,
         )
         produced_s = probe_audio_duration(self._prober.probe(produced), _PRODUCED_AUDIO_STREAM_INDEX)
-        if source_s is None or produced_s is None:
+        if declared_s is None or produced_s is None:
             logger.warning(
-                "Cannot verify audio length for stream %d of %s (source=%s, produced=%s); skipping truncation check",
+                "Cannot verify audio length for stream %d of %s (declared=%s, produced=%s); skipping check",
                 instr.stream_index,
                 instr.source_file,
-                source_s,
+                declared_s,
                 produced_s,
             )
-            return
-        if audio_is_truncated(source_s, produced_s):
+            return produced, False
+        if not audio_is_truncated(declared_s, produced_s):
+            return produced, False
+
+        logger.warning(
+            "Audio stream %d of %s produced %.1fs vs declared %.1fs; running ffmpeg decode oracle",
+            instr.stream_index,
+            instr.source_file,
+            produced_s,
+            declared_s,
+        )
+        self._narrate(
+            f"Audio stream {instr.stream_index} short ({produced_s:.0f}s of {declared_s:.0f}s); checking source"
+        )
+        healed = temp_dir / f"audio_{instr.stream_index}_healed.wav"
+        _, on_progress = self._make_progress_callback(total_s=job.duration_s or None)
+        rc = self._audio_extractor.decode_full_wav(
+            Path(instr.source_file),
+            instr.stream_index,
+            healed,
+            disable_drc=instr.codec_name.lower() in _FFMPEG_DRC_CODECS,
+            on_progress=on_progress,
+        )
+        if rc != 0:
             raise RuntimeError(
-                f"Audio truncated: stream {instr.stream_index} of {instr.source_file} "
-                f"encoded to {produced_s:.1f}s but source runs {source_s:.1f}s "
-                f"({produced_s / source_s * 100:.0f}%); refusing to mux incomplete audio "
-                f"(a decoder likely bailed on a corrupt frame)"
+                f"Audio oracle decode failed with rc={rc} for stream {instr.stream_index} of {instr.source_file}"
             )
+        decoded_s = probe_audio_duration(self._prober.probe(healed), _PRODUCED_AUDIO_STREAM_INDEX)
+        if decoded_s is None:
+            raise RuntimeError(
+                f"Cannot measure decoded audio length for stream {instr.stream_index} of {instr.source_file}"
+            )
+        if not audio_is_truncated(decoded_s, produced_s):
+            logger.warning(
+                "Audio stream %d of %s is genuinely short (source decodes to %.1fs, produced %.1fs); accepting",
+                instr.stream_index,
+                instr.source_file,
+                decoded_s,
+                produced_s,
+            )
+            self._narrate(
+                f"Audio stream {instr.stream_index} genuinely short ({decoded_s:.0f}s); accepting as-is"
+            )
+            return produced, False
+
+        logger.warning(
+            "Audio stream %d of %s truncated (%.1fs of decodable %.1fs); repairing from ffmpeg full decode",
+            instr.stream_index,
+            instr.source_file,
+            produced_s,
+            decoded_s,
+        )
+        self._narrate(
+            f"Audio stream {instr.stream_index} truncated ({produced_s:.0f}s of {decoded_s:.0f}s); repairing"
+        )
+        repaired = self._repair_audio_from_wav(instr, healed, temp_dir)
+        repaired_s = probe_audio_duration(self._prober.probe(repaired), _PRODUCED_AUDIO_STREAM_INDEX)
+        if repaired_s is None:
+            raise RuntimeError(
+                f"Cannot measure repaired audio length for stream {instr.stream_index} of {instr.source_file}"
+            )
+        if audio_is_truncated(decoded_s, repaired_s):
+            raise RuntimeError(
+                f"Audio repair failed for stream {instr.stream_index} of {instr.source_file}: "
+                f"still {repaired_s:.1f}s of decodable {decoded_s:.1f}s"
+            )
+        return repaired, True
+
+    def _repair_audio_from_wav(self, instr: AudioInstruction, healed_wav: Path, temp_dir: Path) -> Path:
+        track_idx = instr.stream_index
+        if instr.downmix == DownmixMode.MONO:
+            final_wav = self._repair_mono_wav(instr, healed_wav, temp_dir)
+        else:
+            final_wav = temp_dir / f"audio_{track_idx}_repaired.wav"
+            _, on_progress = self._make_progress_callback(total_s=None)
+            rc = self._audio_decoder.decode_lossless(
+                healed_wav,
+                final_wav,
+                instr.delay_ms,
+                on_progress=on_progress,
+                downmix=instr.downmix,
+            )
+            if rc != 0:
+                raise RuntimeError(f"Audio repair decode failed with rc={rc} for stream {track_idx}")
+        return self._repair_encode(final_wav, track_idx, temp_dir)
+
+    def _repair_mono_wav(self, instr: AudioInstruction, healed_wav: Path, temp_dir: Path) -> Path:
+        track_idx = instr.stream_index
+        if instr.channels is None:
+            raise RuntimeError(f"MONO audio repair without channel count for stream {track_idx}")
+        if instr.channels == STEREO_CHANNELS:
+            source_wav = healed_wav
+            mono_delay = instr.delay_ms
+        else:
+            source_wav = temp_dir / f"audio_{track_idx}_repaired_stereo.wav"
+            _, on_progress = self._make_progress_callback(total_s=None)
+            rc = self._audio_decoder.decode_lossless(
+                healed_wav,
+                source_wav,
+                instr.delay_ms,
+                on_progress=on_progress,
+                downmix=DownmixMode.STEREO,
+            )
+            if rc != 0:
+                raise RuntimeError(f"Audio repair stereo downmix failed with rc={rc} for stream {track_idx}")
+            mono_delay = 0
+        mono_wav = temp_dir / f"audio_{track_idx}_repaired_mono.wav"
+        _, on_progress = self._make_progress_callback(total_s=None)
+        rc = self._audio_extractor.stereo_to_mono_wav(
+            input_path=source_wav,
+            stream_index=0,
+            output_wav=mono_wav,
+            delay_ms=mono_delay,
+            on_progress=on_progress,
+        )
+        if rc != 0:
+            raise RuntimeError(f"Audio repair mono average failed with rc={rc} for stream {track_idx}")
+        return mono_wav
+
+    def _repair_encode(self, wav: Path, track_idx: int, temp_dir: Path) -> Path:
+        m4a = temp_dir / f"audio_{track_idx}_repaired.m4a"
+        _, on_progress = self._make_progress_callback(total_s=None)
+        rc = self._aac_encoder.encode_aac(wav, m4a, on_progress=on_progress)
+        if rc != 0:
+            raise RuntimeError(f"Audio repair AAC encode failed with rc={rc} for stream {track_idx}")
+        return m4a
 
     def _process_audio_track(self, instr: AudioInstruction, temp_dir: Path, job: Job) -> Path:
         source_path = Path(instr.source_file)

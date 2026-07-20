@@ -43,6 +43,8 @@ def executor_with_mocks() -> tuple[Executor, SimpleNamespace]:
     )
     mocks.audio_extractor.extract_track.return_value = 0
     mocks.audio_extractor.ffmpeg_to_wav.return_value = 0
+    mocks.audio_extractor.decode_full_wav.return_value = 0
+    mocks.audio_extractor.stereo_to_mono_wav.return_value = 0
     mocks.audio_decoder.decode_lossless.return_value = 0
     mocks.audio_decoder.denormalize.return_value = 0
     mocks.aac_encoder.encode_aac.return_value = 0
@@ -80,74 +82,322 @@ def _minimal_job(**kwargs: Any) -> Any:
     return make_job(**defaults)
 
 
-class TestVerifyAudioNotTruncated:
-    @staticmethod
-    def _probe(source: dict[str, Any], produced_path: Path, produced: dict[str, Any]) -> Any:
-        def _side_effect(path: Any) -> dict[str, Any]:
-            return produced if Path(path) == produced_path else source
+def _stream0_probe(seconds: float | None) -> dict[str, Any]:
+    if seconds is None:
+        return {"chapters": []}
+    return {"streams": [{"index": 0, "duration": str(seconds)}]}
 
-        return _side_effect
 
-    def test_raises_when_produced_far_shorter(
+def _source_probe(seconds: float | None, stream_index: int = 1) -> dict[str, Any]:
+    if seconds is None:
+        return {"chapters": []}
+    return {"streams": [{"index": stream_index, "duration": str(seconds)}]}
+
+
+def _repair_probe_router(
+    *,
+    declared: float | None,
+    produced: float | None,
+    decoded: float | None = None,
+    repaired: float | None = None,
+    source_file: str = "/src/movie.mkv",
+    stream_index: int = 1,
+) -> Any:
+    def probe(path: Any) -> dict[str, Any]:
+        p = str(path)
+        if p == source_file:
+            return _source_probe(declared, stream_index)
+        if "_healed" in p:
+            return _stream0_probe(decoded)
+        if "_repaired.m4a" in p:
+            return _stream0_probe(repaired)
+        return _stream0_probe(produced)
+
+    return probe
+
+
+class TestVerifyAndRepairAudio:
+    def test_full_length_returns_produced_unchanged(
         self,
         executor_with_mocks: tuple[Executor, SimpleNamespace],
         tmp_path: Path,
     ) -> None:
         executor, mocks = executor_with_mocks
         produced = tmp_path / "audio_1.m4a"
-        mocks.prober.probe.side_effect = self._probe(
-            {"streams": [{"index": 1, "tags": {"DURATION": "02:02:25.152000000"}}]},
-            produced,
-            {"streams": [{"index": 0, "duration": "1794.4"}]},
-        )
+        mocks.prober.probe.side_effect = _repair_probe_router(declared=7345.0, produced=7345.0)
         instr = make_audio_instruction(action=AudioAction.DECODE_ENCODE, stream_index=1, codec_name="ac3")
-        with pytest.raises(RuntimeError, match="truncated"):
-            executor._verify_audio_not_truncated(instr, produced)
+        result, repaired = executor._verify_and_repair_audio(instr, produced, tmp_path, _minimal_job())
+        assert result == produced
+        assert repaired is False
+        mocks.audio_extractor.decode_full_wav.assert_not_called()
 
-    def test_passes_when_full_length(
+    def test_declared_unknown_skips_and_returns_produced(
         self,
         executor_with_mocks: tuple[Executor, SimpleNamespace],
         tmp_path: Path,
     ) -> None:
         executor, mocks = executor_with_mocks
         produced = tmp_path / "audio_1.m4a"
-        mocks.prober.probe.side_effect = self._probe(
-            {"streams": [{"index": 1, "tags": {"DURATION": "02:02:25.152000000"}}]},
-            produced,
-            {"streams": [{"index": 0, "duration": "7345.1"}]},
-        )
+        mocks.prober.probe.side_effect = _repair_probe_router(declared=None, produced=1794.0)
         instr = make_audio_instruction(action=AudioAction.DECODE_ENCODE, stream_index=1, codec_name="ac3")
-        executor._verify_audio_not_truncated(instr, produced)
+        result, repaired = executor._verify_and_repair_audio(instr, produced, tmp_path, _minimal_job())
+        assert result == produced
+        assert repaired is False
+        mocks.audio_extractor.decode_full_wav.assert_not_called()
 
-    def test_skips_when_source_duration_unknown(
+    def test_produced_unknown_skips_and_returns_produced(
         self,
         executor_with_mocks: tuple[Executor, SimpleNamespace],
         tmp_path: Path,
     ) -> None:
         executor, mocks = executor_with_mocks
         produced = tmp_path / "audio_1.m4a"
-        mocks.prober.probe.side_effect = self._probe(
-            {"chapters": []},
-            produced,
-            {"streams": [{"index": 0, "duration": "1794.4"}]},
-        )
+        mocks.prober.probe.side_effect = _repair_probe_router(declared=7345.0, produced=None)
         instr = make_audio_instruction(action=AudioAction.DECODE_ENCODE, stream_index=1, codec_name="ac3")
-        executor._verify_audio_not_truncated(instr, produced)
+        result, repaired = executor._verify_and_repair_audio(instr, produced, tmp_path, _minimal_job())
+        assert result == produced
+        assert repaired is False
 
-    def test_skips_when_produced_duration_unknown(
+    def test_genuine_short_accepts_produced(
         self,
         executor_with_mocks: tuple[Executor, SimpleNamespace],
         tmp_path: Path,
     ) -> None:
         executor, mocks = executor_with_mocks
         produced = tmp_path / "audio_1.m4a"
-        mocks.prober.probe.side_effect = self._probe(
-            {"streams": [{"index": 1, "tags": {"DURATION": "02:02:25.152000000"}}]},
-            produced,
-            {"chapters": []},
+        mocks.prober.probe.side_effect = _repair_probe_router(declared=7345.0, produced=1794.0, decoded=1800.0)
+        instr = make_audio_instruction(action=AudioAction.DECODE_ENCODE, stream_index=1, codec_name="ac3")
+        result, repaired = executor._verify_and_repair_audio(instr, produced, tmp_path, _minimal_job())
+        assert result == produced
+        assert repaired is False
+        mocks.audio_extractor.decode_full_wav.assert_called_once()
+        mocks.aac_encoder.encode_aac.assert_not_called()
+
+    def test_bug_repairs_and_returns_repaired(
+        self,
+        executor_with_mocks: tuple[Executor, SimpleNamespace],
+        tmp_path: Path,
+    ) -> None:
+        executor, mocks = executor_with_mocks
+        produced = tmp_path / "audio_1.m4a"
+        mocks.prober.probe.side_effect = _repair_probe_router(
+            declared=7345.0, produced=1794.0, decoded=7340.0, repaired=7340.0
         )
         instr = make_audio_instruction(action=AudioAction.DECODE_ENCODE, stream_index=1, codec_name="ac3")
-        executor._verify_audio_not_truncated(instr, produced)
+        result, repaired = executor._verify_and_repair_audio(instr, produced, tmp_path, _minimal_job())
+        assert result == tmp_path / "audio_1_repaired.m4a"
+        assert repaired is True
+        mocks.audio_decoder.decode_lossless.assert_called_once()
+        assert mocks.audio_decoder.decode_lossless.call_args.kwargs["downmix"] is None
+        mocks.aac_encoder.encode_aac.assert_called_once()
+
+    def test_oracle_decode_failure_raises(
+        self,
+        executor_with_mocks: tuple[Executor, SimpleNamespace],
+        tmp_path: Path,
+    ) -> None:
+        executor, mocks = executor_with_mocks
+        produced = tmp_path / "audio_1.m4a"
+        mocks.prober.probe.side_effect = _repair_probe_router(declared=7345.0, produced=1794.0)
+        mocks.audio_extractor.decode_full_wav.return_value = 1
+        instr = make_audio_instruction(action=AudioAction.DECODE_ENCODE, stream_index=1, codec_name="ac3")
+        with pytest.raises(RuntimeError, match="oracle decode failed"):
+            executor._verify_and_repair_audio(instr, produced, tmp_path, _minimal_job())
+
+    def test_decoded_length_unknown_raises(
+        self,
+        executor_with_mocks: tuple[Executor, SimpleNamespace],
+        tmp_path: Path,
+    ) -> None:
+        executor, mocks = executor_with_mocks
+        produced = tmp_path / "audio_1.m4a"
+        mocks.prober.probe.side_effect = _repair_probe_router(declared=7345.0, produced=1794.0, decoded=None)
+        instr = make_audio_instruction(action=AudioAction.DECODE_ENCODE, stream_index=1, codec_name="ac3")
+        with pytest.raises(RuntimeError, match="Cannot measure decoded"):
+            executor._verify_and_repair_audio(instr, produced, tmp_path, _minimal_job())
+
+    def test_repaired_length_unknown_raises(
+        self,
+        executor_with_mocks: tuple[Executor, SimpleNamespace],
+        tmp_path: Path,
+    ) -> None:
+        executor, mocks = executor_with_mocks
+        produced = tmp_path / "audio_1.m4a"
+        mocks.prober.probe.side_effect = _repair_probe_router(
+            declared=7345.0, produced=1794.0, decoded=7340.0, repaired=None
+        )
+        instr = make_audio_instruction(action=AudioAction.DECODE_ENCODE, stream_index=1, codec_name="ac3")
+        with pytest.raises(RuntimeError, match="Cannot measure repaired"):
+            executor._verify_and_repair_audio(instr, produced, tmp_path, _minimal_job())
+
+    def test_repair_still_truncated_raises(
+        self,
+        executor_with_mocks: tuple[Executor, SimpleNamespace],
+        tmp_path: Path,
+    ) -> None:
+        executor, mocks = executor_with_mocks
+        produced = tmp_path / "audio_1.m4a"
+        mocks.prober.probe.side_effect = _repair_probe_router(
+            declared=7345.0, produced=1794.0, decoded=7340.0, repaired=1800.0
+        )
+        instr = make_audio_instruction(action=AudioAction.DECODE_ENCODE, stream_index=1, codec_name="ac3")
+        with pytest.raises(RuntimeError, match="repair failed"):
+            executor._verify_and_repair_audio(instr, produced, tmp_path, _minimal_job())
+
+    def test_ac3_source_disables_drc_on_oracle(
+        self,
+        executor_with_mocks: tuple[Executor, SimpleNamespace],
+        tmp_path: Path,
+    ) -> None:
+        executor, mocks = executor_with_mocks
+        produced = tmp_path / "audio_1.m4a"
+        mocks.prober.probe.side_effect = _repair_probe_router(declared=7345.0, produced=1794.0, decoded=1800.0)
+        instr = make_audio_instruction(action=AudioAction.DECODE_ENCODE, stream_index=1, codec_name="ac3")
+        executor._verify_and_repair_audio(instr, produced, tmp_path, _minimal_job())
+        assert mocks.audio_extractor.decode_full_wav.call_args.kwargs["disable_drc"] is True
+
+    def test_lpcm_source_keeps_drc_on_oracle(
+        self,
+        executor_with_mocks: tuple[Executor, SimpleNamespace],
+        tmp_path: Path,
+    ) -> None:
+        executor, mocks = executor_with_mocks
+        produced = tmp_path / "audio_1.m4a"
+        mocks.prober.probe.side_effect = _repair_probe_router(declared=7345.0, produced=1794.0, decoded=1800.0)
+        instr = make_audio_instruction(action=AudioAction.DECODE_ENCODE, stream_index=1, codec_name="pcm_s24le")
+        executor._verify_and_repair_audio(instr, produced, tmp_path, _minimal_job())
+        assert mocks.audio_extractor.decode_full_wav.call_args.kwargs["disable_drc"] is False
+
+
+class TestRepairAudioFromWav:
+    def test_no_downmix_decodes_and_encodes(
+        self,
+        executor_with_mocks: tuple[Executor, SimpleNamespace],
+        tmp_path: Path,
+    ) -> None:
+        executor, mocks = executor_with_mocks
+        instr = make_audio_instruction(action=AudioAction.DECODE_ENCODE, stream_index=1, downmix=None)
+        result = executor._repair_audio_from_wav(instr, tmp_path / "audio_1_healed.wav", tmp_path)
+        assert result == tmp_path / "audio_1_repaired.m4a"
+        assert mocks.audio_decoder.decode_lossless.call_args.kwargs["downmix"] is None
+        mocks.aac_encoder.encode_aac.assert_called_once()
+
+    def test_stereo_downmix_passes_downmix_arg(
+        self,
+        executor_with_mocks: tuple[Executor, SimpleNamespace],
+        tmp_path: Path,
+    ) -> None:
+        executor, mocks = executor_with_mocks
+        instr = make_audio_instruction(
+            action=AudioAction.DECODE_ENCODE, stream_index=1, channels=6, downmix=DownmixMode.STEREO
+        )
+        executor._repair_audio_from_wav(instr, tmp_path / "audio_1_healed.wav", tmp_path)
+        assert mocks.audio_decoder.decode_lossless.call_args.kwargs["downmix"] == DownmixMode.STEREO
+
+    def test_decode_lossless_failure_raises(
+        self,
+        executor_with_mocks: tuple[Executor, SimpleNamespace],
+        tmp_path: Path,
+    ) -> None:
+        executor, mocks = executor_with_mocks
+        mocks.audio_decoder.decode_lossless.return_value = 1
+        instr = make_audio_instruction(action=AudioAction.DECODE_ENCODE, stream_index=1, downmix=None)
+        with pytest.raises(RuntimeError, match="repair decode failed"):
+            executor._repair_audio_from_wav(instr, tmp_path / "audio_1_healed.wav", tmp_path)
+
+    def test_encode_failure_raises(
+        self,
+        executor_with_mocks: tuple[Executor, SimpleNamespace],
+        tmp_path: Path,
+    ) -> None:
+        executor, mocks = executor_with_mocks
+        mocks.aac_encoder.encode_aac.return_value = 1
+        instr = make_audio_instruction(action=AudioAction.DECODE_ENCODE, stream_index=1, downmix=None)
+        with pytest.raises(RuntimeError, match="AAC encode failed"):
+            executor._repair_audio_from_wav(instr, tmp_path / "audio_1_healed.wav", tmp_path)
+
+    def test_mono_downmix_routes_to_mono(
+        self,
+        executor_with_mocks: tuple[Executor, SimpleNamespace],
+        tmp_path: Path,
+    ) -> None:
+        executor, mocks = executor_with_mocks
+        instr = make_audio_instruction(
+            action=AudioAction.DECODE_ENCODE, stream_index=1, channels=2, downmix=DownmixMode.MONO
+        )
+        executor._repair_audio_from_wav(instr, tmp_path / "audio_1_healed.wav", tmp_path)
+        mocks.audio_extractor.stereo_to_mono_wav.assert_called_once()
+        mocks.audio_decoder.decode_lossless.assert_not_called()
+
+
+class TestRepairMonoWav:
+    def test_mono_without_channels_raises(
+        self,
+        executor_with_mocks: tuple[Executor, SimpleNamespace],
+        tmp_path: Path,
+    ) -> None:
+        executor, _mocks = executor_with_mocks
+        instr = make_audio_instruction(
+            action=AudioAction.DECODE_ENCODE, stream_index=1, channels=None, downmix=DownmixMode.MONO
+        )
+        with pytest.raises(RuntimeError, match="without channel count"):
+            executor._repair_mono_wav(instr, tmp_path / "audio_1_healed.wav", tmp_path)
+
+    def test_mono_stereo_source_uses_healed_directly(
+        self,
+        executor_with_mocks: tuple[Executor, SimpleNamespace],
+        tmp_path: Path,
+    ) -> None:
+        executor, mocks = executor_with_mocks
+        healed = tmp_path / "audio_1_healed.wav"
+        instr = make_audio_instruction(
+            action=AudioAction.DECODE_ENCODE, stream_index=1, channels=2, delay_ms=100, downmix=DownmixMode.MONO
+        )
+        result = executor._repair_mono_wav(instr, healed, tmp_path)
+        assert result == tmp_path / "audio_1_repaired_mono.wav"
+        mocks.audio_decoder.decode_lossless.assert_not_called()
+        call = mocks.audio_extractor.stereo_to_mono_wav.call_args.kwargs
+        assert call["input_path"] == healed
+        assert call["delay_ms"] == 100
+
+    def test_mono_multichannel_downmixes_first(
+        self,
+        executor_with_mocks: tuple[Executor, SimpleNamespace],
+        tmp_path: Path,
+    ) -> None:
+        executor, mocks = executor_with_mocks
+        instr = make_audio_instruction(
+            action=AudioAction.DECODE_ENCODE, stream_index=1, channels=6, delay_ms=100, downmix=DownmixMode.MONO
+        )
+        executor._repair_mono_wav(instr, tmp_path / "audio_1_healed.wav", tmp_path)
+        assert mocks.audio_decoder.decode_lossless.call_args.kwargs["downmix"] == DownmixMode.STEREO
+        assert mocks.audio_extractor.stereo_to_mono_wav.call_args.kwargs["delay_ms"] == 0
+
+    def test_mono_stereo_downmix_failure_raises(
+        self,
+        executor_with_mocks: tuple[Executor, SimpleNamespace],
+        tmp_path: Path,
+    ) -> None:
+        executor, mocks = executor_with_mocks
+        mocks.audio_decoder.decode_lossless.return_value = 1
+        instr = make_audio_instruction(
+            action=AudioAction.DECODE_ENCODE, stream_index=1, channels=6, downmix=DownmixMode.MONO
+        )
+        with pytest.raises(RuntimeError, match="stereo downmix failed"):
+            executor._repair_mono_wav(instr, tmp_path / "audio_1_healed.wav", tmp_path)
+
+    def test_mono_average_failure_raises(
+        self,
+        executor_with_mocks: tuple[Executor, SimpleNamespace],
+        tmp_path: Path,
+    ) -> None:
+        executor, mocks = executor_with_mocks
+        mocks.audio_extractor.stereo_to_mono_wav.return_value = 1
+        instr = make_audio_instruction(
+            action=AudioAction.DECODE_ENCODE, stream_index=1, channels=2, downmix=DownmixMode.MONO
+        )
+        with pytest.raises(RuntimeError, match="mono average failed"):
+            executor._repair_mono_wav(instr, tmp_path / "audio_1_healed.wav", tmp_path)
 
 
 class TestProcessAudioTrackCopy:
@@ -833,8 +1083,13 @@ class TestRunPipelineHappyPath:
         assert output_path.exists()
 
 
+def _fake_clean(input_path: Any, output_path: Any, on_progress: Any = None) -> int:
+    Path(output_path).write_bytes(b"CLEAN")
+    return 0
+
+
 class TestRunPipelineAudioTruncation:
-    def test_truncated_audio_aborts_before_mux(
+    def test_unrepairable_truncation_aborts_before_mux(
         self,
         executor_with_mocks: tuple[Executor, SimpleNamespace],
         tmp_path: Path,
@@ -842,20 +1097,98 @@ class TestRunPipelineAudioTruncation:
         executor, mocks = executor_with_mocks
         audio_instr = make_audio_instruction(action=AudioAction.DENORM, codec_name="ac3", stream_index=1)
         job = _pipeline_job(tmp_path, audio=[audio_instr])
-
-        def probe(path: Any) -> dict[str, Any]:
-            if str(path) == audio_instr.source_file:
-                return {"chapters": [], "streams": [{"index": 1, "tags": {"DURATION": "02:02:25.152000000"}}]}
-            return {"streams": [{"index": 0, "duration": "1794.4"}]}
-
-        mocks.prober.probe.side_effect = probe
+        mocks.prober.probe.side_effect = _repair_probe_router(
+            declared=7345.0, produced=1794.0, decoded=7340.0, repaired=1800.0
+        )
         output_path = Path(job.output_file)
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
-        with pytest.raises(RuntimeError, match="truncated"):
+        with pytest.raises(RuntimeError, match="repair failed"):
             executor._run_pipeline(job, output_path, tmp_path)
 
         mocks.muxer.mux.assert_not_called()
+
+    def test_repaired_audio_is_muxed(
+        self,
+        executor_with_mocks: tuple[Executor, SimpleNamespace],
+        tmp_path: Path,
+    ) -> None:
+        executor, mocks = executor_with_mocks
+        mocks.cleaner.clean.side_effect = _fake_clean
+        audio_instr = make_audio_instruction(action=AudioAction.DENORM, codec_name="ac3", stream_index=1)
+        job = _pipeline_job(tmp_path, audio=[audio_instr])
+        mocks.prober.probe.side_effect = _repair_probe_router(
+            declared=7345.0, produced=1794.0, decoded=7340.0, repaired=7340.0
+        )
+        output_path = Path(job.output_file)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        executor._run_pipeline(job, output_path, tmp_path)
+
+        muxed_audio = mocks.muxer.mux.call_args.kwargs["audio_files"]
+        assert muxed_audio[0][0] == tmp_path / "audio_1_repaired.m4a"
+
+    def test_genuine_short_audio_is_muxed(
+        self,
+        executor_with_mocks: tuple[Executor, SimpleNamespace],
+        tmp_path: Path,
+    ) -> None:
+        executor, mocks = executor_with_mocks
+        mocks.cleaner.clean.side_effect = _fake_clean
+        audio_instr = make_audio_instruction(action=AudioAction.DENORM, codec_name="ac3", stream_index=1)
+        job = _pipeline_job(tmp_path, audio=[audio_instr])
+        mocks.prober.probe.side_effect = _repair_probe_router(declared=7345.0, produced=1794.0, decoded=1800.0)
+        output_path = Path(job.output_file)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        executor._run_pipeline(job, output_path, tmp_path)
+
+        muxed_audio = mocks.muxer.mux.call_args.kwargs["audio_files"]
+        assert muxed_audio[0][0] == tmp_path / "audio_1_denorm.ac3"
+
+    def test_repaired_copy_track_zeroes_mux_delay(
+        self,
+        executor_with_mocks: tuple[Executor, SimpleNamespace],
+        tmp_path: Path,
+    ) -> None:
+        executor, mocks = executor_with_mocks
+        mocks.cleaner.clean.side_effect = _fake_clean
+        audio_instr = make_audio_instruction(
+            action=AudioAction.COPY, codec_name="aac", stream_index=1, delay_ms=200
+        )
+        job = _pipeline_job(tmp_path, audio=[audio_instr])
+        mocks.prober.probe.side_effect = _repair_probe_router(
+            declared=7345.0, produced=1794.0, decoded=7340.0, repaired=7340.0
+        )
+        output_path = Path(job.output_file)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        executor._run_pipeline(job, output_path, tmp_path)
+
+        muxed_audio = mocks.muxer.mux.call_args.kwargs["audio_files"]
+        assert muxed_audio[0][0] == tmp_path / "audio_1_repaired.m4a"
+        assert muxed_audio[0][1]["delay_ms"] == 0
+
+    def test_genuine_short_copy_track_keeps_mux_delay(
+        self,
+        executor_with_mocks: tuple[Executor, SimpleNamespace],
+        tmp_path: Path,
+    ) -> None:
+        executor, mocks = executor_with_mocks
+        mocks.cleaner.clean.side_effect = _fake_clean
+        audio_instr = make_audio_instruction(
+            action=AudioAction.COPY, codec_name="aac", stream_index=1, delay_ms=200
+        )
+        job = _pipeline_job(tmp_path, audio=[audio_instr])
+        mocks.prober.probe.side_effect = _repair_probe_router(declared=7345.0, produced=1794.0, decoded=1800.0)
+        output_path = Path(job.output_file)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        executor._run_pipeline(job, output_path, tmp_path)
+
+        muxed_audio = mocks.muxer.mux.call_args.kwargs["audio_files"]
+        assert muxed_audio[0][0] == tmp_path / "audio_1.m4a"
+        assert muxed_audio[0][1]["delay_ms"] == 200
 
 
 class TestRunPipelineWithDvRpu:
@@ -1507,23 +1840,23 @@ class TestRunPipelineTargetQuality:
             executor._maybe_search_target_quality(job, Path("/src/movie.mkv"), tmp_path)
         progress.unmute_tool_output.assert_called_once()
 
-    def test_search_narration_routes_to_furnace_channel(
+    def test_narrate_routes_to_furnace_channel(
         self,
         executor_with_mocks: tuple[Executor, SimpleNamespace],
     ) -> None:
         executor, _mocks = executor_with_mocks
         progress = MagicMock()
         executor._progress = progress
-        executor._search_narration("CRF 24 -> SSIMULACRA2 67.0")
+        executor._narrate("CRF 24 -> SSIMULACRA2 67.0")
         progress.add_tool_line.assert_called_once_with("[furnace] CRF 24 -> SSIMULACRA2 67.0")
 
-    def test_search_narration_without_progress_is_noop(
+    def test_narrate_without_progress_is_noop(
         self,
         executor_with_mocks: tuple[Executor, SimpleNamespace],
     ) -> None:
         executor, _mocks = executor_with_mocks
         executor._progress = None
-        executor._search_narration("ignored")
+        executor._narrate("ignored")
 
     def test_chosen_cq_persisted_by_run(self, tmp_path: Path) -> None:
         mocks = SimpleNamespace(
@@ -2683,6 +3016,8 @@ def _make_executor_with_progress() -> tuple[Executor, SimpleNamespace, MagicMock
     )
     mocks.audio_extractor.extract_track.return_value = 0
     mocks.audio_extractor.ffmpeg_to_wav.return_value = 0
+    mocks.audio_extractor.decode_full_wav.return_value = 0
+    mocks.audio_extractor.stereo_to_mono_wav.return_value = 0
     mocks.audio_decoder.decode_lossless.return_value = 0
     mocks.audio_decoder.denormalize.return_value = 0
     mocks.aac_encoder.encode_aac.return_value = 0

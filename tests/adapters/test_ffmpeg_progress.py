@@ -481,6 +481,70 @@ class TestFfmpegToWav:
         assert rc == 0
 
 
+class TestDecodeFullWav:
+    @staticmethod
+    def _run(*, disable_drc: bool = False, rc_value: int = 0) -> tuple[int, list[str]]:
+        captured: list[str] = []
+
+        def fake_run_tool(
+            cmd: Any,
+            on_output: Any = None,
+            on_progress_line: Any = None,
+            log_path: Any = None,
+            cwd: Any = None,
+        ) -> tuple[int, str]:
+            captured.extend(str(c) for c in cmd)
+            return rc_value, ""
+
+        adapter = _adapter()
+        with patch("furnace.adapters.ffmpeg.run_tool", side_effect=fake_run_tool):
+            rc = adapter.decode_full_wav(Path("audio.ac3"), 1, Path("out.wav"), disable_drc=disable_drc)
+        return rc, captured
+
+    def test_decode_full_wav_cmd_is_tolerant_wav(self) -> None:
+        rc, captured = self._run()
+        assert rc == 0
+        assert ("-err_detect", "ignore_err") in pairwise(captured)
+        assert ("-c:a", "pcm_s24le") in pairwise(captured)
+        assert "-f" in captured
+        assert "wav" in captured
+        assert "-rf64" in captured
+        assert "0:1" in captured
+
+    def test_decode_full_wav_disable_drc_adds_flag_before_input(self) -> None:
+        _rc, captured = self._run(disable_drc=True)
+        assert ("-drc_scale", "0") in pairwise(captured)
+        assert captured.index("-drc_scale") < captured.index("-i")
+
+    def test_decode_full_wav_default_omits_drc_flag(self) -> None:
+        _rc, captured = self._run()
+        assert "-drc_scale" not in captured
+
+    def test_decode_full_wav_passes_return_code(self) -> None:
+        rc, _captured = self._run(rc_value=3)
+        assert rc == 3
+
+    def test_decode_full_wav_progress(self) -> None:
+        samples: list[ProgressSample] = []
+
+        def fake_run_tool(
+            cmd: Any,
+            on_output: Any = None,
+            on_progress_line: Any = None,
+            log_path: Any = None,
+            cwd: Any = None,
+        ) -> tuple[int, str]:
+            on_progress_line("out_time_us=30000000")
+            on_progress_line("speed=1.0x")
+            on_progress_line("progress=continue")
+            return 0, ""
+
+        adapter = _adapter()
+        with patch("furnace.adapters.ffmpeg.run_tool", side_effect=fake_run_tool):
+            adapter.decode_full_wav(Path("a.ac3"), 1, Path("out.wav"), on_progress=samples.append)
+        assert len(samples) == 1
+
+
 class TestGetFfmpegVersion:
     def test_version_parsed(self) -> None:
         adapter = _adapter()

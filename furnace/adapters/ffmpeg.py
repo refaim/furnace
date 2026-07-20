@@ -753,6 +753,49 @@ class FFmpegAdapter:
         )
         return rc
 
+    def decode_full_wav(
+        self,
+        input_path: Path,
+        stream_index: int,
+        output_wav: Path,
+        *,
+        disable_drc: bool = False,
+        on_progress: Callable[[ProgressSample], None] | None = None,
+    ) -> int:
+        decode_opts = ["-err_detect", "ignore_err"]
+        if disable_drc:
+            decode_opts += ["-drc_scale", "0"]
+        cmd = [
+            str(self._ffmpeg),
+            "-hide_banner",
+            "-loglevel",
+            "warning",
+            *decode_opts,
+            "-i",
+            str(input_path),
+            "-map",
+            f"0:{stream_index}",
+            "-c:a",
+            "pcm_s24le",
+            "-f",
+            "wav",
+            "-rf64",
+            "auto",
+            "-progress",
+            "pipe:1",
+            "-y",
+            str(output_wav),
+        ]
+        log_path = self._log_dir / f"ffmpeg_full_decode_s{stream_index}.log" if self._log_dir else None
+
+        rc, _out = run_tool(
+            cmd,
+            on_output=self._on_output,
+            on_progress_line=_make_ffmpeg_progress_handler(on_progress),
+            log_path=log_path,
+        )
+        return rc
+
     def _decode_pcm_window(
         self,
         path: Path,

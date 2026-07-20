@@ -195,6 +195,17 @@ class _MinimalAudioExtractor:
     ) -> int:
         return 0
 
+    def decode_full_wav(
+        self,
+        input_path: Path,  # noqa: ARG002
+        stream_index: int,  # noqa: ARG002
+        output_wav: Path,  # noqa: ARG002
+        *,
+        disable_drc: bool = False,  # noqa: ARG002
+        on_progress: Callable[[ProgressSample], None] | None = None,  # noqa: ARG002
+    ) -> int:
+        return 0
+
     def stereo_to_mono_wav(
         self,
         input_path: Path,  # noqa: ARG002
@@ -244,4 +255,5 @@ def test_minimal_audio_extractor_method_surface(tmp_path: Path) -> None:
     stub = _MinimalAudioExtractor()
     assert stub.extract_track(Path("/dev/null"), 0, tmp_path / "o.thd") == 0
     assert stub.ffmpeg_to_wav(Path("/dev/null"), 0, tmp_path / "o.wav") == 0
+    assert stub.decode_full_wav(Path("/dev/null"), 0, tmp_path / "o.wav", disable_drc=True) == 0
     assert stub.stereo_to_mono_wav(Path("/dev/null"), 0, tmp_path / "o.wav", -50) == 0

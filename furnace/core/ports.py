@@ -167,6 +167,16 @@ class AudioExtractor(Protocol):
         on_progress: Callable[[ProgressSample], None] | None = None,
     ) -> int: ...
 
+    def decode_full_wav(
+        self,
+        input_path: Path,
+        stream_index: int,
+        output_wav: Path,
+        *,
+        disable_drc: bool = False,
+        on_progress: Callable[[ProgressSample], None] | None = None,
+    ) -> int: ...
+
     def stereo_to_mono_wav(
         self,
         input_path: Path,
