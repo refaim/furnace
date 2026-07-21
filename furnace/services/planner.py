@@ -8,7 +8,6 @@ from pathlib import Path
 from typing import Any
 
 from furnace import VERSION as FURNACE_VERSION
-from furnace.core.audio_profile import Verdict
 from furnace.core.detect import (
     DV_PROFILE_FEL,
     classify_passthrough,
@@ -169,23 +168,22 @@ class PlannerService:
         )
 
         audio_candidates = self._filter_audio_tracks_by_lang(movie.audio_tracks, audio_lang_filter)
-        selected_audio = self._auto_select_from_candidates(audio_candidates, TrackType.AUDIO)
-        if selected_audio is None:
-            if self._track_selector is not None:
-                logger.debug(
-                    "Multiple audio tracks per language for %s; showing TUI",
-                    movie.main_file.name,
-                )
-                selected_audio = self._track_selector(movie, audio_candidates, TrackType.AUDIO)
-            else:
+        if audio_candidates and self._track_selector is not None:
+            logger.debug("Showing audio track selector for %s", movie.main_file.name)
+            selected_audio = self._track_selector(movie, audio_candidates, TrackType.AUDIO)
+        else:
+            auto_audio = self._auto_select_from_candidates(audio_candidates)
+            if auto_audio is None:
                 logger.warning(
                     "Multiple audio tracks per language for %s; no track_selector, including all",
                     movie.main_file.name,
                 )
                 selected_audio = audio_candidates
+            else:
+                selected_audio = auto_audio
 
         sub_candidates = self._filter_sub_tracks_by_lang(movie.subtitle_tracks, sub_lang_filter)
-        selected_subs = self._auto_select_from_candidates(sub_candidates, TrackType.SUBTITLE)
+        selected_subs = self._auto_select_from_candidates(sub_candidates)
         if selected_subs is None:
             if self._track_selector is not None:
                 logger.debug(
@@ -330,7 +328,6 @@ class PlannerService:
     def _auto_select_from_candidates(
         self,
         candidates: list[Track],
-        track_type: TrackType,
     ) -> list[Track] | None:
         if not candidates:
             return candidates
@@ -342,12 +339,6 @@ class PlannerService:
         for group in lang_groups.values():
             if len(group) > 1:
                 return None
-
-        if track_type == TrackType.AUDIO:
-            for track in candidates:
-                profile = track.audio_profile
-                if profile is not None and profile.verdict != Verdict.REAL:
-                    return None
 
         return candidates
 

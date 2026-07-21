@@ -148,14 +148,14 @@ class TestAssignLanguagesRelabel:
 
 
 class TestIgnoreLangsPlan:
-    def test_single_track_auto_selected_and_relabelled(self, tmp_path: Path) -> None:
+    def test_single_track_selected_and_relabelled(self, tmp_path: Path) -> None:
         main = tmp_path / "movie.mkv"
         main.write_bytes(b"")
         audio = [_audio("fre", 1, main)]
         subs = [_sub("ger", 3, main)]
         movie = _make_movie(main, audio=audio, subs=subs)
 
-        selector = MagicMock()
+        selector = MagicMock(return_value=audio)
 
         planner = PlannerService(previewer=None, track_selector=selector, ignore_langs=True)
         plan = planner.create_plan(
@@ -164,7 +164,7 @@ class TestIgnoreLangsPlan:
             sub_lang_filter=["eng"],
         )
 
-        selector.assert_not_called()
+        assert [c for c in selector.call_args_list if c[0][2] == TrackType.AUDIO]
         assert plan.jobs[0].audio[0].language == "jpn"
         assert plan.jobs[0].subtitles[0].language == "eng"
 

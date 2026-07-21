@@ -198,7 +198,11 @@ class TestSubtitleAutoSelectFallback:
             s.source_file = main
 
         movie = _make_movie_with_subs(tmp_path, subs=subs)
-        selector = MagicMock(return_value=subs[:1])
+
+        def _selector(m: Movie, cands: list[Track], tt: TrackType) -> list[Track]:
+            return cands if tt == TrackType.AUDIO else subs[:1]
+
+        selector = MagicMock(side_effect=_selector)
         planner = PlannerService(previewer=None, track_selector=selector)
 
         planner.create_plan(
