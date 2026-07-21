@@ -337,8 +337,10 @@ class DiscDemuxer:
         source_segments: list[Path] | None = None,
     ) -> dict[Path, int]:
         assert self._prober is not None  # noqa: S101 — narrowed by caller
-        if source_segments is None or len(source_segments) != 1:
+        if not source_segments:
             return {}
+        if len(source_segments) > 1:
+            return self._leading_clip_audio_delay(source_segments, files)
         m2ts = source_segments[0]
         try:
             data = self._prober.probe(m2ts)
@@ -390,6 +392,47 @@ class DiscDemuxer:
                 )
                 offsets[f] = offset_ms
         return offsets
+
+    def _leading_clip_audio_delay(
+        self,
+        segments: list[Path],
+        files: list[Path],
+    ) -> dict[Path, int]:
+        assert self._prober is not None  # noqa: S101 — narrowed by caller
+        audio_source_files = [f for f in files if f.suffix.lower() in _AUDIO_EXTS]
+        if not audio_source_files:
+            return {}
+
+        delay_s = 0.0
+        for seg in segments:
+            try:
+                data = self._prober.probe(seg)
+            except Exception as exc:  # noqa: BLE001 — graceful degradation
+                logger.warning("multi-clip segment probe failed for %s: %s", seg.name, exc)
+                return {}
+            if any(s.get("codec_type") == "audio" for s in data.get("streams", [])):
+                break
+            seg_dur = _parse_start_time(data.get("format", {}).get("duration"))
+            if seg_dur is None:
+                logger.warning(
+                    "multi-clip leading segment %s has no measurable duration; no --sync applied",
+                    seg.name,
+                )
+                return {}
+            delay_s += seg_dur
+        else:
+            logger.warning("multi-clip playlist has no audio-bearing segment; no --sync applied")
+            return {}
+
+        delay_ms = round(delay_s * 1000)
+        if delay_ms < _AUDIO_DESYNC_THRESHOLD_MS:
+            return {}
+        logger.warning(
+            "multi-clip playlist: %.3fs of leading audioless video; delaying audio by %dms to resync",
+            delay_s,
+            delay_ms,
+        )
+        return dict.fromkeys(audio_source_files, delay_ms)
 
     @staticmethod
     def _bd_source_segments(disc: DiscSource, title: DiscTitle) -> list[Path] | None:

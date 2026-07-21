@@ -585,7 +585,7 @@ class TestSourceTruthSyncOffsets:
         assert mock_run.call_count == 1
         prober.probe.assert_not_called()
 
-    def test_multi_segment_no_sync(self, tmp_path: Path) -> None:
+    def test_multi_segment_first_clip_has_audio_no_sync(self, tmp_path: Path) -> None:
         prober = _source_prober(video_start="5.0", audio_starts=["8.0"])
         seg1 = tmp_path / "00001.m2ts"
         seg2 = tmp_path / "00002.m2ts"
@@ -593,7 +593,7 @@ class TestSourceTruthSyncOffsets:
         with patch("furnace.services.disc_demuxer.run_tool", return_value=(0, "")) as mock_run:
             demuxer._mux_to_mkv(files, out, source_segments=[seg1, seg2])
         assert mock_run.call_count == 1
-        prober.probe.assert_not_called()
+        prober.probe.assert_called_once_with(seg1)
 
     def test_probe_error_no_sync(self, tmp_path: Path) -> None:
         prober = MagicMock()
@@ -646,6 +646,118 @@ class TestSourceTruthSyncOffsets:
         with patch("furnace.services.disc_demuxer.run_tool", return_value=(0, "")) as mock_run:
             demuxer._mux_to_mkv(files, out, source_segments=[m2ts])
         assert mock_run.call_count == 1
+
+
+class TestMultiClipAudioDelay:
+    @staticmethod
+    def _prober(seg_map: dict[str, dict[str, object]]) -> MagicMock:
+        def probe(path: object) -> dict[str, object]:
+            return seg_map[Path(str(path)).name]
+
+        p = MagicMock()
+        p.probe.side_effect = probe
+        return p
+
+    @staticmethod
+    def _video_only(duration: str | None) -> dict[str, object]:
+        data: dict[str, object] = {"streams": [{"codec_type": "video"}]}
+        if duration is not None:
+            data["format"] = {"duration": duration}
+        return data
+
+    @staticmethod
+    def _with_audio() -> dict[str, object]:
+        return {"streams": [{"codec_type": "video"}, {"codec_type": "audio"}]}
+
+    def test_leading_audioless_intro_delays_audio(self, tmp_path: Path) -> None:
+        intro = tmp_path / "00003.m2ts"
+        feature = tmp_path / "00002.m2ts"
+        audio = tmp_path / "audio [rus].flac"
+        prober = self._prober({"00003.m2ts": self._video_only("4.0"), "00002.m2ts": self._with_audio()})
+        demuxer = _make_demuxer(mkvmerge_path=Path("/usr/bin/mkvmerge"), prober=prober)
+        offsets = demuxer._compute_audio_sync_offsets([audio], source_segments=[intro, feature])
+        assert offsets == {audio: 4000}
+
+    def test_two_leading_clips_sum_durations(self, tmp_path: Path) -> None:
+        a = tmp_path / "00001.m2ts"
+        b = tmp_path / "00002.m2ts"
+        feature = tmp_path / "00003.m2ts"
+        audio = tmp_path / "audio [rus].flac"
+        prober = self._prober(
+            {
+                "00001.m2ts": self._video_only("4.0"),
+                "00002.m2ts": self._video_only("2.5"),
+                "00003.m2ts": self._with_audio(),
+            }
+        )
+        demuxer = _make_demuxer(prober=prober)
+        offsets = demuxer._compute_audio_sync_offsets([audio], source_segments=[a, b, feature])
+        assert offsets == {audio: 6500}
+
+    def test_first_clip_has_audio_no_delay(self, tmp_path: Path) -> None:
+        a = tmp_path / "00001.m2ts"
+        b = tmp_path / "00002.m2ts"
+        audio = tmp_path / "audio [rus].flac"
+        prober = self._prober({"00001.m2ts": self._with_audio(), "00002.m2ts": self._with_audio()})
+        demuxer = _make_demuxer(prober=prober)
+        assert demuxer._compute_audio_sync_offsets([audio], source_segments=[a, b]) == {}
+
+    def test_below_threshold_no_delay(self, tmp_path: Path) -> None:
+        intro = tmp_path / "00001.m2ts"
+        feature = tmp_path / "00002.m2ts"
+        audio = tmp_path / "audio [rus].flac"
+        prober = self._prober({"00001.m2ts": self._video_only("0.3"), "00002.m2ts": self._with_audio()})
+        demuxer = _make_demuxer(prober=prober)
+        assert demuxer._compute_audio_sync_offsets([audio], source_segments=[intro, feature]) == {}
+
+    def test_leading_clip_no_duration_bails(self, tmp_path: Path) -> None:
+        intro = tmp_path / "00001.m2ts"
+        feature = tmp_path / "00002.m2ts"
+        audio = tmp_path / "audio [rus].flac"
+        prober = self._prober({"00001.m2ts": self._video_only(None), "00002.m2ts": self._with_audio()})
+        demuxer = _make_demuxer(prober=prober)
+        assert demuxer._compute_audio_sync_offsets([audio], source_segments=[intro, feature]) == {}
+
+    def test_probe_failure_bails(self, tmp_path: Path) -> None:
+        intro = tmp_path / "00001.m2ts"
+        feature = tmp_path / "00002.m2ts"
+        audio = tmp_path / "audio [rus].flac"
+        prober = MagicMock()
+        prober.probe.side_effect = RuntimeError("ffprobe blew up")
+        demuxer = _make_demuxer(prober=prober)
+        assert demuxer._compute_audio_sync_offsets([audio], source_segments=[intro, feature]) == {}
+
+    def test_no_audio_bearing_segment_bails(self, tmp_path: Path) -> None:
+        a = tmp_path / "00001.m2ts"
+        b = tmp_path / "00002.m2ts"
+        audio = tmp_path / "audio [rus].flac"
+        prober = self._prober({"00001.m2ts": self._video_only("4.0"), "00002.m2ts": self._video_only("4.0")})
+        demuxer = _make_demuxer(prober=prober)
+        assert demuxer._compute_audio_sync_offsets([audio], source_segments=[a, b]) == {}
+
+    def test_no_audio_files_returns_empty(self, tmp_path: Path) -> None:
+        a = tmp_path / "00001.m2ts"
+        b = tmp_path / "00002.m2ts"
+        video = tmp_path / "video.h264"
+        prober = MagicMock()
+        demuxer = _make_demuxer(prober=prober)
+        assert demuxer._compute_audio_sync_offsets([video], source_segments=[a, b]) == {}
+        prober.probe.assert_not_called()
+
+    def test_mux_applies_multiclip_sync(self, tmp_path: Path) -> None:
+        intro = tmp_path / "00003.m2ts"
+        feature = tmp_path / "00002.m2ts"
+        video = tmp_path / "video.h264"
+        video.write_bytes(b"v")
+        audio = tmp_path / "audio [rus].flac"
+        audio.write_bytes(b"a")
+        prober = self._prober({"00003.m2ts": self._video_only("4.0"), "00002.m2ts": self._with_audio()})
+        demuxer = _make_demuxer(mkvmerge_path=Path("/usr/bin/mkvmerge"), prober=prober)
+        with patch("furnace.services.disc_demuxer.run_tool", return_value=(0, "")) as mock_run:
+            demuxer._mux_to_mkv([video, audio], tmp_path / "out.mkv", source_segments=[intro, feature])
+        assert mock_run.call_count == 2
+        cmd = mock_run.call_args_list[1][0][0]
+        assert cmd[cmd.index("--sync") + 1] == "0:4000"
 
 
 class TestBdSourceSegments:
