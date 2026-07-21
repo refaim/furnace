@@ -175,19 +175,6 @@ class Eac3toAdapter:
         )
         return rc
 
-    def transcode_to_flac(
-        self,
-        input_path: Path,
-        output_path: Path,
-        on_progress: Callable[[ProgressSample], None] | None = None,
-    ) -> int:
-        rc, _output = self._run(
-            [str(input_path), str(output_path)],
-            "w64_to_flac",
-            on_progress=on_progress,
-        )
-        return rc
-
     def list_titles(self, disc_path: Path) -> list[DiscTitle]:
         cmd = [str(self._eac3to), str(disc_path)]
         rc, output = run_tool(cmd, on_output=self._on_output, log_path=self._log_path("list_titles"))

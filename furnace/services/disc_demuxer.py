@@ -242,7 +242,7 @@ class DiscDemuxer:
                 on_progress=_tr_progress,
             )
             if rc != 0:
-                msg = f"eac3to transcode of {f.name} to FLAC failed (rc={rc})"
+                msg = f"PCM transcode of {f.name} to FLAC failed (rc={rc})"
                 raise RuntimeError(msg)
             f.unlink()
             result.append(flac_path)

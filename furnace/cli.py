@@ -470,7 +470,7 @@ def plan(
             bd_port=eac3to_adapter,
             dvd_port=makemkv_adapter,
             mkvmerge_path=cfg.mkvmerge,
-            pcm_transcoder=eac3to_adapter,
+            pcm_transcoder=ffmpeg_adapter,
             prober=ffmpeg_adapter,
         )
 

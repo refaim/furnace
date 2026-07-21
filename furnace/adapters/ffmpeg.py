@@ -796,6 +796,38 @@ class FFmpegAdapter:
         )
         return rc
 
+    def transcode_to_flac(
+        self,
+        input_path: Path,
+        output_path: Path,
+        on_progress: Callable[[ProgressSample], None] | None = None,
+    ) -> int:
+        cmd = [
+            str(self._ffmpeg),
+            "-hide_banner",
+            "-loglevel",
+            "warning",
+            "-i",
+            str(input_path),
+            "-map",
+            "0:a:0",
+            "-c:a",
+            "flac",
+            "-progress",
+            "pipe:1",
+            "-y",
+            str(output_path),
+        ]
+        log_path = self._log_dir / f"ffmpeg_to_flac_{output_path.stem}.log" if self._log_dir else None
+
+        rc, _out = run_tool(
+            cmd,
+            on_output=self._on_output,
+            on_progress_line=_make_ffmpeg_progress_handler(on_progress),
+            log_path=log_path,
+        )
+        return rc
+
     def _decode_pcm_window(
         self,
         path: Path,

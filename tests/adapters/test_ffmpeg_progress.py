@@ -545,6 +545,72 @@ class TestDecodeFullWav:
         assert len(samples) == 1
 
 
+class TestTranscodeToFlac:
+    @staticmethod
+    def _run(rc_value: int = 0) -> tuple[int, list[str]]:
+        captured: list[str] = []
+
+        def fake_run_tool(
+            cmd: Any,
+            on_output: Any = None,
+            on_progress_line: Any = None,
+            log_path: Any = None,
+            cwd: Any = None,
+        ) -> tuple[int, str]:
+            captured.extend(str(c) for c in cmd)
+            return rc_value, ""
+
+        adapter = _adapter()
+        with patch("furnace.adapters.ffmpeg.run_tool", side_effect=fake_run_tool):
+            rc = adapter.transcode_to_flac(Path("in.w64"), Path("out.flac"))
+        return rc, captured
+
+    def test_transcode_to_flac_cmd(self) -> None:
+        rc, captured = self._run()
+        assert rc == 0
+        assert ("-c:a", "flac") in pairwise(captured)
+        assert "0:a:0" in captured
+        assert "in.w64" in captured
+        assert "out.flac" in captured
+        assert "-progress" in captured
+        assert "pipe:1" in captured
+
+    def test_transcode_to_flac_stays_lossless(self) -> None:
+        _rc, captured = self._run()
+        assert "-ac" not in captured
+        assert "-ar" not in captured
+        assert "-sample_fmt" not in captured
+
+    def test_transcode_to_flac_passes_return_code(self) -> None:
+        rc, _captured = self._run(rc_value=1)
+        assert rc == 1
+
+    def test_transcode_to_flac_satisfies_pcm_transcoder(self) -> None:
+        from furnace.core.ports import PcmTranscoder
+
+        assert isinstance(_adapter(), PcmTranscoder)
+
+    def test_transcode_to_flac_progress(self) -> None:
+        samples: list[ProgressSample] = []
+
+        def fake_run_tool(
+            cmd: Any,
+            on_output: Any = None,
+            on_progress_line: Any = None,
+            log_path: Any = None,
+            cwd: Any = None,
+        ) -> tuple[int, str]:
+            on_progress_line("out_time_us=30000000")
+            on_progress_line("speed=1.0x")
+            on_progress_line("progress=continue")
+            return 0, ""
+
+        adapter = _adapter()
+        with patch("furnace.adapters.ffmpeg.run_tool", side_effect=fake_run_tool):
+            adapter.transcode_to_flac(Path("in.w64"), Path("out.flac"), on_progress=samples.append)
+        assert len(samples) == 1
+
+
 class TestGetFfmpegVersion:
     def test_version_parsed(self) -> None:
         adapter = _adapter()
