@@ -10,6 +10,7 @@ from furnace.core.detect import (
     aggregate_crop,
     check_unsupported_codecs,
     classify_passthrough,
+    cropdetect_limit,
     detect_forced_subtitles,
     detect_hdr,
     hdr_transfer_for_cropdetect,
@@ -538,6 +539,44 @@ class TestAggregateCrop:
         ]
         with pytest.raises(ValueError, match="too inconsistent"):
             aggregate_crop(crops)
+
+
+class TestCropdetectLimit:
+    def test_no_measurements_keeps_the_default(self) -> None:
+        assert cropdetect_limit([]) == 40
+
+    def test_picture_on_every_side_keeps_the_default(self) -> None:
+        assert cropdetect_limit([130.0, 98.0, 212.0, 176.0]) == 40
+
+    def test_clean_black_bars_keep_the_default(self) -> None:
+        assert cropdetect_limit([16.2, 16.0, 15.9, 16.1]) == 40
+
+    def test_noisy_bars_raise_the_limit_above_their_level(self) -> None:
+        assert cropdetect_limit([45.2, 43.8, 16.3, 16.4]) == 50
+
+    def test_picture_sides_do_not_pull_the_limit_up(self) -> None:
+        assert cropdetect_limit([45.0, 44.0, 130.0, 98.0]) == 49
+
+    def test_bar_level_the_default_already_crops_changes_nothing(self) -> None:
+        assert cropdetect_limit([40.0, 34.0, 16.0, 16.0]) == 40
+
+    def test_level_just_above_the_default_raises_the_limit(self) -> None:
+        assert cropdetect_limit([40.5, 16.0, 16.0, 16.0]) == 45
+
+    def test_top_of_the_band_yields_the_highest_limit(self) -> None:
+        assert cropdetect_limit([48.0, 200.0, 200.0, 200.0]) == 52
+
+    def test_a_dark_picture_edge_above_the_band_is_not_a_bar(self) -> None:
+        assert cropdetect_limit([48.1, 200.0, 200.0, 200.0]) == 40
+
+    def test_a_dim_side_outside_the_band_caps_the_limit(self) -> None:
+        assert cropdetect_limit([47.1, 16.0, 16.0, 50.0]) == 49
+
+    def test_the_dimmest_side_outside_the_band_sets_the_cap(self) -> None:
+        assert cropdetect_limit([47.1, 50.9, 60.0, 200.0]) == 49
+
+    def test_dark_theatre_borders_keep_the_default(self) -> None:
+        assert cropdetect_limit([58.4, 86.1, 111.9, 77.0]) == 40
 
 
 class TestHdrDetectionFractions:

@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 
 import numpy as np
 
-from furnace.adapters.ffmpeg import FFmpegAdapter, _parse_y4m_gray
+from furnace.adapters.ffmpeg import FFmpegAdapter, _parse_y4m_luma
 
 _SD_H, _SD_W = 576, 720
 
@@ -211,35 +211,35 @@ def test_sample_grain_all_black_windows_return_empty() -> None:
     assert values == []
 
 
-class TestParseY4mGray:
+class TestParseY4mLuma:
     def test_returns_frames_shaped_by_the_header(self) -> None:
         frames = _window(12, 3.0, 240, 320)
-        parsed = _parse_y4m_gray(_y4m(frames))
+        parsed = _parse_y4m_luma(_y4m(frames))
         assert parsed is not None
         assert parsed.shape == (12, 240, 320)
         assert np.array_equal(parsed, frames)
 
     def test_rejects_a_stream_without_the_magic(self) -> None:
-        assert _parse_y4m_gray(b"RAWVIDEO W720 H576 \nFRAME\n" + b"\x80" * 16) is None
+        assert _parse_y4m_luma(b"RAWVIDEO W720 H576 \nFRAME\n" + b"\x80" * 16) is None
 
     def test_rejects_a_truncated_header(self) -> None:
-        assert _parse_y4m_gray(b"YUV4MPEG2 W720 H576 F25:1") is None
+        assert _parse_y4m_luma(b"YUV4MPEG2 W720 H576 F25:1") is None
 
     def test_rejects_zero_dimensions(self) -> None:
-        assert _parse_y4m_gray(b"YUV4MPEG2 W0 H0 F25:1\nFRAME\n") is None
+        assert _parse_y4m_luma(b"YUV4MPEG2 W0 H0 F25:1\nFRAME\n") is None
 
     def test_rejects_a_header_with_no_frames(self) -> None:
-        assert _parse_y4m_gray(b"YUV4MPEG2 W8 H8 F25:1 Ip A1:1 Cmono\n") is None
+        assert _parse_y4m_luma(b"YUV4MPEG2 W8 H8 F25:1 Ip A1:1 Cmono\n") is None
 
     def test_drops_a_truncated_trailing_frame(self) -> None:
         full = _y4m(_window(4, 2.0, 32, 32))
-        parsed = _parse_y4m_gray(full[: -32 * 16])
+        parsed = _parse_y4m_luma(full[: -32 * 16])
         assert parsed is not None
         assert parsed.shape == (3, 32, 32)
 
     def test_stops_at_an_unexpected_frame_header(self) -> None:
         frames = _window(2, 2.0, 32, 32)
         stream = _y4m(frames) + b"FRAME Xinterlace\n" + frames[0].tobytes()
-        parsed = _parse_y4m_gray(stream)
+        parsed = _parse_y4m_luma(stream)
         assert parsed is not None
         assert parsed.shape == (2, 32, 32)

@@ -89,6 +89,7 @@ class TestDetectCrop:
         adapter = _adapter()
         mock_result = MagicMock()
         mock_result.returncode = 0
+        mock_result.stdout = b""
         mock_result.stderr = "[Parsed_cropdetect] crop=1920:800:0:140\n"
         with patch("furnace.adapters.ffmpeg.subprocess.run", return_value=mock_result):
             crop = adapter.detect_crop(Path("v.mkv"), duration_s=100.0)
@@ -100,6 +101,7 @@ class TestDetectCrop:
         adapter = _adapter()
         mock_result = MagicMock()
         mock_result.returncode = 0
+        mock_result.stdout = b""
         mock_result.stderr = "no crop detected\n"
         with patch("furnace.adapters.ffmpeg.subprocess.run", return_value=mock_result):
             crop = adapter.detect_crop(Path("v.mkv"), duration_s=100.0)
@@ -109,11 +111,13 @@ class TestDetectCrop:
         adapter = _adapter()
         call_count = 0
 
-        def counting_run(*args: Any, **kwargs: Any) -> MagicMock:
+        def counting_run(cmd: Any, **kwargs: Any) -> MagicMock:
             nonlocal call_count
-            call_count += 1
+            if "cropdetect" in cmd[cmd.index("-vf") + 1]:
+                call_count += 1
             mock = MagicMock()
             mock.returncode = 0
+            mock.stdout = b""
             mock.stderr = "[cropdetect] crop=720:480:0:0\n"
             return mock
 
@@ -125,6 +129,7 @@ class TestDetectCrop:
         captured_cmds: list[list[str]] = []
         mock_result = MagicMock()
         mock_result.returncode = 0
+        mock_result.stdout = b""
         mock_result.stderr = "[cropdetect] crop=1920:800:0:140\n"
 
         def capturing_run(cmd: Any, **kwargs: Any) -> MagicMock:
@@ -156,12 +161,14 @@ class TestDetectCropAggregation:
             "crop=1600:600:160:240",
         ]
 
-        def cycling_run(*args: Any, **kwargs: Any) -> MagicMock:
+        def cycling_run(cmd: Any, **kwargs: Any) -> MagicMock:
             nonlocal call_count
             mock = MagicMock()
             mock.returncode = 0
-            mock.stderr = f"[cropdetect] {pattern[call_count % len(pattern)]}\n"
-            call_count += 1
+            mock.stdout = b""
+            if "cropdetect" in cmd[cmd.index("-vf") + 1]:
+                mock.stderr = f"[cropdetect] {pattern[call_count % len(pattern)]}\n"
+                call_count += 1
             return mock
 
         with patch("furnace.adapters.ffmpeg.subprocess.run", side_effect=cycling_run):
@@ -184,12 +191,14 @@ class TestDetectCropAggregation:
 
         call_count = 0
 
-        def shifting_run(*args: Any, **kwargs: Any) -> MagicMock:
+        def shifting_run(cmd: Any, **kwargs: Any) -> MagicMock:
             nonlocal call_count
             mock = MagicMock()
             mock.returncode = 0
-            mock.stderr = f"[cropdetect] crop=100:{heights[call_count]}:0:0\n"
-            call_count += 1
+            mock.stdout = b""
+            if "cropdetect" in cmd[cmd.index("-vf") + 1]:
+                mock.stderr = f"[cropdetect] crop=100:{heights[call_count]}:0:0\n"
+                call_count += 1
             return mock
 
         with patch("furnace.adapters.ffmpeg.subprocess.run", side_effect=shifting_run):

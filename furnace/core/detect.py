@@ -200,6 +200,21 @@ def hdr_transfer_for_cropdetect(color_transfer: str | None) -> str | None:
 
 CROP_EDGE_TOLERANCE = 8
 
+_CROP_DETECT_LIMIT = 40
+_CROP_BAR_CEILING = 48
+_CROP_LIMIT_MARGIN = 4
+
+
+def cropdetect_limit(border_levels: Sequence[float]) -> int:
+    bar_levels = [level for level in border_levels if _CROP_DETECT_LIMIT < level <= _CROP_BAR_CEILING]
+    if not bar_levels:
+        return _CROP_DETECT_LIMIT
+    limit = math.ceil(max(bar_levels)) + _CROP_LIMIT_MARGIN
+    picture_levels = [level for level in border_levels if level > _CROP_BAR_CEILING]
+    if not picture_levels:
+        return limit
+    return min(limit, math.floor(min(picture_levels)) - 1)
+
 
 def _dominant_edge(values: list[int], tolerance: int) -> int:
     best: list[int] = []

@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from furnace.adapters.ffmpeg import FFmpegAdapter
 from furnace.core.progress import ProgressSample
 
@@ -12,6 +14,7 @@ def test_detect_crop_calls_on_progress_per_point_hd() -> None:
     samples: list[ProgressSample] = []
     fake_result = MagicMock()
     fake_result.stderr = "[Parsed_cropdetect_0 @ 0x0] crop=3840:1600:0:280\n"
+    fake_result.stdout = b""
     fake_result.returncode = 0
     with patch("furnace.adapters.ffmpeg.subprocess.run", return_value=fake_result):
         adapter.detect_crop(
@@ -21,9 +24,9 @@ def test_detect_crop_calls_on_progress_per_point_hd() -> None:
             is_dvd=False,
             on_progress=samples.append,
         )
-    assert len(samples) == 21
+    assert len(samples) == 30
     assert samples[-1].fraction == 1.0
-    assert samples[19].fraction == 0.5
+    assert samples[28].fraction == pytest.approx(29 / 49)
 
 
 def test_detect_crop_calls_on_progress_per_point_dvd() -> None:
@@ -31,6 +34,7 @@ def test_detect_crop_calls_on_progress_per_point_dvd() -> None:
     samples: list[ProgressSample] = []
     fake_result = MagicMock()
     fake_result.stderr = "[Parsed_cropdetect_0 @ 0x0] crop=720:480:0:0\n"
+    fake_result.stdout = b""
     fake_result.returncode = 0
     with patch("furnace.adapters.ffmpeg.subprocess.run", return_value=fake_result):
         adapter.detect_crop(
@@ -40,5 +44,6 @@ def test_detect_crop_calls_on_progress_per_point_dvd() -> None:
             is_dvd=True,
             on_progress=samples.append,
         )
-    assert len(samples) == 31
+    assert len(samples) == 40
     assert samples[-1].fraction == 1.0
+    assert samples[38].fraction == pytest.approx(39 / 69)

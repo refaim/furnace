@@ -12,7 +12,7 @@ from typing import Any
 import numpy as np
 
 from furnace.core.audio_profile import AudioMetrics
-from furnace.core.detect import aggregate_crop
+from furnace.core.detect import aggregate_crop, cropdetect_limit
 from furnace.core.models import CropRect, VideoParams
 from furnace.core.progress import ProgressSample
 
@@ -42,8 +42,19 @@ _GRAIN_STATIC_QUANTILE = 0.15
 _GRAIN_MIN_FRAMES = 8
 _GRAIN_MIN_BLOCK_FLICKER = 0.01
 
-_Y4M_HEADER_RE = re.compile(rb"YUV4MPEG2 W([1-9][0-9]*) H([1-9][0-9]*)[^\n]*\n")
+_CROP_LEVEL_POINTS: tuple[float, ...] = tuple((i + 0.5) / 9 for i in range(9))
+_CROP_LEVEL_FRAMES = 10
+_CROP_BORDER_RING = 8
+
+_Y4M_HEADER_RE = re.compile(rb"YUV4MPEG2 W([1-9][0-9]*) H([1-9][0-9]*)([^\n]*)\n")
 _Y4M_FRAME = b"FRAME\n"
+_Y4M_CHROMA_LAYOUT: dict[bytes, tuple[int, int, int]] = {
+    b"mono": (0, 1, 1),
+    b"420": (2, 2, 2),
+    b"420jpeg": (2, 2, 2),
+    b"420mpeg2": (2, 2, 2),
+    b"420paldv": (2, 2, 2),
+}
 
 
 def _rms_db(x: np.ndarray) -> float:
@@ -67,12 +78,19 @@ def _pearson(a: np.ndarray, b: np.ndarray) -> float:
     return float((a64 * b64).sum() / (na * nb))
 
 
-def _parse_y4m_gray(buf: bytes) -> np.ndarray | None:
+def _parse_y4m_luma(buf: bytes) -> np.ndarray | None:
     header = _Y4M_HEADER_RE.match(buf)
     if header is None:
         return None
     width, height = int(header.group(1)), int(header.group(2))
-    frame_px = width * height
+    tag = next((p[1:] for p in header.group(3).split() if p.startswith(b"C")), b"420")
+    layout = _Y4M_CHROMA_LAYOUT.get(tag)
+    if layout is None:
+        logger.error("unsupported y4m chroma tag %r", tag)
+        return None
+    planes, hsub, vsub = layout
+    luma_px = width * height
+    frame_px = luma_px + planes * ((width + hsub - 1) // hsub) * ((height + vsub - 1) // vsub)
 
     frames: list[np.ndarray] = []
     pos = header.end()
@@ -81,11 +99,23 @@ def _parse_y4m_gray(buf: bytes) -> np.ndarray | None:
         stop = start + frame_px
         if stop > len(buf):
             break
-        frames.append(np.frombuffer(buf, dtype=np.uint8, count=frame_px, offset=start))
+        frames.append(np.frombuffer(buf, dtype=np.uint8, count=luma_px, offset=start))
         pos = stop
     if not frames:
         return None
     return np.stack(frames).reshape(len(frames), height, width)
+
+
+def _border_side_levels(frames: np.ndarray) -> tuple[float, float, float, float]:
+    rows = frames.mean(axis=2).max(axis=0)
+    cols = frames.mean(axis=1).max(axis=0)
+    ring = _CROP_BORDER_RING
+    return (
+        float(np.median(rows[:ring])),
+        float(np.median(rows[-ring:])),
+        float(np.median(cols[:ring])),
+        float(np.median(cols[-ring:])),
+    )
 
 
 def _grain_window_value(frames: np.ndarray) -> float | None:
@@ -206,8 +236,6 @@ class FFmpegAdapter:
     _CROP_BATCH_DVD = 15
     _CROP_MAX_BATCHES = 4
 
-    _CROP_DETECT_LIMIT = 40
-
     _CROP_DETECT_ROUND = 2
 
     @staticmethod
@@ -215,6 +243,73 @@ class FFmpegAdapter:
         total = per_batch * max_batches
         fracs = [(i + 0.5) / total for i in range(total)]
         return [fracs[b::max_batches] for b in range(max_batches)]
+
+    @staticmethod
+    def _crop_filter_prefix(*, interlaced: bool, hdr_transfer: str | None) -> list[str]:
+        parts: list[str] = []
+        if interlaced:
+            parts.append("yadif")
+        if hdr_transfer is not None:
+            parts.append(
+                f"zscale=tin={hdr_transfer}:min=2020_ncl:pin=2020:t=linear:npl=100",
+            )
+            parts.append(
+                "zscale=tin=linear:min=2020_ncl:pin=2020:t=bt709:m=bt709:p=bt709:r=tv",
+            )
+        parts.append("format=yuv420p")
+        return parts
+
+    def _border_levels(
+        self,
+        path: Path,
+        duration_s: float,
+        vf: str,
+        on_point: Callable[[], None],
+    ) -> list[float]:
+        samples: list[tuple[float, float, float, float]] = []
+
+        for pct in _CROP_LEVEL_POINTS:
+            seek = duration_s * pct
+            cmd = [
+                str(self._ffmpeg),
+                "-v",
+                "error",
+                "-ss",
+                f"{seek:.2f}",
+                "-i",
+                str(path),
+                "-vf",
+                vf,
+                "-frames:v",
+                str(_CROP_LEVEL_FRAMES),
+                "-strict",
+                "-1",
+                "-f",
+                "yuv4mpegpipe",
+                "-pix_fmt",
+                "yuv420p",
+                "-",
+            ]
+            logger.debug("border level cmd: %s", cmd)
+            result = subprocess.run(cmd, capture_output=True, check=False)
+            on_point()
+            if result.returncode != 0:
+                logger.warning(
+                    "border level probe at %.2fs failed (rc=%d): %s",
+                    seek,
+                    result.returncode,
+                    result.stderr.decode("utf-8", "replace").strip(),
+                )
+                continue
+            decoded = _parse_y4m_luma(result.stdout)
+            if decoded is None:
+                logger.warning("border level probe at %.2fs returned no readable y4m frames", seek)
+                continue
+            samples.append(_border_side_levels(decoded))
+
+        if not samples:
+            return []
+        return [max(side) for side in zip(*samples, strict=True)]
 
     def detect_crop(
         self,
@@ -230,24 +325,22 @@ class FFmpegAdapter:
         batches = self._crop_sample_batches(per_batch, self._CROP_MAX_BATCHES)
         total_points = per_batch * self._CROP_MAX_BATCHES
 
-        parts: list[str] = []
-        if interlaced:
-            parts.append("yadif")
-        if hdr_transfer is not None:
-            parts.append(
-                f"zscale=tin={hdr_transfer}:min=2020_ncl:pin=2020:t=linear:npl=100",
-            )
-            parts.append(
-                "zscale=tin=linear:min=2020_ncl:pin=2020:t=bt709:m=bt709:p=bt709:r=tv",
-            )
-        parts.append("format=yuv420p")
-        parts.append(
-            f"cropdetect={self._CROP_DETECT_LIMIT}:{self._CROP_DETECT_ROUND}:0",
-        )
-        vf = ",".join(parts)
+        done = 0
+        total_units = len(_CROP_LEVEL_POINTS) + total_points
+
+        def tick() -> None:
+            nonlocal done
+            done += 1
+            if on_progress is not None:
+                on_progress(ProgressSample(fraction=done / total_units))
+
+        prefix = self._crop_filter_prefix(interlaced=interlaced, hdr_transfer=hdr_transfer)
+        levels = self._border_levels(path, duration_s, ",".join(prefix), tick)
+        limit = cropdetect_limit(levels)
+        logger.info("%s border levels %s -> cropdetect limit %d", path.name, [round(v, 1) for v in levels], limit)
+        vf = ",".join([*prefix, f"cropdetect={limit}:{self._CROP_DETECT_ROUND}:0"])
 
         crop_values: list[CropRect] = []
-        done = 0
         prev: CropRect | None = None
         result: CropRect | None = None
 
@@ -293,9 +386,7 @@ class FFmpegAdapter:
                             y=int(parts_crop[3]),
                         )
                     )
-                done += 1
-                if on_progress is not None:
-                    on_progress(ProgressSample(fraction=done / total_points))
+                tick()
 
             if not crop_values:
                 continue
@@ -516,7 +607,7 @@ class FFmpegAdapter:
                     result.returncode,
                 )
                 continue
-            decoded = _parse_y4m_gray(result.stdout)
+            decoded = _parse_y4m_luma(result.stdout)
             if decoded is None:
                 logger.warning(
                     "sample_grain window at %.2fs returned no readable y4m frames",
