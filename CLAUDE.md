@@ -17,9 +17,10 @@ Format: `MAJOR.MINOR.PATCH`
 **When to bump:**
 - Every commit that changes user-facing behavior MUST bump the version
 - Multiple bugfixes can share one PATCH bump if committed together
-- Version lives in TWO places — both must be updated together:
+- Version lives in THREE places — all must be updated together:
   - `furnace/__init__.py` → `VERSION = "X.Y.Z"`
   - `pyproject.toml` → `version = "X.Y.Z"`
+  - `uv.lock` → never hand-edited; `make check` regenerates it. Stage it with the commit.
 
 ## Quality Gates
 
