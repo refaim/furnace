@@ -8,7 +8,7 @@ from typing import Any
 
 from charset_normalizer import from_path as _from_path
 
-from furnace.core.audio_profile import classify_audio
+from furnace.core.audio_profile import classify_audio, is_profileable
 from furnace.core.detect import (
     check_unsupported_codecs,
     classify_grain,
@@ -24,6 +24,7 @@ from furnace.core.detect import (
     should_skip_file,
 )
 from furnace.core.models import (
+    THREE_CHANNELS,
     AnalysisOutcome,
     AnalyzeStatus,
     Attachment,
@@ -36,8 +37,6 @@ from furnace.core.models import (
 )
 from furnace.core.ports import Prober
 from furnace.core.rules import parse_audio_codec, parse_subtitle_codec
-
-_PROFILEABLE_CHANNEL_COUNTS = frozenset({2, 6, 8})
 
 _ISO_639_3_LENGTH = 3
 
@@ -179,7 +178,7 @@ class Analyzer:
             video_info.height,
         )
         grain_will_run = needs_grain_probe(video_info.color_transfer)
-        n_profileable = sum(1 for t in audio_tracks if t.channels in _PROFILEABLE_CHANNEL_COUNTS)
+        n_profileable = sum(1 for t in audio_tracks if is_profileable(t.channels, t.channel_layout))
         total_stages = (
             (1 if idet_will_run else 0)
             + (1 if field_rate_will_run else 0)
@@ -263,7 +262,14 @@ class Analyzer:
         detect_forced_subtitles(subtitle_tracks)
 
         for track in audio_tracks:
-            if track.channels not in _PROFILEABLE_CHANNEL_COUNTS:
+            if not is_profileable(track.channels, track.channel_layout):
+                log = logger.warning if track.channels == THREE_CHANNELS else logger.info
+                log(
+                    "Not profiling track %d for fakeness: channels=%s layout=%r",
+                    track.index,
+                    track.channels,
+                    track.channel_layout,
+                )
                 continue
             logger.info(
                 "Profiling audio track %d (%s %s %dch)",
@@ -278,6 +284,7 @@ class Analyzer:
                     stream_index=track.index,
                     channels=track.channels,
                     duration_s=video_info.duration_s,
+                    channel_layout=track.channel_layout,
                 )
                 track.audio_profile = classify_audio(metrics)
             except Exception as exc:  # noqa: BLE001 -- fail-soft by design

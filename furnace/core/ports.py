@@ -62,6 +62,7 @@ class Prober(Protocol):
         channels: int,
         duration_s: float,
         *,
+        channel_layout: str | None = None,
         on_progress: Callable[[ProgressSample], None] | None = None,
     ) -> AudioMetrics: ...
 

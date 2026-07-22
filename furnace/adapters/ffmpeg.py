@@ -11,8 +11,14 @@ from typing import Any
 
 import numpy as np
 
-from furnace.core.audio_profile import AudioMetrics
+from furnace.core.audio_profile import (
+    LAYOUT_2_1,
+    LAYOUT_3_0,
+    THREE_CHANNEL_LAYOUTS,
+    AudioMetrics,
+)
 from furnace.core.detect import aggregate_crop, cropdetect_limit
+from furnace.core.downmix import THREE_CHANNELS
 from furnace.core.models import CropRect, VideoParams
 from furnace.core.progress import ProgressSample
 
@@ -25,7 +31,7 @@ _PROFILE_WINDOW_SEC = 20.0
 _PROFILE_STEREO_POINTS: tuple[float, ...] = tuple(i / 13 for i in range(1, 13))
 _PROFILE_MULTI_POINTS: tuple[float, ...] = (0.15, 0.35, 0.55, 0.75)
 _PROFILE_SAMPLE_RATE = 48000
-_DIGITAL_SILENCE_DB = -120.0
+_RMS_FLOOR_DB = -120.0
 _ZERO_NORM_EPS = 1e-9
 _CHANNELS_STEREO = 2
 _CHANNELS_5_1 = 6
@@ -59,10 +65,10 @@ _Y4M_CHROMA_LAYOUT: dict[bytes, tuple[int, int, int]] = {
 
 def _rms_db(x: np.ndarray) -> float:
     if x.size == 0:
-        return _DIGITAL_SILENCE_DB
+        return _RMS_FLOOR_DB
     rms = float(np.sqrt(np.mean(x.astype(np.float64) ** 2) + 1e-30))
     if rms < _ZERO_NORM_EPS:
-        return _DIGITAL_SILENCE_DB
+        return _RMS_FLOOR_DB
     return 20.0 * math.log10(rms)
 
 
@@ -969,11 +975,17 @@ class FFmpegAdapter:
         channels: int,
         duration_s: float,
         *,
+        channel_layout: str | None = None,
         on_progress: Callable[[ProgressSample], None] | None = None,
     ) -> AudioMetrics:
         if channels == _CHANNELS_STEREO:
             layout = "stereo"
             points = _PROFILE_STEREO_POINTS
+        elif channels == THREE_CHANNELS:
+            if channel_layout not in THREE_CHANNEL_LAYOUTS:
+                raise ValueError(f"profile_audio_track: unsupported 3-channel layout {channel_layout!r}")
+            layout = channel_layout
+            points = _PROFILE_MULTI_POINTS
         elif channels == _CHANNELS_5_1:
             layout = "5.1"
             points = _PROFILE_MULTI_POINTS
@@ -1025,6 +1037,29 @@ class FFmpegAdapter:
                 corr_ls_rs=None,
                 corr_lb_ls=None,
                 corr_rb_rs=None,
+            )
+
+        if channels == THREE_CHANNELS:
+            left, right, third = cols
+            third_db = _rms_db(third)
+            is_center = layout == LAYOUT_3_0
+            return AudioMetrics(
+                channels=THREE_CHANNELS,
+                rms_l=_rms_db(left),
+                rms_r=_rms_db(right),
+                rms_c=third_db if is_center else None,
+                rms_lfe=third_db if layout == LAYOUT_2_1 else None,
+                rms_ls=None,
+                rms_rs=None,
+                rms_lb=None,
+                rms_rb=None,
+                corr_lr=_pearson(left, right),
+                corr_ls_l=None,
+                corr_rs_r=None,
+                corr_ls_rs=None,
+                corr_lb_ls=None,
+                corr_rb_rs=None,
+                corr_c_lr=_pearson(third, left + right) if is_center else None,
             )
 
         if channels == _CHANNELS_5_1:

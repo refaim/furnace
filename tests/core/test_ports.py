@@ -85,14 +85,17 @@ def test_prober_profile_audio_track_signature() -> None:
         "stream_index",
         "channels",
         "duration_s",
+        "channel_layout",
         "on_progress",
     ]
     assert params["on_progress"].default is None
+    assert params["channel_layout"].default is None
 
     hints = typing.get_type_hints(Prober.profile_audio_track)
     assert hints["path"] is Path
     assert hints["stream_index"] is int
     assert hints["channels"] is int
+    assert hints["channel_layout"] == str | None
     assert hints["duration_s"] is float
     assert hints["on_progress"] == Callable[[ProgressSample], None] | None
     assert hints["return"] is AudioMetrics

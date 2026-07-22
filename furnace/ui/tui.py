@@ -4,6 +4,7 @@ import contextlib
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import cast
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding
@@ -11,10 +12,11 @@ from textual.containers import Container
 from textual.screen import Screen
 from textual.widgets import Footer, Header, Input, ListItem, ListView, Static
 
-from furnace.core.audio_profile import Verdict
+from furnace.core.audio_profile import LAYOUT_2_1, LAYOUT_3_0, AudioMetrics, Verdict
 from furnace.core.models import (
     STEREO_CHANNELS,
     SURROUND_5_1_CHANNELS,
+    THREE_CHANNELS,
     CropRect,
     DiscTitle,
     DownmixMode,
@@ -61,6 +63,14 @@ def _mode_label(mode: DownmixMode | None) -> str:
     return "(none)"
 
 
+def _layout_word(metrics: AudioMetrics) -> str:
+    if metrics.channels == STEREO_CHANNELS:
+        return "stereo"
+    if metrics.channels == THREE_CHANNELS:
+        return LAYOUT_2_1 if metrics.rms_lfe is not None else LAYOUT_3_0
+    return "surround"
+
+
 def _render_detector_panel(track: Track | None, downmix: DownmixMode | None = None) -> str:
     if track is None or track.track_type != TrackType.AUDIO:
         return " Detector: ---"
@@ -69,19 +79,19 @@ def _render_detector_panel(track: Track | None, downmix: DownmixMode | None = No
 
     p = track.audio_profile
     m = p.metrics
+    layout = _layout_word(m)
 
     lines: list[str] = []
 
     if p.verdict == Verdict.REAL:
-        kind = "real stereo" if m.channels == STEREO_CHANNELS else "real surround"
-        lines.append(f" Detector: {kind}")
+        lines.append(f" Detector: real {layout}")
     else:
         mode_label = _mode_label(p.suggested)
         if p.verdict == Verdict.FAKE:
-            kind = "FAKE stereo" if m.channels == STEREO_CHANNELS else "FAKE surround"
+            kind = f"FAKE {layout}"
             status = "downmix applied" if downmix is not None else "no downmix applied"
         else:
-            kind = "SUSPICIOUS stereo" if m.channels == STEREO_CHANNELS else "SUSPICIOUS surround"
+            kind = f"SUSPICIOUS {layout}"
             status = "downmix applied" if downmix is not None else "decide manually"
         lines.append(f" Detector: {kind} -> suggested {mode_label} ({status})")
 
@@ -93,6 +103,12 @@ def _render_detector_panel(track: Track | None, downmix: DownmixMode | None = No
     channel_values: list[tuple[str, float]] = []
     if m.channels == STEREO_CHANNELS:
         channel_values = [("L", m.rms_l), ("R", m.rms_r)]
+    elif m.channels == THREE_CHANNELS:
+        channel_values = [("L", m.rms_l), ("R", m.rms_r)]
+        if m.rms_lfe is not None:
+            channel_values.append(("LFE", m.rms_lfe))
+        else:
+            channel_values.append(("C", cast("float", m.rms_c)))
     elif m.channels == SURROUND_5_1_CHANNELS:
         channel_values = [
             ("L", m.rms_l),
@@ -121,8 +137,16 @@ def _render_detector_panel(track: Track | None, downmix: DownmixMode | None = No
         annotations["Rs"] = "<- silent"
     if "lfe is dead" in reason_text:
         annotations["LFE"] = "<- dead"
+    if "lfe is barely there" in reason_text:
+        annotations["LFE"] = "<- barely there"
+    if "center is silent" in reason_text:
+        annotations["C"] = "<- silent"
+    if "center is barely there" in reason_text:
+        annotations["C"] = "<- barely there"
     if "center is way louder" in reason_text:
         annotations["C"] = "<- dominant"
+    if "center is a mix of the fronts" in reason_text:
+        annotations["C"] = "<- mix of L+R"
     if "identical (mono)" in reason_text:
         annotations["L"] = "<- mono"
         annotations["R"] = "<- mono"

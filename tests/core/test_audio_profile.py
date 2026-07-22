@@ -9,6 +9,7 @@ from furnace.core.audio_profile import (
     AudioProfile,
     Verdict,
     classify_audio,
+    is_profileable,
 )
 from furnace.core.downmix import DownmixMode
 
@@ -63,6 +64,214 @@ def _five_one_metrics(
         corr_lb_ls=None,
         corr_rb_rs=None,
     )
+
+
+def _two_one_metrics(
+    *,
+    rms_l: float = -25.0,
+    rms_r: float = -25.0,
+    rms_lfe: float = -35.0,
+    corr_lr: float = 0.5,
+) -> AudioMetrics:
+    return AudioMetrics(
+        channels=3,
+        rms_l=rms_l,
+        rms_r=rms_r,
+        rms_c=None,
+        rms_lfe=rms_lfe,
+        rms_ls=None,
+        rms_rs=None,
+        rms_lb=None,
+        rms_rb=None,
+        corr_lr=corr_lr,
+        corr_ls_l=None,
+        corr_rs_r=None,
+        corr_ls_rs=None,
+        corr_lb_ls=None,
+        corr_rb_rs=None,
+    )
+
+
+def _three_zero_metrics(
+    *,
+    rms_l: float = -25.0,
+    rms_r: float = -25.0,
+    rms_c: float = -24.0,
+    corr_lr: float = 0.5,
+    corr_c_lr: float | None = 0.2,
+) -> AudioMetrics:
+    return AudioMetrics(
+        channels=3,
+        rms_l=rms_l,
+        rms_r=rms_r,
+        rms_c=rms_c,
+        rms_lfe=None,
+        rms_ls=None,
+        rms_rs=None,
+        rms_lb=None,
+        rms_rb=None,
+        corr_lr=corr_lr,
+        corr_ls_l=None,
+        corr_rs_r=None,
+        corr_ls_rs=None,
+        corr_lb_ls=None,
+        corr_rb_rs=None,
+        corr_c_lr=corr_c_lr,
+    )
+
+
+class TestProfileableLayouts:
+    @pytest.mark.parametrize(
+        ("channels", "layout"),
+        [(2, "stereo"), (6, "5.1"), (6, "5.1(side)"), (8, "7.1"), (3, "2.1"), (3, "3.0")],
+    )
+    def test_supported(self, channels: int, layout: str) -> None:
+        assert is_profileable(channels, layout) is True
+
+    @pytest.mark.parametrize(
+        ("channels", "layout"),
+        [(1, "mono"), (4, "quad"), (5, "5.0"), (7, "6.1"), (3, "3.0(back)"), (3, None)],
+    )
+    def test_unsupported(self, channels: int, layout: str | None) -> None:
+        assert is_profileable(channels, layout) is False
+
+    def test_channel_count_wins_for_unambiguous_layouts(self) -> None:
+        assert is_profileable(2, None) is True
+        assert is_profileable(6, None) is True
+
+
+class TestFrontPairThresholds:
+    def test_mono_boundary_is_shared_by_stereo_and_surround(self) -> None:
+        assert classify_audio(_stereo_metrics(corr=0.980001)).verdict == Verdict.FAKE
+        assert classify_audio(_stereo_metrics(corr=0.98)).verdict == Verdict.SUSPICIOUS
+        five_one = _five_one_metrics(corr_lr=0.980001, rms_lfe=-30.0)
+        assert any("fronts are identical" in r for r in classify_audio(five_one).reasons)
+        five_one_below = _five_one_metrics(corr_lr=0.98, rms_lfe=-30.0)
+        assert not any("fronts are identical" in r for r in classify_audio(five_one_below).reasons)
+
+    def test_near_mono_boundary(self) -> None:
+        assert classify_audio(_stereo_metrics(corr=0.960001)).verdict == Verdict.SUSPICIOUS
+        assert classify_audio(_stereo_metrics(corr=0.96)).verdict == Verdict.REAL
+
+    def test_level_difference_boundary(self) -> None:
+        assert classify_audio(_stereo_metrics(corr=0.99, rms_r=-21.999)).verdict == Verdict.FAKE
+        assert classify_audio(_stereo_metrics(corr=0.99, rms_r=-22.0)).verdict == Verdict.SUSPICIOUS
+        assert classify_audio(_stereo_metrics(corr=0.99, rms_r=-23.0)).verdict == Verdict.REAL
+
+
+class TestClassifyTwoOne:
+    def test_live_lfe_and_real_stereo_is_real(self) -> None:
+        p = classify_audio(_two_one_metrics())
+        assert p.verdict == Verdict.REAL
+        assert p.score == 0
+        assert p.suggested is None
+
+    def test_dead_lfe_alone_is_fake(self) -> None:
+        p = classify_audio(_two_one_metrics(rms_lfe=-120.0))
+        assert p.verdict == Verdict.FAKE
+        assert p.suggested == DownmixMode.STEREO
+        assert any("LFE is dead" in r for r in p.reasons)
+
+    def test_a_quiet_but_present_lfe_is_only_suspicious(self) -> None:
+        p = classify_audio(_two_one_metrics(rms_lfe=-70.0))
+        assert p.verdict == Verdict.SUSPICIOUS
+        assert p.score == 1
+        assert any("barely there" in r for r in p.reasons)
+
+    def test_digital_silence_boundary_is_decisive(self) -> None:
+        assert classify_audio(_two_one_metrics(rms_lfe=-90.0)).verdict == Verdict.FAKE
+        assert classify_audio(_two_one_metrics(rms_lfe=-89.9)).verdict == Verdict.SUSPICIOUS
+
+    def test_dead_lfe_with_mono_fronts_suggests_mono(self) -> None:
+        p = classify_audio(_two_one_metrics(rms_lfe=-120.0, corr_lr=0.999))
+        assert p.verdict == Verdict.FAKE
+        assert p.suggested == DownmixMode.MONO
+        assert any("mono" in r for r in p.reasons)
+
+    def test_mono_fronts_with_live_lfe_is_fake(self) -> None:
+        p = classify_audio(_two_one_metrics(corr_lr=0.999))
+        assert p.verdict == Verdict.FAKE
+        assert p.suggested == DownmixMode.MONO
+
+    def test_near_mono_fronts_with_live_lfe_is_suspicious(self) -> None:
+        p = classify_audio(_two_one_metrics(corr_lr=0.97, rms_r=-27.0))
+        assert p.verdict == Verdict.SUSPICIOUS
+        assert p.suggested == DownmixMode.MONO
+
+    def test_lfe_just_above_the_dead_threshold_is_real(self) -> None:
+        p = classify_audio(_two_one_metrics(rms_lfe=-64.0))
+        assert p.verdict == Verdict.REAL
+
+    def test_the_real_dvd_case(self) -> None:
+        p = classify_audio(_two_one_metrics(rms_l=-29.6, rms_r=-30.4, rms_lfe=-120.0, corr_lr=0.765))
+        assert p.verdict == Verdict.FAKE
+        assert p.suggested == DownmixMode.STEREO
+        assert p.reasons == ("LFE is dead (-120 dB)",)
+
+
+class TestClassifyThreeZero:
+    def test_live_center_and_real_stereo_is_real(self) -> None:
+        p = classify_audio(_three_zero_metrics())
+        assert p.verdict == Verdict.REAL
+        assert p.score == 0
+
+    def test_silent_center_is_fake(self) -> None:
+        p = classify_audio(_three_zero_metrics(rms_c=-120.0))
+        assert p.verdict == Verdict.FAKE
+        assert p.suggested == DownmixMode.STEREO
+        assert any("center is silent" in r for r in p.reasons)
+
+    def test_a_quiet_but_present_center_is_only_suspicious(self) -> None:
+        p = classify_audio(_three_zero_metrics(rms_c=-60.0))
+        assert p.verdict == Verdict.SUSPICIOUS
+        assert any("barely there" in r for r in p.reasons)
+
+    def test_a_center_derived_from_the_fronts_is_fake(self) -> None:
+        p = classify_audio(_three_zero_metrics(corr_c_lr=0.99))
+        assert p.verdict == Verdict.FAKE
+        assert p.suggested == DownmixMode.STEREO
+        assert any("mix of the fronts" in r for r in p.reasons)
+
+    def test_a_center_correlation_below_the_threshold_is_real(self) -> None:
+        assert classify_audio(_three_zero_metrics(corr_c_lr=0.95)).verdict == Verdict.REAL
+        assert classify_audio(_three_zero_metrics(corr_c_lr=0.951)).verdict == Verdict.FAKE
+
+    def test_a_missing_center_correlation_fails_loudly(self) -> None:
+        with pytest.raises(TypeError):
+            classify_audio(_three_zero_metrics(corr_c_lr=None))
+
+    def test_dominant_center_is_suspicious(self) -> None:
+        p = classify_audio(_three_zero_metrics(rms_c=-10.0))
+        assert p.verdict == Verdict.SUSPICIOUS
+        assert p.suggested == DownmixMode.STEREO
+        assert any("center is way louder" in r for r in p.reasons)
+
+    def test_mono_fronts_with_dominant_center_is_fake(self) -> None:
+        p = classify_audio(_three_zero_metrics(rms_c=-10.0, corr_lr=0.999))
+        assert p.verdict == Verdict.FAKE
+        assert p.suggested == DownmixMode.MONO
+
+
+def test_classify_rejects_three_channels_without_lfe_or_center() -> None:
+    metrics = AudioMetrics(
+        channels=3,
+        rms_l=-25.0,
+        rms_r=-25.0,
+        rms_c=None,
+        rms_lfe=None,
+        rms_ls=None,
+        rms_rs=None,
+        rms_lb=None,
+        rms_rb=None,
+        corr_lr=0.5,
+        corr_ls_l=None,
+        corr_rs_r=None,
+        corr_ls_rs=None,
+        corr_lb_ls=None,
+        corr_rb_rs=None,
+    )
+    with pytest.raises(ValueError, match="three-channel metrics carry neither LFE nor center"):
+        classify_audio(metrics)
 
 
 def test_audio_metrics_is_frozen() -> None:

@@ -1822,6 +1822,47 @@ def _real_5_1_metrics() -> AudioMetrics:
     )
 
 
+def _dead_lfe_2_1_metrics() -> AudioMetrics:
+    return AudioMetrics(
+        channels=3,
+        rms_l=-29.6,
+        rms_r=-30.4,
+        rms_c=None,
+        rms_lfe=-120.0,
+        rms_ls=None,
+        rms_rs=None,
+        rms_lb=None,
+        rms_rb=None,
+        corr_lr=0.765,
+        corr_ls_l=None,
+        corr_rs_r=None,
+        corr_ls_rs=None,
+        corr_lb_ls=None,
+        corr_rb_rs=None,
+    )
+
+
+def _derived_center_3_0_metrics() -> AudioMetrics:
+    return AudioMetrics(
+        channels=3,
+        rms_l=-25.0,
+        rms_r=-25.5,
+        rms_c=-24.0,
+        rms_lfe=None,
+        rms_ls=None,
+        rms_rs=None,
+        rms_lb=None,
+        rms_rb=None,
+        corr_lr=0.4,
+        corr_ls_l=None,
+        corr_rs_r=None,
+        corr_ls_rs=None,
+        corr_lb_ls=None,
+        corr_rb_rs=None,
+        corr_c_lr=0.99,
+    )
+
+
 class TestAudioProfiling:
     def test_profiles_6ch_track_and_attaches_verdict(self, tmp_path: Path) -> None:
         scan_result = make_scan_result(tmp_path)
@@ -1870,7 +1911,100 @@ class TestAudioProfiling:
             stream_index=1,
             channels=6,
             duration_s=100.0,
+            channel_layout=None,
         )
+
+    def _three_channel_probe_data(self, layout: str | None) -> dict[str, Any]:
+        audio: dict[str, Any] = {
+            "index": 1,
+            "codec_type": "audio",
+            "codec_name": "ac3",
+            "channels": 3,
+            "tags": {"language": "rus"},
+            "disposition": {"default": 1, "forced": 0},
+        }
+        if layout is not None:
+            audio["channel_layout"] = layout
+        return {
+            "streams": [
+                {
+                    "index": 0,
+                    "codec_type": "video",
+                    "codec_name": "h264",
+                    "width": 720,
+                    "height": 576,
+                    "avg_frame_rate": "25/1",
+                    "duration": "100.0",
+                    "field_order": "progressive",
+                    "pix_fmt": "yuv420p",
+                },
+                audio,
+            ],
+            "format": {"duration": "100.0"},
+            "chapters": [],
+        }
+
+    def test_forwards_the_2_1_layout_and_attaches_the_verdict(self, tmp_path: Path) -> None:
+        scan_result = make_scan_result(tmp_path)
+        prober = make_prober(probe_data=self._three_channel_probe_data("2.1"))
+        prober.profile_audio_track.return_value = _dead_lfe_2_1_metrics()
+
+        with (
+            patch("furnace.services.analyzer.should_skip_file", return_value=(False, "")),
+            patch("furnace.services.analyzer.detect_hdr", return_value=HdrMetadata()),
+            patch("furnace.services.analyzer.check_unsupported_codecs", return_value=None),
+        ):
+            outcome = Analyzer(prober=prober).analyze(scan_result)
+
+        movie = outcome.movie
+        assert movie is not None
+        profile = movie.audio_tracks[0].audio_profile
+        assert profile is not None
+        assert profile.verdict == Verdict.FAKE
+        prober.profile_audio_track.assert_called_once_with(
+            path=scan_result.main_file,
+            stream_index=1,
+            channels=3,
+            duration_s=100.0,
+            channel_layout="2.1",
+        )
+
+    def test_forwards_the_3_0_layout(self, tmp_path: Path) -> None:
+        scan_result = make_scan_result(tmp_path)
+        prober = make_prober(probe_data=self._three_channel_probe_data("3.0"))
+        prober.profile_audio_track.return_value = _derived_center_3_0_metrics()
+
+        with (
+            patch("furnace.services.analyzer.should_skip_file", return_value=(False, "")),
+            patch("furnace.services.analyzer.detect_hdr", return_value=HdrMetadata()),
+            patch("furnace.services.analyzer.check_unsupported_codecs", return_value=None),
+        ):
+            outcome = Analyzer(prober=prober).analyze(scan_result)
+
+        assert prober.profile_audio_track.call_args.kwargs["channel_layout"] == "3.0"
+        movie = outcome.movie
+        assert movie is not None
+        profile = movie.audio_tracks[0].audio_profile
+        assert profile is not None
+        assert profile.verdict == Verdict.FAKE
+        assert any("mix of the fronts" in r for r in profile.reasons)
+
+    @pytest.mark.parametrize("layout", ["3.0(back)", None])
+    def test_skips_unhandled_three_channel_layouts(self, tmp_path: Path, layout: str | None) -> None:
+        scan_result = make_scan_result(tmp_path)
+        prober = make_prober(probe_data=self._three_channel_probe_data(layout))
+
+        with (
+            patch("furnace.services.analyzer.should_skip_file", return_value=(False, "")),
+            patch("furnace.services.analyzer.detect_hdr", return_value=HdrMetadata()),
+            patch("furnace.services.analyzer.check_unsupported_codecs", return_value=None),
+        ):
+            outcome = Analyzer(prober=prober).analyze(scan_result)
+
+        movie = outcome.movie
+        assert movie is not None
+        assert movie.audio_tracks[0].audio_profile is None
+        prober.profile_audio_track.assert_not_called()
 
     def test_skips_1ch_track(self, tmp_path: Path) -> None:
         scan_result = make_scan_result(tmp_path)

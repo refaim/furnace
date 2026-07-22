@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from furnace.core.audio_profile import AudioMetrics, AudioProfile, Verdict
 from furnace.core.models import AudioCodecId, DownmixMode, Track, TrackType
 from furnace.ui.tui import TrackSelection, TrackSelectorScreen, _fmt_audio_track
@@ -86,6 +88,47 @@ def _real_profile() -> AudioProfile:
         suggested=None,
         reasons=(),
         metrics=metrics,
+    )
+
+
+def _two_one_metrics(rms_lfe: float = -120.0) -> AudioMetrics:
+    return AudioMetrics(
+        channels=3,
+        rms_l=-29.6,
+        rms_r=-30.4,
+        rms_c=None,
+        rms_lfe=rms_lfe,
+        rms_ls=None,
+        rms_rs=None,
+        rms_lb=None,
+        rms_rb=None,
+        corr_lr=0.765,
+        corr_ls_l=None,
+        corr_rs_r=None,
+        corr_ls_rs=None,
+        corr_lb_ls=None,
+        corr_rb_rs=None,
+    )
+
+
+def _three_zero_metrics(rms_c: float = -24.0) -> AudioMetrics:
+    return AudioMetrics(
+        channels=3,
+        rms_l=-25.0,
+        rms_r=-25.5,
+        rms_c=rms_c,
+        rms_lfe=None,
+        rms_ls=None,
+        rms_rs=None,
+        rms_lb=None,
+        rms_rb=None,
+        corr_lr=0.4,
+        corr_ls_l=None,
+        corr_rs_r=None,
+        corr_ls_rs=None,
+        corr_lb_ls=None,
+        corr_rb_rs=None,
+        corr_c_lr=0.99,
     )
 
 
@@ -567,6 +610,162 @@ class TestRenderDetectorPanel:
         )
         panel = _render_detector_panel(track)
         assert "real stereo" in panel
+
+    def test_fake_2_1_shows_the_dead_lfe(self) -> None:
+        from furnace.ui.tui import _render_detector_panel
+
+        track = _t(channels=3, layout="2.1")
+        track.audio_profile = AudioProfile(
+            verdict=Verdict.FAKE,
+            score=2,
+            suggested=DownmixMode.STEREO,
+            reasons=("LFE is dead (-120 dB)",),
+            metrics=AudioMetrics(
+                channels=3,
+                rms_l=-29.6,
+                rms_r=-30.4,
+                rms_c=None,
+                rms_lfe=-120.0,
+                rms_ls=None,
+                rms_rs=None,
+                rms_lb=None,
+                rms_rb=None,
+                corr_lr=0.765,
+                corr_ls_l=None,
+                corr_rs_r=None,
+                corr_ls_rs=None,
+                corr_lb_ls=None,
+                corr_rb_rs=None,
+            ),
+        )
+        panel = _render_detector_panel(track)
+        assert "FAKE 2.1" in panel
+        assert "suggested STEREO" in panel
+        assert "   LFE  [" in panel
+        assert "<- dead" in panel
+        assert "   C    [" not in panel
+        assert "   Ls   [" not in panel
+
+    def test_fake_3_0_shows_the_silent_center(self) -> None:
+        from furnace.ui.tui import _render_detector_panel
+
+        track = _t(channels=3, layout="3.0")
+        track.audio_profile = AudioProfile(
+            verdict=Verdict.FAKE,
+            score=2,
+            suggested=DownmixMode.STEREO,
+            reasons=("center is silent (-80 dB)",),
+            metrics=AudioMetrics(
+                channels=3,
+                rms_l=-25.0,
+                rms_r=-25.5,
+                rms_c=-80.0,
+                rms_lfe=None,
+                rms_ls=None,
+                rms_rs=None,
+                rms_lb=None,
+                rms_rb=None,
+                corr_lr=0.4,
+                corr_ls_l=None,
+                corr_rs_r=None,
+                corr_ls_rs=None,
+                corr_lb_ls=None,
+                corr_rb_rs=None,
+            ),
+        )
+        panel = _render_detector_panel(track)
+        assert "FAKE 3.0" in panel
+        assert "   C    [" in panel
+        assert "<- silent" in panel
+        assert "   LFE  [" not in panel
+
+    @pytest.mark.parametrize(
+        ("reason", "expected"),
+        [
+            ("LFE is barely there (-70 dB)", "<- barely there"),
+            ("LFE is dead (-120 dB)", "<- dead"),
+        ],
+    )
+    def test_lfe_annotations(self, reason: str, expected: str) -> None:
+        from furnace.ui.tui import _render_detector_panel
+
+        track = _t(channels=3, layout="2.1")
+        track.audio_profile = AudioProfile(
+            verdict=Verdict.SUSPICIOUS,
+            score=1,
+            suggested=DownmixMode.STEREO,
+            reasons=(reason,),
+            metrics=_two_one_metrics(rms_lfe=-70.0),
+        )
+        assert expected in _render_detector_panel(track)
+
+    @pytest.mark.parametrize(
+        ("reason", "expected"),
+        [
+            ("center is barely there (-60 dB)", "<- barely there"),
+            ("center is a mix of the fronts (corr C~L+R=0.99)", "<- mix of L+R"),
+            ("center is way louder than the fronts (14 dB above)", "<- dominant"),
+        ],
+    )
+    def test_center_annotations(self, reason: str, expected: str) -> None:
+        from furnace.ui.tui import _render_detector_panel
+
+        track = _t(channels=3, layout="3.0")
+        track.audio_profile = AudioProfile(
+            verdict=Verdict.FAKE,
+            score=2,
+            suggested=DownmixMode.STEREO,
+            reasons=(reason,),
+            metrics=_three_zero_metrics(),
+        )
+        assert expected in _render_detector_panel(track)
+
+    def test_a_derived_center_outranks_the_dominance_annotation(self) -> None:
+        from furnace.ui.tui import _render_detector_panel
+
+        track = _t(channels=3, layout="3.0")
+        track.audio_profile = AudioProfile(
+            verdict=Verdict.FAKE,
+            score=3,
+            suggested=DownmixMode.STEREO,
+            reasons=(
+                "center is a mix of the fronts (corr C~L+R=0.99)",
+                "center is way louder than the fronts (14 dB above)",
+            ),
+            metrics=_three_zero_metrics(),
+        )
+        panel = _render_detector_panel(track)
+        assert "<- mix of L+R" in panel
+        assert "<- dominant" not in panel
+
+    def test_real_2_1(self) -> None:
+        from furnace.ui.tui import _render_detector_panel
+
+        track = _t(channels=3, layout="2.1")
+        track.audio_profile = AudioProfile(
+            verdict=Verdict.REAL,
+            score=0,
+            suggested=None,
+            reasons=(),
+            metrics=AudioMetrics(
+                channels=3,
+                rms_l=-25.0,
+                rms_r=-25.5,
+                rms_c=None,
+                rms_lfe=-35.0,
+                rms_ls=None,
+                rms_rs=None,
+                rms_lb=None,
+                rms_rb=None,
+                corr_lr=0.3,
+                corr_ls_l=None,
+                corr_rs_r=None,
+                corr_ls_rs=None,
+                corr_lb_ls=None,
+                corr_rb_rs=None,
+            ),
+        )
+        assert "real 2.1" in _render_detector_panel(track)
 
     def test_fake_surround_with_annotations(self) -> None:
         from furnace.ui.tui import _render_detector_panel

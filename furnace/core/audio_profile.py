@@ -2,24 +2,31 @@ from __future__ import annotations
 
 import enum
 from dataclasses import dataclass
-from typing import cast
+from typing import TypeGuard, cast
 
-from .downmix import STEREO_CHANNELS, DownmixMode
+from .downmix import STEREO_CHANNELS, THREE_CHANNELS, DownmixMode
 
 _SURROUND_5_1_CHANNELS = 6
 _SURROUND_7_1_CHANNELS = 8
 
+_UNAMBIGUOUS_CHANNEL_COUNTS = frozenset({STEREO_CHANNELS, _SURROUND_5_1_CHANNELS, _SURROUND_7_1_CHANNELS})
+
+LAYOUT_2_1 = "2.1"
+LAYOUT_3_0 = "3.0"
+THREE_CHANNEL_LAYOUTS = frozenset({LAYOUT_2_1, LAYOUT_3_0})
+
 
 SURROUND_SILENT_DB = -50.0
 LFE_DEAD_DB = -65.0
+CENTER_SILENT_DB = -50.0
+HARD_SILENCE_DB = -90.0
+CENTER_COPY_CORR = 0.95
 CENTER_DOM_DB = 10.0
 MONO_CORR = 0.98
 MONO_RMS_DIFF_DB = 2.0
 SURROUNDS_COPY_CORR = 0.95
 LS_RS_IDENT_CORR = 0.85
 
-STEREO_MONO_CORR = 0.98
-STEREO_MONO_DIFF_DB = 2.0
 STEREO_SUSP_CORR = 0.96
 STEREO_SUSP_DIFF_DB = 3.0
 
@@ -52,6 +59,7 @@ class AudioMetrics:
     corr_ls_rs: float | None
     corr_lb_ls: float | None
     corr_rb_rs: float | None
+    corr_c_lr: float | None = None
 
 
 @dataclass(frozen=True)
@@ -63,43 +71,95 @@ class AudioProfile:
     metrics: AudioMetrics
 
 
+def is_profileable(channels: int | None, channel_layout: str | None) -> TypeGuard[int]:
+    if channels in _UNAMBIGUOUS_CHANNEL_COUNTS:
+        return True
+    return channels == THREE_CHANNELS and channel_layout in THREE_CHANNEL_LAYOUTS
+
+
 def classify_audio(metrics: AudioMetrics) -> AudioProfile:
     if metrics.channels == STEREO_CHANNELS:
         return _classify_stereo(metrics)
+    if metrics.channels == THREE_CHANNELS:
+        if metrics.rms_lfe is not None:
+            return _classify_two_one(metrics)
+        if metrics.rms_c is not None:
+            return _classify_three_zero(metrics)
+        raise ValueError("three-channel metrics carry neither LFE nor center")
     if metrics.channels in (_SURROUND_5_1_CHANNELS, _SURROUND_7_1_CHANNELS):
         return _classify_multichannel(metrics)
     raise ValueError(f"unsupported channels: {metrics.channels}")
 
 
-def _classify_stereo(metrics: AudioMetrics) -> AudioProfile:
+def _front_pair_signals(metrics: AudioMetrics) -> tuple[int, list[str], bool]:
     corr = metrics.corr_lr
     diff = abs(metrics.rms_l - metrics.rms_r)
 
-    if corr > STEREO_MONO_CORR and diff < STEREO_MONO_DIFF_DB:
-        return AudioProfile(
-            verdict=Verdict.FAKE,
-            score=2,
-            suggested=DownmixMode.MONO,
-            reasons=(f"left and right are identical (mono) — corr={corr:.3f}, diff={diff:.1f} dB",),
-            metrics=metrics,
-        )
-
+    if corr > MONO_CORR and diff < MONO_RMS_DIFF_DB:
+        return 2, [f"left and right are identical (mono) — corr={corr:.3f}, diff={diff:.1f} dB"], True
     if corr > STEREO_SUSP_CORR and diff < STEREO_SUSP_DIFF_DB:
-        return AudioProfile(
-            verdict=Verdict.SUSPICIOUS,
-            score=1,
-            suggested=DownmixMode.MONO,
-            reasons=(f"left and right are nearly identical — corr={corr:.3f}, diff={diff:.1f} dB",),
-            metrics=metrics,
-        )
+        return 1, [f"left and right are nearly identical — corr={corr:.3f}, diff={diff:.1f} dB"], True
+    return 0, [], False
 
-    return AudioProfile(
-        verdict=Verdict.REAL,
-        score=0,
-        suggested=None,
-        reasons=(),
-        metrics=metrics,
-    )
+
+def _verdict_for(score: int) -> Verdict:
+    if score >= FAKE_SCORE_THRESHOLD:
+        return Verdict.FAKE
+    if score == SUSPICIOUS_SCORE:
+        return Verdict.SUSPICIOUS
+    return Verdict.REAL
+
+
+def _classify_two_one(metrics: AudioMetrics) -> AudioProfile:
+    rms_lfe = cast("float", metrics.rms_lfe)
+    score, reasons, fronts_mono = _front_pair_signals(metrics)
+
+    if rms_lfe <= HARD_SILENCE_DB:
+        score += 2
+        reasons.append(f"LFE is dead ({rms_lfe:.0f} dB)")
+    elif rms_lfe < LFE_DEAD_DB:
+        score += 1
+        reasons.append(f"LFE is barely there ({rms_lfe:.0f} dB)")
+
+    verdict = _verdict_for(score)
+    suggested: DownmixMode | None = None
+    if verdict is not Verdict.REAL:
+        suggested = DownmixMode.MONO if fronts_mono else DownmixMode.STEREO
+    return AudioProfile(verdict=verdict, score=score, suggested=suggested, reasons=tuple(reasons), metrics=metrics)
+
+
+def _classify_three_zero(metrics: AudioMetrics) -> AudioProfile:
+    rms_c = cast("float", metrics.rms_c)
+    score, reasons, fronts_mono = _front_pair_signals(metrics)
+
+    if rms_c <= HARD_SILENCE_DB:
+        score += 2
+        reasons.append(f"center is silent ({rms_c:.0f} dB)")
+    elif rms_c < CENTER_SILENT_DB:
+        score += 1
+        reasons.append(f"center is barely there ({rms_c:.0f} dB)")
+    else:
+        corr_c_lr = cast("float", metrics.corr_c_lr)
+        if corr_c_lr > CENTER_COPY_CORR:
+            score += 2
+            reasons.append(f"center is a mix of the fronts (corr C~L+R={corr_c_lr:.2f})")
+        center_dom = rms_c - max(metrics.rms_l, metrics.rms_r)
+        if center_dom > CENTER_DOM_DB:
+            score += 1
+            reasons.append(f"center is way louder than the fronts ({center_dom:.0f} dB above)")
+
+    verdict = _verdict_for(score)
+    suggested: DownmixMode | None = None
+    if verdict is not Verdict.REAL:
+        suggested = DownmixMode.MONO if fronts_mono else DownmixMode.STEREO
+    return AudioProfile(verdict=verdict, score=score, suggested=suggested, reasons=tuple(reasons), metrics=metrics)
+
+
+def _classify_stereo(metrics: AudioMetrics) -> AudioProfile:
+    score, reasons, fronts_mono = _front_pair_signals(metrics)
+    verdict = _verdict_for(score)
+    suggested = DownmixMode.MONO if fronts_mono else None
+    return AudioProfile(verdict=verdict, score=score, suggested=suggested, reasons=tuple(reasons), metrics=metrics)
 
 
 def _classify_multichannel(metrics: AudioMetrics) -> AudioProfile:

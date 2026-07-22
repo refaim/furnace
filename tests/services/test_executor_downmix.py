@@ -116,6 +116,21 @@ class TestDecodeEncodeDownmixRouting:
         assert mocks.audio_extractor.ffmpeg_to_wav.called
         assert not mocks.audio_extractor.extract_track.called
 
+    def test_three_channel_ac3_downmix_goes_through_eac3to(
+        self,
+        executor_with_mocks: tuple[Executor, SimpleNamespace],
+        tmp_path: Path,
+    ) -> None:
+        executor, mocks = executor_with_mocks
+        instr = _instr("ac3", downmix=DownmixMode.STEREO, channels=3)
+        executor._process_audio_track(instr, tmp_path, _job())
+
+        assert mocks.audio_extractor.extract_track.called
+        assert not mocks.audio_extractor.ffmpeg_to_wav.called
+        decode_call = mocks.audio_decoder.decode_lossless.call_args
+        assert decode_call.kwargs.get("downmix") == DownmixMode.STEREO
+        assert mocks.aac_encoder.encode_aac.called
+
     def test_aac_downmix_uses_ffmpeg_to_wav(
         self,
         executor_with_mocks: tuple[Executor, SimpleNamespace],

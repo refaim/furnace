@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 import shutil
 import struct
+import subprocess
 import wave
 from pathlib import Path
 
@@ -10,6 +11,8 @@ import pytest
 
 from furnace.adapters.ffmpeg import FFmpegAdapter
 from furnace.config import ToolPaths, load_config
+from furnace.core.audio_profile import Verdict, classify_audio
+from furnace.core.downmix import DownmixMode
 
 
 def _resolve_ffmpeg_paths() -> tuple[Path, Path]:
@@ -86,6 +89,36 @@ def _write_synthetic_5_1_wav(path: Path, seconds: float = 2.0, sample_rate: int 
         w.writeframes(bytes(frames))
 
 
+def _write_synthetic_three_channel_wav(
+    path: Path,
+    ffmpeg: Path,
+    layout: str,
+    *,
+    third_silent: bool = True,
+    seconds: float = 2.0,
+) -> None:
+    third = (
+        f"anullsrc=r=48000:cl=mono:d={seconds}"
+        if third_silent
+        else f"sine=frequency=700:duration={seconds}:sample_rate=48000"
+    )
+    third_channel = "LFE" if layout == "2.1" else "FC"
+    subprocess.run(
+        [
+            str(ffmpeg), "-v", "error", "-y",
+            "-f", "lavfi", "-i", f"sine=frequency=1000:duration={seconds}:sample_rate=48000",
+            "-f", "lavfi", "-i", f"sine=frequency=300:duration={seconds}:sample_rate=48000",
+            "-f", "lavfi", "-i", third,
+            "-filter_complex",
+            f"[0:a][1:a][2:a]join=inputs=3:channel_layout={layout}:"
+            f"map=0.0-FL|1.0-FR|2.0-{third_channel}[a]",
+            "-map", "[a]", "-c:a", "pcm_s16le", str(path),
+        ],
+        check=True,
+        capture_output=True,
+    )
+
+
 @pytest.fixture
 def adapter() -> FFmpegAdapter:
     ffmpeg_path, ffprobe_path = _resolve_ffmpeg_paths()
@@ -112,3 +145,102 @@ def test_profile_audio_track_5_1_synthetic_wav(tmp_path: Path, adapter: FFmpegAd
     assert metrics.rms_rs < -80
     assert metrics.rms_lfe is not None
     assert metrics.rms_lfe < -80
+
+
+def test_profile_audio_track_2_1_synthetic_wav(tmp_path: Path, adapter: FFmpegAdapter) -> None:
+    wav_path = tmp_path / "synthetic_2_1.wav"
+    _write_synthetic_three_channel_wav(wav_path, _resolve_ffmpeg_paths()[0], "2.1")
+
+    metrics = adapter.profile_audio_track(
+        path=wav_path,
+        stream_index=0,
+        channels=3,
+        duration_s=2.0,
+        channel_layout="2.1",
+    )
+
+    assert metrics.channels == 3
+    assert metrics.rms_c is None
+    assert metrics.rms_lfe is not None
+    assert metrics.rms_lfe < -90, f"expected a dead LFE, got {metrics.rms_lfe}"
+    assert metrics.rms_l > -30, f"expected a loud left, got {metrics.rms_l}"
+    assert metrics.rms_r > -30, f"expected a loud right, got {metrics.rms_r}"
+
+    profile = classify_audio(metrics)
+    assert profile.verdict is Verdict.FAKE
+    assert profile.suggested is DownmixMode.STEREO
+
+
+def test_profile_audio_track_3_0_synthetic_wav(tmp_path: Path, adapter: FFmpegAdapter) -> None:
+    wav_path = tmp_path / "synthetic_3_0.wav"
+    _write_synthetic_three_channel_wav(wav_path, _resolve_ffmpeg_paths()[0], "3.0")
+
+    metrics = adapter.profile_audio_track(
+        path=wav_path,
+        stream_index=0,
+        channels=3,
+        duration_s=2.0,
+        channel_layout="3.0",
+    )
+
+    assert metrics.rms_lfe is None
+    assert metrics.rms_c is not None
+    assert metrics.rms_c < -90, f"expected a silent center, got {metrics.rms_c}"
+    assert metrics.rms_l > -30
+    assert metrics.rms_r > -30
+    assert classify_audio(metrics).verdict is Verdict.FAKE
+
+
+def test_profile_audio_track_3_0_center_is_a_mix_of_the_fronts(tmp_path: Path, adapter: FFmpegAdapter) -> None:
+    wav_path = tmp_path / "matrix_3_0.wav"
+    ffmpeg = _resolve_ffmpeg_paths()[0]
+    subprocess.run(
+        [
+            str(ffmpeg), "-v", "error", "-y",
+            "-f", "lavfi", "-i", "sine=frequency=1000:duration=2:sample_rate=48000",
+            "-f", "lavfi", "-i", "sine=frequency=300:duration=2:sample_rate=48000",
+            "-filter_complex",
+            "[0:a][1:a]amerge=inputs=2[st];[st]asplit=2[a][b];"
+            "[b]pan=mono|c0=0.5*c0+0.5*c1[mix];"
+            "[a][mix]join=inputs=2:channel_layout=3.0[out]",
+            "-map", "[out]", "-c:a", "pcm_s16le", str(wav_path),
+        ],
+        check=True,
+        capture_output=True,
+    )
+
+    metrics = adapter.profile_audio_track(
+        path=wav_path,
+        stream_index=0,
+        channels=3,
+        duration_s=2.0,
+        channel_layout="3.0",
+    )
+
+    assert metrics.corr_c_lr is not None
+    assert metrics.corr_c_lr > 0.95, f"expected a derived center, got corr={metrics.corr_c_lr}"
+    profile = classify_audio(metrics)
+    assert profile.verdict is Verdict.FAKE
+    assert any("mix of the fronts" in r for r in profile.reasons)
+
+
+def test_the_declared_layout_decides_how_the_third_channel_is_read(
+    tmp_path: Path,
+    adapter: FFmpegAdapter,
+) -> None:
+    wav_path = tmp_path / "real_2_1.wav"
+    _write_synthetic_three_channel_wav(wav_path, _resolve_ffmpeg_paths()[0], "2.1", third_silent=False)
+
+    as_declared = adapter.profile_audio_track(
+        path=wav_path, stream_index=0, channels=3, duration_s=2.0, channel_layout="2.1"
+    )
+    mislabelled = adapter.profile_audio_track(
+        path=wav_path, stream_index=0, channels=3, duration_s=2.0, channel_layout="3.0"
+    )
+
+    assert as_declared.rms_lfe is not None
+    assert as_declared.rms_lfe > -30, "the real LFE must survive when the layout is declared correctly"
+    assert mislabelled.rms_c is not None
+    assert mislabelled.rms_c < as_declared.rms_lfe - 20, (
+        "reading a 2.1 file as 3.0 must not silently produce the same third channel"
+    )

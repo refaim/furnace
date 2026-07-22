@@ -83,6 +83,26 @@ class TestBuildAudioInstructionValidation:
         instr = planner._build_audio_instruction(track, is_default=True, downmix=DownmixMode.STEREO)
         assert instr.downmix == DownmixMode.STEREO
 
+    def test_stereo_on_3ch_ok(self) -> None:
+        track = _audio_track(codec_name="ac3", codec_id=AudioCodecId.AC3, channels=3)
+        planner = PlannerService(previewer=None)
+        instr = planner._build_audio_instruction(track, is_default=True, downmix=DownmixMode.STEREO)
+        assert instr.downmix == DownmixMode.STEREO
+        assert instr.action == AudioAction.DECODE_ENCODE
+        assert instr.channels == 3
+
+    def test_mono_on_3ch_ok(self) -> None:
+        track = _audio_track(codec_name="ac3", codec_id=AudioCodecId.AC3, channels=3)
+        planner = PlannerService(previewer=None)
+        instr = planner._build_audio_instruction(track, is_default=True, downmix=DownmixMode.MONO)
+        assert instr.downmix == DownmixMode.MONO
+
+    def test_down6_on_3ch_raises(self) -> None:
+        track = _audio_track(codec_name="ac3", codec_id=AudioCodecId.AC3, channels=3)
+        planner = PlannerService(previewer=None)
+        with pytest.raises(ValueError, match="DOWN6 not applicable"):
+            planner._build_audio_instruction(track, is_default=True, downmix=DownmixMode.DOWN6)
+
     def test_no_downmix_on_2ch_ok(self) -> None:
         track = _audio_track(codec_name="aac", codec_id=AudioCodecId.AAC_LC, channels=2)
         planner = PlannerService(previewer=None)

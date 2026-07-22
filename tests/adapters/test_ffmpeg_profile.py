@@ -169,8 +169,8 @@ class TestDecodePcmWindow:
 class TestProfileAudioTrack:
     def test_unsupported_channels_raises(self) -> None:
         adapter = _adapter()
-        with pytest.raises(ValueError, match="unsupported channels=3"):
-            adapter.profile_audio_track(Path("v.mkv"), 1, 3, 60.0)
+        with pytest.raises(ValueError, match="unsupported channels=5"):
+            adapter.profile_audio_track(Path("v.mkv"), 1, 5, 60.0)
 
     def test_no_windows_decoded_raises(self) -> None:
         adapter = _adapter()

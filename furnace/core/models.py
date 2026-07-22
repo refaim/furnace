@@ -5,11 +5,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .audio_profile import AudioProfile
-from .downmix import STEREO_CHANNELS, SURROUND_5_1_CHANNELS, DownmixMode
+from .downmix import STEREO_CHANNELS, SURROUND_5_1_CHANNELS, THREE_CHANNELS, DownmixMode
 
 __all__ = [
     "STEREO_CHANNELS",
     "SURROUND_5_1_CHANNELS",
+    "THREE_CHANNELS",
     "AnalysisOutcome",
     "AnalyzeStatus",
     "Attachment",
