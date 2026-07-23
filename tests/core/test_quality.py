@@ -7,6 +7,7 @@ from furnace.core.quality import (
     calculate_gop,
     correct_sar,
     final_output_dimensions,
+    force_16_9_sar,
     interpolate_cq,
 )
 
@@ -170,6 +171,22 @@ class TestCorrectSar:
         w, h = correct_sar(720, 480, 8, 9)
         assert w == 720
         assert h == 540
+
+
+class TestForce16By9Sar:
+    def test_pal_720x576(self) -> None:
+        assert force_16_9_sar(720, 576) == (64, 45)
+
+    def test_ntsc_720x480(self) -> None:
+        assert force_16_9_sar(720, 480) == (32, 27)
+
+    def test_produces_16_9_display(self) -> None:
+        num, den = force_16_9_sar(720, 480)
+        w, h = correct_sar(720, 480, num, den)
+        assert round(w / h, 2) == 1.78
+
+    def test_already_16_9_square_pixels(self) -> None:
+        assert force_16_9_sar(1024, 576) == (1, 1)
 
 
 def _vp(

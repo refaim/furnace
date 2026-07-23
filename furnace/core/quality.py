@@ -50,6 +50,13 @@ def correct_sar(width: int, height: int, sar_num: int, sar_den: int) -> tuple[in
     return width, round(height * sar_den / sar_num)
 
 
+def force_16_9_sar(width: int, height: int) -> tuple[int, int]:
+    num = 16 * height
+    den = 9 * width
+    divisor = math.gcd(num, den)
+    return num // divisor, den // divisor
+
+
 def final_output_dimensions(vp: VideoParams) -> tuple[int, int]:
     cur_w = vp.crop.w if vp.crop is not None else vp.source_width
     cur_h = vp.crop.h if vp.crop is not None else vp.source_height

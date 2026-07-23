@@ -37,7 +37,7 @@ from furnace.core.models import (
     VideoParams,
 )
 from furnace.core.ports import PlanReporter, Previewer
-from furnace.core.quality import calculate_gop, final_output_dimensions, interpolate_cq
+from furnace.core.quality import calculate_gop, final_output_dimensions, force_16_9_sar, interpolate_cq
 from furnace.core.rules import get_audio_action, get_subtitle_action
 
 logger = logging.getLogger(__name__)
@@ -57,9 +57,6 @@ def _format_plan_summary(movie: Movie, job: Job, fallback_reason: str | None = N
         return f"encode ({fallback_reason}), {encode_summary}"
     return encode_summary
 
-
-DVD_SAR_NUM = 64
-DVD_SAR_DEN = 45
 
 # Callback type: (movie, candidate_tracks, track_type) -> selected_tracks
 TrackSelectorFn = Callable[[Movie, list[Track], TrackType], list[Track]]
@@ -382,8 +379,7 @@ class PlannerService:
         hdr = video.hdr if has_hdr else None
 
         if source_file in sar_overrides:
-            sar_num = DVD_SAR_NUM
-            sar_den = DVD_SAR_DEN
+            sar_num, sar_den = force_16_9_sar(video.width, video.height)
         else:
             sar_num = video.sar_num
             sar_den = video.sar_den

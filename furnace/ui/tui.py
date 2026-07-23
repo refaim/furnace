@@ -576,14 +576,14 @@ class FileSelectorScreen(Screen[FileSelection]):
     def __init__(
         self,
         files: list[tuple[Path, float, int]],
-        dvd_files: set[Path] | None = None,
+        sar_files: set[Path] | None = None,
         grain_files: set[Path] | None = None,
         grain_defaults: set[Path] | None = None,
         preview_cb: Callable[[Path, str | None], None] | None = None,
     ) -> None:
         super().__init__()
         self._files = files
-        self._dvd_files = dvd_files or set()
+        self._sar_files = sar_files or set()
         self._grain_files = grain_files or set()
         self._grain_defaults = grain_defaults or set()
         self._preview_cb = preview_cb
@@ -594,10 +594,10 @@ class FileSelectorScreen(Screen[FileSelection]):
 
     def compose(self) -> ComposeResult:
         yield Header()
-        has_dvd = any(f[0] in self._dvd_files for f in self._files)
+        has_sar = any(f[0] in self._sar_files for f in self._files)
         has_grain = any(f[0] in self._grain_files for f in self._files)
         hint = "Select files  (Space=toggle  P=preview"
-        if has_dvd:
+        if has_sar:
             hint += "  S=SAR fix"
         if has_grain:
             hint += "  G=grain"
@@ -645,7 +645,7 @@ class FileSelectorScreen(Screen[FileSelection]):
         if not self._files:
             return
         path = self._files[self._cursor][0]
-        if path not in self._dvd_files:
+        if path not in self._sar_files:
             return
         self._sar_override[self._cursor] = not self._sar_override[self._cursor]
         self._refresh_item(self._cursor)

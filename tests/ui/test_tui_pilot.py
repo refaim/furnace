@@ -494,7 +494,7 @@ async def test_playlist_selector_empty_and_highlight() -> None:
     assert app.result == []
 
 
-async def test_file_selector_with_dvd_files_and_sar() -> None:
+async def test_file_selector_with_sar_files_and_sar() -> None:
     p1 = Path("/demux/a.mkv")
     p2 = Path("/demux/b.mkv")
     files = [(p1, 3600.0, 1_000_000), (p2, 3600.0, 2_000_000)]
@@ -503,7 +503,7 @@ async def test_file_selector_with_dvd_files_and_sar() -> None:
     def preview(path: Path, aspect: str | None) -> None:
         seen_preview.append((path, aspect))
 
-    app = _HostApp(lambda: FileSelectorScreen(files=files, dvd_files={p1}, preview_cb=preview))
+    app = _HostApp(lambda: FileSelectorScreen(files=files, sar_files={p1}, preview_cb=preview))
     async with app.run_test() as pilot:
         await pilot.pause()
         screen = app.screen

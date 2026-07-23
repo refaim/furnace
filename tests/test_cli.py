@@ -1604,32 +1604,27 @@ class TestApplyDemuxDirToPlan:
         assert plan_obj.demux_dir is None
 
 
-class TestDvdDemuxedPaths:
-    def test_matches_only_paths_prefixed_with_disc_label(self, tmp_path: Path) -> None:
-        from furnace.cli import _dvd_demuxed_paths
-        from furnace.core.models import DiscSource, DiscType
+class TestSarToggleFiles:
+    def test_selects_only_sub_hd_files(self, tmp_path: Path) -> None:
+        from furnace.cli import _sar_toggle_files
 
-        disc = DiscSource(path=tmp_path / "mydvd" / "VIDEO_TS", disc_type=DiscType.DVD)
-        mine = tmp_path / "mydvd_title_1.mkv"
-        other = tmp_path / "other_title_1.mkv"
-        result = _dvd_demuxed_paths([disc], {disc: [MagicMock()]}, [mine, other])
-        assert result == {mine}
+        pal = tmp_path / "pal.mkv"
+        ntsc = tmp_path / "ntsc.mkv"
+        hd720 = tmp_path / "hd720.mkv"
+        hd1080 = tmp_path / "hd1080.mkv"
+        infos = [
+            (pal, 60.0, 100, 576, None),
+            (ntsc, 60.0, 100, 480, "bt709"),
+            (hd720, 60.0, 100, 720, None),
+            (hd1080, 60.0, 100, 1080, None),
+        ]
+        assert _sar_toggle_files(infos) == {pal, ntsc}
 
-    def test_non_dvd_disc_ignored(self, tmp_path: Path) -> None:
-        from furnace.cli import _dvd_demuxed_paths
-        from furnace.core.models import DiscSource, DiscType
+    def test_zero_height_excluded(self, tmp_path: Path) -> None:
+        from furnace.cli import _sar_toggle_files
 
-        disc = DiscSource(path=tmp_path / "mybd" / "BDMV", disc_type=DiscType.BLURAY)
-        mkv = tmp_path / "mybd_title_1.mkv"
-        assert _dvd_demuxed_paths([disc], {disc: [MagicMock()]}, [mkv]) == set()
-
-    def test_disc_not_in_selected_titles_ignored(self, tmp_path: Path) -> None:
-        from furnace.cli import _dvd_demuxed_paths
-        from furnace.core.models import DiscSource, DiscType
-
-        disc = DiscSource(path=tmp_path / "mydvd" / "VIDEO_TS", disc_type=DiscType.DVD)
-        mkv = tmp_path / "mydvd_title_1.mkv"
-        assert _dvd_demuxed_paths([disc], {}, [mkv]) == set()
+        mkv = tmp_path / "unknown.mkv"
+        assert _sar_toggle_files([(mkv, 60.0, 100, 0, None)]) == set()
 
 
 class TestRunDiscDemuxInteractive:
@@ -1790,7 +1785,7 @@ class TestRunDiscDemuxInteractive:
         assert sar == set()
         demuxer.demux.assert_not_called()
 
-    def test_dvd_demuxed_file_triggers_file_selector_and_sar(self, tmp_path: Path) -> None:
+    def test_sd_demuxed_file_triggers_file_selector_and_sar(self, tmp_path: Path) -> None:
         from furnace.cli import _run_disc_demux_interactive
         from furnace.core.models import DiscSource, DiscTitle, DiscType
         from furnace.ui.tui import FileSelection, FileSelectorScreen
@@ -1804,7 +1799,11 @@ class TestRunDiscDemuxInteractive:
         demuxer.demux.return_value = [dvd_mkv]
 
         ffmpeg = MagicMock()
-        ffmpeg.probe.return_value = {"format": {"duration": "100.0", "size": "1000"}}
+        ffmpeg.probe.return_value = {
+            "format": {"duration": "100.0", "size": "1000"},
+            "streams": [{"codec_type": "video", "height": 576}],
+        }
+        ffmpeg.sample_grain.return_value = [1.0]
         mpv = MagicMock()
 
         screens_built: list[Any] = []
@@ -1829,6 +1828,7 @@ class TestRunDiscDemuxInteractive:
         assert sar == {dvd_mkv}
         assert len(screens_built) == 1
         assert isinstance(screens_built[0], FileSelectorScreen)
+        assert screens_built[0]._sar_files == {dvd_mkv}
         ffmpeg.probe.assert_called_once_with(dvd_mkv)
 
     def test_multiple_demuxed_files_trigger_file_selector(self, tmp_path: Path) -> None:
@@ -3430,6 +3430,62 @@ class TestPlanPlainFilesGrain:
         mock_runner.assert_called_once()
         call_kwargs = mock_planner_cls.return_value.create_plan.call_args.kwargs
         assert call_kwargs["grain_overrides"] == {main_file: True}
+
+    def test_sd_source_shows_screen_via_sar_and_threads_override(self, tmp_path: Path) -> None:
+        from furnace.core.models import ScanResult
+        from furnace.services.analysis_pipeline import AnalysisBatchResult
+        from furnace.ui.tui import FileSelection
+
+        source = tmp_path / "src"
+        source.mkdir()
+        output = tmp_path / "out"
+        main_file = source / "movie.mkv"
+
+        cfg = _make_tool_paths(tmp_path)
+        scan_result = ScanResult(
+            main_file=main_file,
+            satellite_files=[],
+            output_path=output / "movie" / "movie.mkv",
+        )
+        plan_obj = make_plan(jobs=[])
+        selection = FileSelection(selected=[main_file], sar_override={main_file}, grain={})
+        screens_built: list[Any] = []
+
+        def _runner(factory: Callable[[], Any]) -> FileSelection:
+            screens_built.append(factory())
+            return selection
+
+        with (
+            patch("furnace.cli.load_config", return_value=cfg),
+            patch("furnace.cli._setup_logging"),
+            patch("furnace.cli.FFmpegAdapter") as mock_ffmpeg_cls,
+            patch("furnace.cli.MpvAdapter"),
+            patch("furnace.cli.Eac3toAdapter"),
+            patch("furnace.cli.MakemkvAdapter"),
+            patch("furnace.cli.DiscDemuxer") as mock_demuxer_cls,
+            patch("furnace.cli.Scanner") as mock_scanner_cls,
+            patch("furnace.cli.AnalysisPipeline") as mock_pipeline_cls,
+            patch("furnace.cli.PlannerService") as mock_planner_cls,
+            patch("furnace.cli.save_plan"),
+            patch("furnace.cli._run_screen_app", side_effect=_runner),
+        ):
+            mock_ffmpeg_cls.return_value.probe.return_value = self._sd_streams(480, transfer="smpte2084")
+            mock_demuxer_cls.return_value.detect.return_value = []
+            mock_scanner_cls.return_value.scan.return_value = [scan_result]
+            mock_pipeline_cls.return_value.run.return_value = AnalysisBatchResult(movies=[], crops={})
+            mock_planner_cls.return_value.create_plan.return_value = plan_obj
+
+            result = runner.invoke(
+                app,
+                ["plan", str(source), "-o", str(output), "-al", "eng", "-sl", "eng"],
+            )
+
+        assert result.exit_code == 0, result.output
+        assert len(screens_built) == 1
+        assert screens_built[0]._sar_files == {main_file}
+        mock_ffmpeg_cls.return_value.sample_grain.assert_not_called()
+        call_kwargs = mock_planner_cls.return_value.create_plan.call_args.kwargs
+        assert call_kwargs["sar_overrides"] == {main_file}
 
     def test_hdr_only_source_no_screen_and_grain_none(self, tmp_path: Path) -> None:
         from furnace.core.models import ScanResult

@@ -11,7 +11,7 @@ from furnace.services.planner import PlannerService
 from tests.conftest import make_movie, make_track, make_video_info
 
 
-def _make_movie_sar(tmp_path: Path, sar_num: int = 1, sar_den: int = 1) -> Movie:
+def _make_movie_sar(tmp_path: Path, sar_num: int = 1, sar_den: int = 1, height: int = 480) -> Movie:
     main = tmp_path / "movie.mkv"
     main.write_bytes(b"")
     return make_movie(
@@ -19,7 +19,7 @@ def _make_movie_sar(tmp_path: Path, sar_num: int = 1, sar_den: int = 1) -> Movie
         video=make_video_info(
             codec_name="mpeg2video",
             width=720,
-            height=480,
+            height=height,
             fps_num=30000,
             fps_den=1001,
             color_matrix_raw="smpte170m",
@@ -48,8 +48,8 @@ def _make_movie_sar(tmp_path: Path, sar_num: int = 1, sar_den: int = 1) -> Movie
 
 
 class TestSarOverrides:
-    def test_sar_override_applied(self, tmp_path: Path) -> None:
-        movie = _make_movie_sar(tmp_path, sar_num=1, sar_den=1)
+    def test_sar_override_ntsc_forces_16_9(self, tmp_path: Path) -> None:
+        movie = _make_movie_sar(tmp_path, sar_num=1, sar_den=1, height=480)
         planner = PlannerService(previewer=None)
 
         plan = planner.create_plan(
@@ -60,8 +60,21 @@ class TestSarOverrides:
         )
 
         vp = plan.jobs[0].video_params
-        assert vp.sar_num == 64
-        assert vp.sar_den == 45
+        assert (vp.sar_num, vp.sar_den) == (32, 27)
+
+    def test_sar_override_pal_forces_16_9(self, tmp_path: Path) -> None:
+        movie = _make_movie_sar(tmp_path, sar_num=1, sar_den=1, height=576)
+        planner = PlannerService(previewer=None)
+
+        plan = planner.create_plan(
+            [(movie, tmp_path / "out.mkv")],
+            audio_lang_filter=["eng"],
+            sub_lang_filter=["eng"],
+            sar_overrides={movie.main_file},
+        )
+
+        vp = plan.jobs[0].video_params
+        assert (vp.sar_num, vp.sar_den) == (64, 45)
 
     def test_sar_not_overridden_when_path_not_in_set(self, tmp_path: Path) -> None:
         movie = _make_movie_sar(tmp_path, sar_num=1, sar_den=1)

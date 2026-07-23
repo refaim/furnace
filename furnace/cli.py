@@ -32,7 +32,6 @@ from .core.detect import classify_grain, needs_grain_probe
 from .core.models import (
     DiscSource,
     DiscTitle,
-    DiscType,
     DownmixMode,
     JobStatus,
     Movie,
@@ -211,22 +210,9 @@ def _collect_selected_titles(
     return selected_titles
 
 
-def _dvd_demuxed_paths(
-    detected_discs: list[DiscSource],
-    selected_titles: dict[DiscSource, list[DiscTitle]],
-    demuxed_paths: list[Path],
-) -> set[Path]:
-    dvd_demuxed: set[Path] = set()
-    for disc in detected_discs:
-        if disc.disc_type == DiscType.DVD and disc in selected_titles:
-            disc_label = disc.path.parent.name
-            for p in demuxed_paths:
-                if p.name.startswith(disc_label):
-                    dvd_demuxed.add(p)
-    return dvd_demuxed
-
-
 _FileInfo = tuple[Path, float, int, int, str | None]
+
+_HD_MIN_HEIGHT = 720
 
 
 def _probe_file_infos(demuxed_paths: list[Path], ffmpeg_adapter: FFmpegAdapter) -> list[_FileInfo]:
@@ -255,6 +241,10 @@ def _grain_toggle_files(file_infos: list[_FileInfo]) -> set[Path]:
     return {p for (p, _dur, _size, height, transfer) in file_infos if height > 0 and needs_grain_probe(transfer)}
 
 
+def _sar_toggle_files(file_infos: list[_FileInfo]) -> set[Path]:
+    return {p for (p, _dur, _size, height, _transfer) in file_infos if 0 < height < _HD_MIN_HEIGHT}
+
+
 def _classify_one(path: Path, dur: float, ffmpeg_adapter: FFmpegAdapter) -> bool:
     try:
         return classify_grain(ffmpeg_adapter.sample_grain(path, dur))
@@ -278,7 +268,7 @@ def _grain_pre_probe(
 def _run_file_selector(
     *,
     file_infos: list[_FileInfo],
-    dvd_files: set[Path],
+    sar_files: set[Path],
     grain_files: set[Path],
     ffmpeg_adapter: FFmpegAdapter,
     mpv_adapter: MpvAdapter,
@@ -292,13 +282,13 @@ def _run_file_selector(
 
     def _factory(
         _files: list[tuple[Path, float, int]] = files_for_screen,
-        _dvd: set[Path] = dvd_files,
+        _sar: set[Path] = sar_files,
         _eligible: set[Path] = grain_files,
         _grain: set[Path] = grain_defaults,
     ) -> Screen[FileSelection]:
         return FileSelectorScreen(
             files=_files,
-            dvd_files=_dvd,
+            sar_files=_sar,
             grain_files=_eligible,
             grain_defaults=_grain,
             preview_cb=lambda p, a: mpv_adapter.preview_file(p, aspect_override=a),
@@ -343,17 +333,17 @@ def _run_disc_demux_interactive(
         reporter=reporter,
     )
 
-    dvd_demuxed = _dvd_demuxed_paths(detected_discs, selected_titles, demuxed_paths)
     sar_override_paths: set[Path] = set()
     grain_overrides: dict[Path, bool] = {}
 
     file_infos = _probe_file_infos(demuxed_paths, ffmpeg_adapter)
     grain_files = _grain_toggle_files(file_infos)
+    sar_files = _sar_toggle_files(file_infos)
 
-    if dvd_demuxed or len(demuxed_paths) > 1 or grain_files:
+    if sar_files or len(demuxed_paths) > 1 or grain_files:
         file_selection = _run_file_selector(
             file_infos=file_infos,
-            dvd_files=dvd_demuxed,
+            sar_files=sar_files,
             grain_files=grain_files,
             ffmpeg_adapter=ffmpeg_adapter,
             mpv_adapter=mpv_adapter,
@@ -515,10 +505,11 @@ def plan(
         if not dry_run and scan_results:
             plain_infos = _probe_file_infos([sr.main_file for sr in scan_results], ffmpeg_adapter)
             plain_grain_files = _grain_toggle_files(plain_infos)
-            if plain_grain_files:
+            plain_sar_files = _sar_toggle_files(plain_infos)
+            if plain_grain_files or plain_sar_files:
                 plain_selection = _run_file_selector(
                     file_infos=plain_infos,
-                    dvd_files=set(),
+                    sar_files=plain_sar_files,
                     grain_files=plain_grain_files,
                     ffmpeg_adapter=ffmpeg_adapter,
                     mpv_adapter=mpv_adapter,
@@ -527,6 +518,7 @@ def plan(
                 )
                 if plain_selection is not None:
                     plain_grain_overrides = plain_selection.grain
+                    sar_override_paths = sar_override_paths | plain_selection.sar_override
                     selected_plain = set(plain_selection.selected)
                     scan_results = [sr for sr in scan_results if sr.main_file in selected_plain]
 
