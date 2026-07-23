@@ -32,18 +32,26 @@ class VideoSystem(enum.Enum):
 _PAL_HEIGHTS = frozenset({576, 288})
 _NTSC_HEIGHTS = frozenset({480, 486, 240})
 _HD_MIN_HEIGHT = 720
+_PAL_FRAME_RATES = frozenset({25, 50})
+_NTSC_FRAME_RATES = frozenset({24, 30, 60})
 
 
-def detect_video_system(height: int) -> VideoSystem:
+def detect_video_system(height: int, fps_num: int, fps_den: int) -> VideoSystem:
     if height in _PAL_HEIGHTS:
         return VideoSystem.PAL
     if height in _NTSC_HEIGHTS:
         return VideoSystem.NTSC
     if height >= _HD_MIN_HEIGHT:
         return VideoSystem.HD
+    rate = round(fps_num / fps_den)
+    if rate in _PAL_FRAME_RATES:
+        return VideoSystem.PAL
+    if rate in _NTSC_FRAME_RATES:
+        return VideoSystem.NTSC
     raise ValueError(
-        f"Unknown SD height {height}: cannot determine PAL/NTSC. "
-        f"Add this height to _PAL_HEIGHTS or _NTSC_HEIGHTS in detect.py"
+        f"Unknown SD video: height {height} at {fps_num}/{fps_den} fps cannot be classified PAL/NTSC. "
+        f"Add the height to _PAL_HEIGHTS/_NTSC_HEIGHTS or the frame rate to "
+        f"_PAL_FRAME_RATES/_NTSC_FRAME_RATES in detect.py"
     )
 
 

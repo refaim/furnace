@@ -357,7 +357,7 @@ class PlannerService:
         cq = interpolate_cq(pixel_area)
         gop = calculate_gop(video.fps_num, video.fps_den)
 
-        system = detect_video_system(video.height)
+        system = detect_video_system(video.height, video.fps_num, video.fps_den)
         has_hdr = bool(video.hdr.mastering_display or video.hdr.content_light)
         resolved = resolve_color_metadata(
             matrix_raw=video.color_matrix_raw,
