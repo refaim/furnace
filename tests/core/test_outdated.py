@@ -332,6 +332,67 @@ class TestMonoDownmix:
         assert "mono downmix" not in _reasons(classify(version=(2, 0, 0), audio_channels=(None,)))
 
 
+class TestMonoDrc:
+    def test_fires_for_mono_at_1_19_3(self) -> None:
+        defects = classify(encoder_family=EncoderFamily.PASSTHROUGH, version=(1, 19, 3), audio_channels=(2, 1))
+        assert defects == (Defect(reason="mono DRC", severity=Severity.QUALITY, fix=Fix.RE_RUN),)
+
+    def test_fires_for_older_version(self) -> None:
+        assert "mono DRC" in _reasons(
+            classify(encoder_family=EncoderFamily.PASSTHROUGH, version=(1, 15, 0), audio_channels=(1,))
+        )
+
+    def test_boundary_1_19_4_does_not_fire(self) -> None:
+        assert "mono DRC" not in _reasons(
+            classify(encoder_family=EncoderFamily.PASSTHROUGH, version=(1, 19, 4), audio_channels=(1,))
+        )
+
+    def test_no_mono_track_does_not_fire(self) -> None:
+        assert "mono DRC" not in _reasons(
+            classify(encoder_family=EncoderFamily.PASSTHROUGH, version=(1, 19, 3), audio_channels=(2, 6))
+        )
+
+    def test_no_audio_does_not_fire(self) -> None:
+        assert "mono DRC" not in _reasons(
+            classify(encoder_family=EncoderFamily.PASSTHROUGH, version=(1, 19, 3), audio_channels=())
+        )
+
+    def test_channels_none_is_ignored(self) -> None:
+        assert "mono DRC" not in _reasons(
+            classify(encoder_family=EncoderFamily.PASSTHROUGH, version=(1, 19, 3), audio_channels=(None,))
+        )
+
+    def test_fires_independent_of_encoder_family(self) -> None:
+        assert "mono DRC" in _reasons(
+            classify(encoder_family=EncoderFamily.AV1_SVT, version=(1, 19, 0), audio_channels=(1,))
+        )
+
+    def test_1_19_3_mono_is_drc_not_downmix(self) -> None:
+        reasons = _reasons(classify(encoder_family=EncoderFamily.PASSTHROUGH, version=(1, 19, 3), audio_channels=(1,)))
+        assert "mono DRC" in reasons
+        assert "mono downmix" not in reasons
+
+    def test_2_0_0_mono_is_downmix_not_drc(self) -> None:
+        reasons = _reasons(classify(encoder_family=EncoderFamily.PASSTHROUGH, version=(2, 0, 0), audio_channels=(1,)))
+        assert "mono downmix" in reasons
+        assert "mono DRC" not in reasons
+
+    def test_hevc_subsumes_mono_drc(self) -> None:
+        defects = classify(encoder_family=EncoderFamily.HEVC_NVENC, version=(1, 19, 3), audio_channels=(1,))
+        assert _reasons(defects) == ["superseded codec"]
+
+    def test_stacks_sorted_and_rolls_up_re_run(self) -> None:
+        defects = classify(
+            encoder_family=EncoderFamily.AV1_NVENC,
+            version=(1, 19, 3),
+            height=480,
+            color_matrix=None,
+            audio_channels=(1,),
+        )
+        assert _reasons(defects) == ["fps drift", "crop 4px", "grain loss", "mono DRC", "color tags"]
+        assert row_fix(defects) is Fix.RE_RUN
+
+
 def test_clean_current_file_has_no_defects() -> None:
     assert classify() == ()
 

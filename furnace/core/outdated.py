@@ -55,6 +55,7 @@ _TARGET_QUALITY_FIXED = (2, 11, 0)
 _GRAIN_LOSS_FIXED = (2, 7, 0)
 _COLOR_TAGS_FIXED = (2, 7, 2)
 _MONO_DOWNMIX_VERSION = (2, 0, 0)
+_MONO_DRC_MAX_VERSION = (1, 19, 3)
 
 
 def _matrix_absent(color_matrix: str | None) -> bool:
@@ -125,6 +126,9 @@ def classify_outdated(
 
     if version == _MONO_DOWNMIX_VERSION and any(ch == 1 for ch in audio_channels):
         defects.append(Defect("mono downmix", Severity.QUALITY, Fix.RE_RUN))
+
+    if version <= _MONO_DRC_MAX_VERSION and any(ch == 1 for ch in audio_channels):
+        defects.append(Defect("mono DRC", Severity.QUALITY, Fix.RE_RUN))
 
     return tuple(sorted(defects, key=lambda d: d.severity.order))
 
