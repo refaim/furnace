@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -67,7 +68,7 @@ class TestProfileTwoOne:
         assert metrics.rms_rs is None
         assert metrics.corr_ls_l is None
 
-    def test_emits_four_progress_events(self) -> None:
+    def test_emits_twelve_progress_events(self) -> None:
         adapter = _adapter()
         samples: list[Any] = []
         with patch.object(
@@ -83,8 +84,29 @@ class TestProfileTwoOne:
                 channel_layout="2.1",
                 on_progress=samples.append,
             )
-        assert len(samples) == 4
+        assert len(samples) == 12
         assert samples[-1].fraction == 1.0
+
+    def test_an_lfe_alive_in_one_window_profiles_as_the_loudest_window(self) -> None:
+        adapter = _adapter()
+        quiet = _window((0.5, 0.4, 0.0))
+        loud = quiet.copy()
+        n = quiet.shape[0]
+        t = np.linspace(0.0, 1.0, n, dtype=np.float64)
+        loud[:, 2] = (math.sqrt(2.0) * 1e-3 * np.sin(2 * np.pi * 40 * t)).astype(np.float32)
+        windows = [quiet] * 12
+        windows[5] = loud
+
+        with patch.object(FFmpegAdapter, "_decode_pcm_window", side_effect=windows):
+            metrics = adapter.profile_audio_track(
+                Path("x.mkv"),
+                stream_index=1,
+                channels=3,
+                duration_s=1000.0,
+                channel_layout="2.1",
+            )
+
+        assert metrics.rms_lfe == pytest.approx(-60.0, abs=0.5)
 
 
 class TestProfileThreeZero:

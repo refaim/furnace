@@ -206,7 +206,7 @@ class TestClassifyTwoOne:
         p = classify_audio(_two_one_metrics(rms_l=-29.6, rms_r=-30.4, rms_lfe=-120.0, corr_lr=0.765))
         assert p.verdict == Verdict.FAKE
         assert p.suggested == DownmixMode.STEREO
-        assert p.reasons == ("LFE is dead (-120 dB)",)
+        assert p.reasons == ("LFE is dead (-120 dB in the loudest window)",)
 
 
 class TestClassifyThreeZero:

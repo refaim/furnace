@@ -116,10 +116,10 @@ def _classify_two_one(metrics: AudioMetrics) -> AudioProfile:
 
     if rms_lfe <= HARD_SILENCE_DB:
         score += 2
-        reasons.append(f"LFE is dead ({rms_lfe:.0f} dB)")
+        reasons.append(f"LFE is dead ({rms_lfe:.0f} dB in the loudest window)")
     elif rms_lfe < LFE_DEAD_DB:
         score += 1
-        reasons.append(f"LFE is barely there ({rms_lfe:.0f} dB)")
+        reasons.append(f"LFE is barely there ({rms_lfe:.0f} dB in the loudest window)")
 
     verdict = _verdict_for(score)
     suggested: DownmixMode | None = None
@@ -184,7 +184,7 @@ def _classify_multichannel(metrics: AudioMetrics) -> AudioProfile:
     sig_lfe_dead = rms_lfe < LFE_DEAD_DB
     if sig_lfe_dead:
         score += 1
-        reasons.append(f"LFE is dead ({rms_lfe:.0f} dB)")
+        reasons.append(f"LFE is dead ({rms_lfe:.0f} dB in the loudest window)")
 
     center_dom = rms_c - max(metrics.rms_l, metrics.rms_r, rms_ls, rms_rs)
     sig_center_dom = center_dom > CENTER_DOM_DB

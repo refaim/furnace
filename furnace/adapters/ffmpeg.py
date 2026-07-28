@@ -28,14 +28,16 @@ from ._subprocess import OutputCallback, run_tool
 logger = logging.getLogger(__name__)
 
 _PROFILE_WINDOW_SEC = 20.0
-_PROFILE_STEREO_POINTS: tuple[float, ...] = tuple(i / 13 for i in range(1, 13))
-_PROFILE_MULTI_POINTS: tuple[float, ...] = (0.15, 0.35, 0.55, 0.75)
+_PROFILE_POINTS: tuple[float, ...] = tuple(i / 13 for i in range(1, 13))
 _PROFILE_SAMPLE_RATE = 48000
 _RMS_FLOOR_DB = -120.0
 _ZERO_NORM_EPS = 1e-9
 _CHANNELS_STEREO = 2
 _CHANNELS_5_1 = 6
 _CHANNELS_7_1 = 8
+_LFE_COL_MULTI = 3
+_LFE_COL_2_1 = 2
+_LFE_FRAGMENT_FRACTION = 0.25
 
 _FIELD_PAIRING_SECONDS = 60
 
@@ -82,6 +84,11 @@ def _pearson(a: np.ndarray, b: np.ndarray) -> float:
     if na < _ZERO_NORM_EPS or nb < _ZERO_NORM_EPS:
         return 0.0
     return float((a64 * b64).sum() / (na * nb))
+
+
+def _max_window_rms_db(chunks: list[np.ndarray], col: int) -> float:
+    min_rows = _LFE_FRAGMENT_FRACTION * max(chunk.shape[0] for chunk in chunks)
+    return max(_rms_db(chunk[:, col]) for chunk in chunks if chunk.shape[0] >= min_rows)
 
 
 def _parse_y4m_luma(buf: bytes) -> np.ndarray | None:
@@ -978,25 +985,26 @@ class FFmpegAdapter:
         channel_layout: str | None = None,
         on_progress: Callable[[ProgressSample], None] | None = None,
     ) -> AudioMetrics:
+        lfe_col: int | None = None
         if channels == _CHANNELS_STEREO:
             layout = "stereo"
-            points = _PROFILE_STEREO_POINTS
         elif channels == THREE_CHANNELS:
             if channel_layout not in THREE_CHANNEL_LAYOUTS:
                 raise ValueError(f"profile_audio_track: unsupported 3-channel layout {channel_layout!r}")
             layout = channel_layout
-            points = _PROFILE_MULTI_POINTS
+            if layout == LAYOUT_2_1:
+                lfe_col = _LFE_COL_2_1
         elif channels == _CHANNELS_5_1:
             layout = "5.1"
-            points = _PROFILE_MULTI_POINTS
+            lfe_col = _LFE_COL_MULTI
         elif channels == _CHANNELS_7_1:
             layout = "7.1"
-            points = _PROFILE_MULTI_POINTS
+            lfe_col = _LFE_COL_MULTI
         else:
             raise ValueError(f"profile_audio_track: unsupported channels={channels}")
 
         chunks: list[np.ndarray] = []
-        for i, frac in enumerate(points, start=1):
+        for i, frac in enumerate(_PROFILE_POINTS, start=1):
             start = max(0.0, duration_s * frac - _PROFILE_WINDOW_SEC / 2)
             window = self._decode_pcm_window(
                 path,
@@ -1009,14 +1017,21 @@ class FFmpegAdapter:
             if window.size > 0:
                 chunks.append(window)
             if on_progress is not None:
-                on_progress(ProgressSample(fraction=i / len(points)))
+                on_progress(ProgressSample(fraction=i / len(_PROFILE_POINTS)))
 
         if not chunks:
             raise RuntimeError(
                 f"profile_audio_track: no windows decoded from {path} stream {stream_index}",
             )
 
-        data = np.concatenate(chunks, axis=0)
+        rms_lfe = _max_window_rms_db(chunks, lfe_col) if lfe_col is not None else None
+        total_rows = sum(chunk.shape[0] for chunk in chunks)
+        data = np.empty((total_rows, channels), dtype=np.float32)
+        row = 0
+        while chunks:
+            chunk = chunks.pop(0)
+            data[row : row + chunk.shape[0]] = chunk
+            row += chunk.shape[0]
         cols = [data[:, i] for i in range(channels)]
 
         if channels == _CHANNELS_STEREO:
@@ -1041,14 +1056,13 @@ class FFmpegAdapter:
 
         if channels == THREE_CHANNELS:
             left, right, third = cols
-            third_db = _rms_db(third)
             is_center = layout == LAYOUT_3_0
             return AudioMetrics(
                 channels=THREE_CHANNELS,
                 rms_l=_rms_db(left),
                 rms_r=_rms_db(right),
-                rms_c=third_db if is_center else None,
-                rms_lfe=third_db if layout == LAYOUT_2_1 else None,
+                rms_c=_rms_db(third) if is_center else None,
+                rms_lfe=rms_lfe,
                 rms_ls=None,
                 rms_rs=None,
                 rms_lb=None,
@@ -1063,13 +1077,13 @@ class FFmpegAdapter:
             )
 
         if channels == _CHANNELS_5_1:
-            left, right, center, lfe, ls, rs = cols
+            left, right, center, _lfe, ls, rs = cols
             return AudioMetrics(
                 channels=_CHANNELS_5_1,
                 rms_l=_rms_db(left),
                 rms_r=_rms_db(right),
                 rms_c=_rms_db(center),
-                rms_lfe=_rms_db(lfe),
+                rms_lfe=rms_lfe,
                 rms_ls=_rms_db(ls),
                 rms_rs=_rms_db(rs),
                 rms_lb=None,
@@ -1082,13 +1096,13 @@ class FFmpegAdapter:
                 corr_rb_rs=None,
             )
 
-        left, right, center, lfe, lb, rb, ls, rs = cols
+        left, right, center, _lfe, lb, rb, ls, rs = cols
         return AudioMetrics(
             channels=_CHANNELS_7_1,
             rms_l=_rms_db(left),
             rms_r=_rms_db(right),
             rms_c=_rms_db(center),
-            rms_lfe=_rms_db(lfe),
+            rms_lfe=rms_lfe,
             rms_ls=_rms_db(ls),
             rms_rs=_rms_db(rs),
             rms_lb=_rms_db(lb),

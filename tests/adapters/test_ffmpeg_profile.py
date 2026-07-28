@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -241,7 +242,8 @@ class TestProfileAudioTrack:
         assert metrics.corr_lb_ls == 0.0
         assert metrics.corr_rb_rs == 0.0
 
-    def test_stereo_samples_twelve_spread_windows(self) -> None:
+    @pytest.mark.parametrize("channels", [2, 6])
+    def test_samples_twelve_spread_windows(self, channels: int) -> None:
         adapter = _adapter()
         starts: list[float] = []
 
@@ -257,7 +259,7 @@ class TestProfileAudioTrack:
             return np.zeros((480, channels), dtype=np.float32)
 
         with patch.object(adapter, "_decode_pcm_window", side_effect=rec):
-            adapter.profile_audio_track(Path("v.mkv"), 0, 2, duration_s=600.0)
+            adapter.profile_audio_track(Path("v.mkv"), 0, channels, duration_s=600.0)
 
         assert len(starts) == 12
         assert len(set(starts)) == 12
@@ -273,9 +275,8 @@ class TestProfileAudioTrack:
             [
                 MagicMock(returncode=0, stdout=good_pcm, stderr=b""),
                 MagicMock(returncode=1, stdout=b"", stderr=b"err"),
-                MagicMock(returncode=0, stdout=good_pcm, stderr=b""),
-                MagicMock(returncode=1, stdout=b"", stderr=b"err"),
             ]
+            * 6
         )
 
         def fake_run(*_: Any, **__: Any) -> MagicMock:
@@ -284,3 +285,59 @@ class TestProfileAudioTrack:
         with patch("furnace.adapters.ffmpeg.subprocess.run", side_effect=fake_run):
             metrics = adapter.profile_audio_track(Path("v.mkv"), 0, 6, 60.0)
         assert metrics.rms_l == -120.0
+
+
+def _sparse_lfe_windows(channels: int, loud_window: int) -> list[np.ndarray]:
+    n = 4800
+    t = np.arange(n, dtype=np.float64) / 48000.0
+    windows: list[np.ndarray] = []
+    for i in range(12):
+        w = np.zeros((n, channels), dtype=np.float32)
+        w[:, 0] = (0.1 * np.sin(2 * np.pi * 1000 * t)).astype(np.float32)
+        w[:, 1] = (0.1 * np.sin(2 * np.pi * 500 * t)).astype(np.float32)
+        if i == loud_window:
+            w[:, 3] = (math.sqrt(2.0) * 1e-3 * np.sin(2 * np.pi * 40 * t)).astype(np.float32)
+        windows.append(w)
+    return windows
+
+
+class TestSparseLfe:
+    def test_5_1_lfe_alive_in_one_window_profiles_as_the_loudest_window(self) -> None:
+        adapter = _adapter()
+        with patch.object(adapter, "_decode_pcm_window", side_effect=_sparse_lfe_windows(6, 7)):
+            metrics = adapter.profile_audio_track(Path("v.mkv"), 0, 6, 6000.0)
+        assert metrics.rms_lfe == pytest.approx(-60.0, abs=0.5)
+
+    def test_7_1_lfe_alive_in_one_window_profiles_as_the_loudest_window(self) -> None:
+        adapter = _adapter()
+        with patch.object(adapter, "_decode_pcm_window", side_effect=_sparse_lfe_windows(8, 2)):
+            metrics = adapter.profile_audio_track(Path("v.mkv"), 0, 8, 6000.0)
+        assert metrics.rms_lfe == pytest.approx(-60.0, abs=0.5)
+
+    def test_lfe_dead_in_every_window_stays_at_the_floor(self) -> None:
+        adapter = _adapter()
+        with patch.object(adapter, "_decode_pcm_window", side_effect=_sparse_lfe_windows(6, -1)):
+            metrics = adapter.profile_audio_track(Path("v.mkv"), 0, 6, 6000.0)
+        assert metrics.rms_lfe == -120.0
+
+    def test_a_loud_fragment_window_does_not_rescue_a_dead_lfe(self) -> None:
+        adapter = _adapter()
+        windows = _sparse_lfe_windows(6, -1)
+        fragment = np.zeros((600, 6), dtype=np.float32)
+        t = np.arange(600, dtype=np.float64) / 48000.0
+        fragment[:, 3] = (0.5 * np.sin(2 * np.pi * 400 * t)).astype(np.float32)
+        windows[11] = fragment
+        with patch.object(adapter, "_decode_pcm_window", side_effect=windows):
+            metrics = adapter.profile_audio_track(Path("v.mkv"), 0, 6, 6000.0)
+        assert metrics.rms_lfe == -120.0
+
+    def test_non_lfe_channels_stay_pooled_across_windows(self) -> None:
+        adapter = _adapter()
+        windows = _sparse_lfe_windows(6, -1)
+        t = np.arange(windows[3].shape[0], dtype=np.float64) / 48000.0
+        loud = windows[3].copy()
+        loud[:, 4] = (math.sqrt(2.0) * 1e-2 * np.sin(2 * np.pi * 40 * t)).astype(np.float32)
+        windows[3] = loud
+        with patch.object(adapter, "_decode_pcm_window", side_effect=windows):
+            metrics = adapter.profile_audio_track(Path("v.mkv"), 0, 6, 6000.0)
+        assert metrics.rms_ls == pytest.approx(-40.0 - 10 * math.log10(12), abs=0.5)
