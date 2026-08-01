@@ -6,7 +6,12 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from furnace.core.color import CICP_MATRIX, CICP_PRIMARIES, CICP_TRANSFER
+from furnace.core.color import (
+    CICP_MATRIX,
+    CICP_PRIMARIES,
+    CICP_TRANSFER,
+    parse_mastering_display,
+)
 from furnace.core.progress import ProgressSample
 
 from ._subprocess import OutputCallback, run_tool
@@ -23,6 +28,27 @@ def _parse_mkvmerge_progress_line(line: str) -> ProgressSample | None:
     if not m:
         return None
     return ProgressSample(fraction=int(m.group(1)) / 100.0)
+
+
+def _fmt(value: float) -> str:
+    return f"{value:g}"
+
+
+def _mastering_display_flags(value: str) -> list[str]:
+    md = parse_mastering_display(value)
+    coords = ",".join(
+        _fmt(v) for pair in (md.red, md.green, md.blue) for v in pair
+    )
+    return [
+        "--chromaticity-coordinates",
+        f"0:{coords}",
+        "--white-color-coordinates",
+        f"0:{_fmt(md.white[0])},{_fmt(md.white[1])}",
+        "--max-luminance",
+        f"0:{_fmt(md.max_luminance)}",
+        "--min-luminance",
+        f"0:{_fmt(md.min_luminance)}",
+    ]
 
 
 _COLOR_RANGE_MAP: dict[str, str] = {
@@ -135,6 +161,10 @@ class MkvmergeAdapter:
                 video_flags += ["--max-content-light", f"0:{max_cll}"]
             if max_fall is not None:
                 video_flags += ["--max-frame-light", f"0:{max_fall}"]
+
+            mastering = video_meta.get("hdr_mastering_display")
+            if mastering:
+                video_flags += _mastering_display_flags(mastering)
 
             fps_num = video_meta.get("fps_num")
             fps_den = video_meta.get("fps_den")

@@ -29,6 +29,7 @@ def _classify_row(row: ScanRow) -> tuple[Defect, ...]:
         color_matrix=row.video.color_matrix,
         color_transfer=row.video.color_transfer,
         audio_channels=tuple(track.channels for track in row.audio),
+        container_mastering_display=row.video.container_mastering_display,
     )
 
 

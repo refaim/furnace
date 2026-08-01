@@ -2008,7 +2008,12 @@ class TestRunPipelineVideoMeta:
             prober=mocks.prober,
         )
 
-        hdr = HdrMetadata(content_light="MaxCLL=1000,MaxFALL=400")
+        hdr = HdrMetadata(
+            content_light="MaxCLL=1000,MaxFALL=400",
+            mastering_display=(
+                "G(13250,34500)B(7500,3000)R(34000,16000)WP(15635,16450)L(10000000,0)"
+            ),
+        )
         vp = make_video_params(
             color_range="tv",
             color_primaries="bt2020",
@@ -2039,6 +2044,9 @@ class TestRunPipelineVideoMeta:
         assert video_meta["color_matrix"] == "bt2020nc"
         assert video_meta["hdr_max_cll"] == "1000"
         assert video_meta["hdr_max_fall"] == "400"
+        assert video_meta["hdr_mastering_display"] == (
+            "G(13250,34500)B(7500,3000)R(34000,16000)WP(15635,16450)L(10000000,0)"
+        )
 
     def test_fps_in_video_meta_for_reencode(self, tmp_path: Path) -> None:
         mocks = SimpleNamespace(

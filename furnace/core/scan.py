@@ -71,6 +71,7 @@ class VideoSummary:
     height: int | None = None
     color_matrix: str | None = None
     color_transfer: str | None = None
+    container_mastering_display: bool = False
 
 
 @dataclass(frozen=True)
@@ -114,14 +115,19 @@ def summarize_streams(
     video_streams = [s for s in streams if s.get("codec_type") == "video"]
     if video_streams:
         vs = video_streams[0]
+        side_data = vs.get("side_data_list") or []
         video = VideoSummary(
             codec=vs.get("codec_name", "unknown"),
             bit_depth=bit_depth_from_pix_fmt(vs.get("pix_fmt")),
-            hdr=hdr_label(vs, vs.get("side_data_list") or []),
+            hdr=hdr_label(vs, side_data),
             width=vs.get("width"),
             height=vs.get("height"),
             color_matrix=vs.get("color_space"),
             color_transfer=vs.get("color_transfer"),
+            container_mastering_display=any(
+                "Mastering display metadata" in entry.get("side_data_type", "")
+                for entry in side_data
+            ),
         )
     else:
         video = VideoSummary(None, None, None)

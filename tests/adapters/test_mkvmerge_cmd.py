@@ -4,8 +4,12 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
+import pytest
+
 from furnace.adapters.mkvmerge import MkvmergeAdapter
 from furnace.core.progress import ProgressSample
+
+_UHD_1000_NITS = "G(13250,34500)B(7500,3000)R(34000,16000)WP(15635,16450)L(10000000,0)"
 
 
 def _build_cmd(
@@ -165,6 +169,45 @@ class TestMkvmergeHdrMetadata:
         assert "--max-frame-light" not in cmd
 
 
+class TestMkvmergeMasteringDisplay:
+    def test_chromaticity_coordinates(self) -> None:
+        cmd = _build_cmd({"hdr_mastering_display": _UHD_1000_NITS})
+        idx = cmd.index("--chromaticity-coordinates")
+        assert cmd[idx + 1] == "0:0.68,0.32,0.265,0.69,0.15,0.06"
+
+    def test_white_color_coordinates(self) -> None:
+        cmd = _build_cmd({"hdr_mastering_display": _UHD_1000_NITS})
+        idx = cmd.index("--white-color-coordinates")
+        assert cmd[idx + 1] == "0:0.3127,0.329"
+
+    def test_luminance(self) -> None:
+        cmd = _build_cmd({"hdr_mastering_display": _UHD_1000_NITS})
+        assert cmd[cmd.index("--max-luminance") + 1] == "0:1000"
+        assert cmd[cmd.index("--min-luminance") + 1] == "0:0"
+
+    def test_fractional_min_luminance_not_rounded(self) -> None:
+        cmd = _build_cmd(
+            {
+                "hdr_mastering_display": (
+                    "G(13250,34500)B(7500,3000)R(34000,16000)WP(15635,16450)L(20000000,1)"
+                )
+            }
+        )
+        assert cmd[cmd.index("--max-luminance") + 1] == "0:2000"
+        assert cmd[cmd.index("--min-luminance") + 1] == "0:0.0001"
+
+    def test_no_mastering_display_no_flags(self) -> None:
+        cmd = _build_cmd({"hdr_max_cll": "1000"})
+        assert "--chromaticity-coordinates" not in cmd
+        assert "--white-color-coordinates" not in cmd
+        assert "--max-luminance" not in cmd
+        assert "--min-luminance" not in cmd
+
+    def test_malformed_mastering_display_raises(self) -> None:
+        with pytest.raises(ValueError, match="mastering display"):
+            _build_cmd({"hdr_mastering_display": "L(10000000,0)"})
+
+
 class TestMkvmergeFullHdrPipeline:
     def test_hdr10_full_metadata(self) -> None:
         cmd = _build_cmd(
@@ -174,6 +217,7 @@ class TestMkvmergeFullHdrPipeline:
                 "color_transfer": "smpte2084",
                 "hdr_max_cll": "1000",
                 "hdr_max_fall": "400",
+                "hdr_mastering_display": _UHD_1000_NITS,
             }
         )
         assert "--color-range" in cmd
@@ -181,6 +225,10 @@ class TestMkvmergeFullHdrPipeline:
         assert "--color-transfer-characteristics" in cmd
         assert "--max-content-light" in cmd
         assert "--max-frame-light" in cmd
+        assert "--chromaticity-coordinates" in cmd
+        assert "--white-color-coordinates" in cmd
+        assert "--max-luminance" in cmd
+        assert "--min-luminance" in cmd
         assert cmd[cmd.index("--color-range") + 1] == "0:1"
         assert cmd[cmd.index("--color-primaries") + 1] == "0:9"
         assert cmd[cmd.index("--color-transfer-characteristics") + 1] == "0:16"

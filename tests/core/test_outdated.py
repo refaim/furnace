@@ -26,6 +26,7 @@ def classify(**overrides: object) -> tuple[Defect, ...]:
         "color_matrix": "bt709",
         "color_transfer": None,
         "audio_channels": (6,),
+        "container_mastering_display": False,
     }
     params.update(overrides)
     return classify_outdated(**params)  # type: ignore[arg-type]
@@ -254,6 +255,68 @@ class TestSoftQvbrHdr:
     def test_fires_independent_of_height(self) -> None:
         assert "soft QVBR (HDR)" in _reasons(classify(version=(2, 9, 0), height=None, color_transfer="smpte2084"))
 
+class TestContainerMasteringDisplay:
+    def test_fires_for_pre_fix_hdr10(self) -> None:
+        defects = classify(
+            encoder_family=EncoderFamily.AV1_NVENC,
+            version=(2, 28, 0),
+            color_transfer="smpte2084",
+        )
+        assert Defect("container mastering", Severity.COSMETIC, Fix.REMUX) in defects
+
+    def test_fires_for_hlg(self) -> None:
+        assert "container mastering" in _reasons(
+            classify(version=(2, 28, 0), color_transfer="arib-std-b67")
+        )
+
+    def test_boundary_version_2_29_0_does_not_fire(self) -> None:
+        assert "container mastering" not in _reasons(
+            classify(version=(2, 29, 0), color_transfer="smpte2084")
+        )
+
+    def test_hand_patched_old_file_does_not_fire(self) -> None:
+        assert "container mastering" not in _reasons(
+            classify(
+                version=(2, 28, 0),
+                color_transfer="smpte2084",
+                container_mastering_display=True,
+            )
+        )
+
+    def test_sdr_transfer_does_not_fire(self) -> None:
+        assert "container mastering" not in _reasons(
+            classify(version=(2, 28, 0), color_transfer="bt709")
+        )
+
+    def test_none_transfer_does_not_fire(self) -> None:
+        assert "container mastering" not in _reasons(
+            classify(version=(2, 28, 0), color_transfer=None)
+        )
+
+    def test_svt_family_does_not_fire(self) -> None:
+        assert "container mastering" not in _reasons(
+            classify(
+                encoder_family=EncoderFamily.AV1_SVT,
+                version=(2, 28, 0),
+                color_transfer="smpte2084",
+            )
+        )
+
+    def test_passthrough_does_not_fire(self) -> None:
+        assert "container mastering" not in _reasons(
+            classify(
+                encoder_family=EncoderFamily.PASSTHROUGH,
+                version=(2, 28, 0),
+                color_transfer="smpte2084",
+            )
+        )
+
+    def test_remux_only_does_not_force_reencode(self) -> None:
+        defects = classify(version=(2, 28, 0), color_transfer="smpte2084")
+        assert row_fix(defects) is Fix.REMUX
+
+
+class TestSoftQvbrHdrStacking:
     def test_pre_2_2_0_hdr_uhd_stacks_both_qvbr_reasons(self) -> None:
         defects = classify(
             encoder_family=EncoderFamily.AV1_NVENC,
@@ -262,7 +325,7 @@ class TestSoftQvbrHdr:
             color_matrix="bt2020nc",
             color_transfer="smpte2084",
         )
-        assert _reasons(defects) == ["soft QVBR", "soft QVBR (HDR)"]
+        assert _reasons(defects) == ["soft QVBR", "soft QVBR (HDR)", "container mastering"]
 
 
 class TestGrainLoss:

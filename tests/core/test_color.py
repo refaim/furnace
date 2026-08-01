@@ -2,7 +2,15 @@ from __future__ import annotations
 
 import pytest
 
-from furnace.core.color import CICP_MATRIX, CICP_PRIMARIES, CICP_TRANSFER
+from furnace.core.color import (
+    CICP_MATRIX,
+    CICP_PRIMARIES,
+    CICP_TRANSFER,
+    MasteringDisplay,
+    parse_mastering_display,
+)
+
+_UHD_1000_NITS = "G(13250,34500)B(7500,3000)R(34000,16000)WP(15635,16450)L(10000000,0)"
 
 
 class TestCicpPrimaries:
@@ -55,6 +63,51 @@ class TestCicpMatrix:
     )
     def test_values(self, name: str, code: int) -> None:
         assert CICP_MATRIX[name] == code
+
+
+class TestParseMasteringDisplay:
+    def test_bt2020_primaries(self) -> None:
+        md = parse_mastering_display(_UHD_1000_NITS)
+        assert md.red == (0.68, 0.32)
+        assert md.green == (0.265, 0.69)
+        assert md.blue == (0.15, 0.06)
+
+    def test_d65_white_point(self) -> None:
+        md = parse_mastering_display(_UHD_1000_NITS)
+        assert md.white == (0.3127, 0.329)
+
+    def test_luminance_scaled_to_nits(self) -> None:
+        md = parse_mastering_display(_UHD_1000_NITS)
+        assert md.max_luminance == 1000.0
+        assert md.min_luminance == 0.0
+
+    def test_fractional_min_luminance(self) -> None:
+        md = parse_mastering_display(
+            "G(13250,34500)B(7500,3000)R(34000,16000)WP(15635,16450)L(20000000,1)"
+        )
+        assert md.max_luminance == 2000.0
+        assert md.min_luminance == 0.0001
+
+    def test_returns_frozen_dataclass(self) -> None:
+        md = parse_mastering_display(_UHD_1000_NITS)
+        assert isinstance(md, MasteringDisplay)
+        with pytest.raises(AttributeError):
+            md.max_luminance = 1.0  # type: ignore[misc]
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "",
+            "not a mastering display",
+            "G(13250,34500)B(7500,3000)R(34000,16000)WP(15635,16450)",
+            "G(13250,34500)B(7500,3000)R(34000,16000)L(10000000,0)",
+            "G(a,b)B(7500,3000)R(34000,16000)WP(15635,16450)L(10000000,0)",
+            "G(13250,34500) B(7500,3000) R(34000,16000) WP(15635,16450) L(10000000,0)",
+        ],
+    )
+    def test_malformed_raises(self, value: str) -> None:
+        with pytest.raises(ValueError, match="mastering display"):
+            parse_mastering_display(value)
 
 
 class TestConsistency:

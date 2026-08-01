@@ -20,12 +20,15 @@ def make_probe(
     color_transfer: str | None = None,
     color_space: str | None = None,
     height: int | None = None,
+    container_mastering_display: bool = False,
     audios: tuple[tuple[str | None, str, int | None], ...] = (),
     subs: tuple[tuple[str | None, str], ...] = (),
 ) -> dict[str, Any]:
     streams: list[dict[str, Any]] = []
     if video is not None:
         vs: dict[str, Any] = {"codec_type": "video", "codec_name": video}
+        if container_mastering_display:
+            vs["side_data_list"] = [{"side_data_type": "Mastering display metadata"}]
         if pix_fmt is not None:
             vs["pix_fmt"] = pix_fmt
         if color_transfer is not None:
@@ -479,14 +482,52 @@ class TestOutdated:
 
         rows, _ = service.scan(tmp_path, outdated=True)
 
-        assert [d.reason for d in rows[0].defects] == ["soft QVBR (HDR)"]
+        assert [d.reason for d in rows[0].defects] == ["soft QVBR (HDR)", "container mastering"]
         assert rows[0].defects[0].fix is Fix.RE_ENCODE
+
+    def test_hdr_encode_without_container_mastering_flagged_remux_only(
+        self, tmp_path: Path
+    ) -> None:
+        movie = tmp_path / "toystory.mkv"
+        movie.touch()
+        probe = make_probe(
+            encoder="Furnace v2.28.0",
+            encoder_settings="av1_nvenc / NVEncC=9.27 / main",
+            video="av1",
+            height=2160,
+            color_space="bt2020nc",
+            color_transfer="smpte2084",
+        )
+        service, _ = make_service({movie: probe})
+
+        rows, _ = service.scan(tmp_path, outdated=True)
+
+        assert [d.reason for d in rows[0].defects] == ["container mastering"]
+        assert rows[0].defects[0].fix is Fix.REMUX
+
+    def test_hand_patched_old_hdr_file_not_flagged(self, tmp_path: Path) -> None:
+        movie = tmp_path / "toystory.mkv"
+        movie.touch()
+        probe = make_probe(
+            encoder="Furnace v2.28.0",
+            encoder_settings="av1_nvenc / NVEncC=9.27 / main",
+            video="av1",
+            height=2160,
+            color_space="bt2020nc",
+            color_transfer="smpte2084",
+            container_mastering_display=True,
+        )
+        service, _ = make_service({movie: probe})
+
+        rows, _ = service.scan(tmp_path, outdated=True)
+
+        assert rows == []
 
     def test_current_hdr_encode_not_flagged(self, tmp_path: Path) -> None:
         movie = tmp_path / "fresh.mkv"
         movie.touch()
         probe = make_probe(
-            encoder="Furnace v2.19.1",
+            encoder="Furnace v2.29.0",
             encoder_settings="av1_nvenc / NVEncC=8.00 / main",
             video="av1",
             height=1600,

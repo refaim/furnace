@@ -111,6 +111,51 @@ def test_summarize_streams_multi_audio_and_subs() -> None:
     )
 
 
+def test_summarize_streams_container_mastering_display_present() -> None:
+    probe = {
+        "streams": [
+            {
+                "codec_type": "video",
+                "codec_name": "av1",
+                "color_transfer": "smpte2084",
+                "side_data_list": [
+                    {"side_data_type": "Mastering display metadata", "max_luminance": "1000/1"}
+                ],
+            }
+        ]
+    }
+    video, _, _ = summarize_streams(probe)
+    assert video.container_mastering_display is True
+
+
+def test_summarize_streams_container_mastering_display_absent() -> None:
+    probe = {
+        "streams": [
+            {
+                "codec_type": "video",
+                "codec_name": "av1",
+                "color_transfer": "smpte2084",
+                "side_data_list": [
+                    {"side_data_type": "Content light level metadata", "max_content": 1330}
+                ],
+            }
+        ]
+    }
+    video, _, _ = summarize_streams(probe)
+    assert video.container_mastering_display is False
+
+
+def test_summarize_streams_container_mastering_display_no_side_data() -> None:
+    probe = {"streams": [{"codec_type": "video", "codec_name": "av1"}]}
+    video, _, _ = summarize_streams(probe)
+    assert video.container_mastering_display is False
+
+
+def test_summarize_streams_no_video_stream_has_no_container_mastering() -> None:
+    video, _, _ = summarize_streams({"streams": []})
+    assert video.container_mastering_display is False
+
+
 def test_summarize_streams_missing_language_is_none() -> None:
     probe = {
         "streams": [

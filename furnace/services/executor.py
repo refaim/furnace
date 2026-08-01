@@ -425,6 +425,8 @@ class Executor:
                     video_meta["hdr_max_cll"] = part.split("=", 1)[1]
                 elif part.startswith("MaxFALL="):
                     video_meta["hdr_max_fall"] = part.split("=", 1)[1]
+        if vp.hdr and vp.hdr.mastering_display:
+            video_meta["hdr_mastering_display"] = vp.hdr.mastering_display
 
         if not passthrough:
             video_meta["fps_num"] = vp.fps_num

@@ -54,6 +54,7 @@ _SOFT_QVBR_FIXED = (2, 2, 0)
 _TARGET_QUALITY_FIXED = (2, 11, 0)
 _GRAIN_LOSS_FIXED = (2, 7, 0)
 _COLOR_TAGS_FIXED = (2, 7, 2)
+_CONTAINER_MASTERING_FIXED = (2, 29, 0)
 _MONO_DOWNMIX_VERSION = (2, 0, 0)
 _MONO_DRC_MAX_VERSION = (1, 19, 3)
 
@@ -72,6 +73,7 @@ def classify_outdated(
     color_matrix: str | None,
     color_transfer: str | None,
     audio_channels: Sequence[int | None],
+    container_mastering_display: bool,
 ) -> tuple[Defect, ...]:
     if unreadable:
         return (Defect("unreadable", Severity.UNREADABLE, Fix.NONE),)
@@ -120,6 +122,14 @@ def classify_outdated(
         and height < _HD_MIN_HEIGHT
     ):
         defects.append(Defect("grain loss", Severity.QUALITY, Fix.RE_ENCODE))
+
+    if (
+        encoder_family is EncoderFamily.AV1_NVENC
+        and version < _CONTAINER_MASTERING_FIXED
+        and is_hdr_transfer(color_transfer)
+        and not container_mastering_display
+    ):
+        defects.append(Defect("container mastering", Severity.COSMETIC, Fix.REMUX))
 
     if version < _COLOR_TAGS_FIXED and _matrix_absent(color_matrix):
         defects.append(Defect("color tags", Severity.COSMETIC, Fix.REMUX))
