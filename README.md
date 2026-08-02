@@ -20,6 +20,7 @@ Batch video transcoder for home archival. Scans your movie collection, lets you 
 - **mpv preview** — audition audio tracks, check subtitles, or preview video right from the TUI before committing
 - **Per-track downmix** — fold 7.1 or 5.1 into stereo or 5.1 from the track selector, useful when the multichannel mix is a fake upmix or the movie is dialogue-heavy
 - **Satellite files** — external audio and subtitle files next to the video are picked up as extra tracks automatically
+- **Selective ASS font embedding** — selected ASS/SSA tracks are parsed for fonts used by rendered dialogue, including style resets and inline font/bold/italic overrides; only matching font attachments are embedded, while removing those subtitles removes their fonts too
 - **Library inventory** — `furnace scan` lists each file's encode status, codec, bit depth, HDR class and tracks, and filters by Furnace version to surface re-encode candidates
 
 ## Workflow
@@ -79,6 +80,8 @@ Plan and encode:
 furnace plan D:\Movies -o E:\Encoded --audio-lang rus,eng --sub-lang rus,eng
 furnace run E:\Encoded\furnace-plan.json
 ```
+
+During planning, Furnace resolves fonts only from the ASS/SSA subtitle tracks kept in the plan. It ignores unused styles, comments and vector drawings, matches embedded TTF/OTF/TTC/OTC faces by family and bold/italic state, and reports missing faces. SRT, PGS and VobSub tracks do not retain font attachments; non-font attachments such as covers are preserved. Plans created before Furnace 2.30.0 should be regenerated so attachment stream indexes are available during extraction.
 
 Copy eligible video streams verbatim instead of re-encoding (audio still processed, container rebuilt):
 ```bash

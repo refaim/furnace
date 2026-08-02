@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import os
 import re
 import subprocess
 from collections.abc import Callable
@@ -786,6 +787,32 @@ class FFmpegAdapter:
             bin_idx = int(pts / window_s)
             totals[bin_idx] = totals.get(bin_idx, 0) + size
         return [(b * window_s, totals[b] / 1024.0) for b in sorted(totals)]
+
+    def extract_attachment(
+        self,
+        input_path: Path,
+        stream_index: int,
+        output_path: Path,
+    ) -> int:
+        cmd = [
+            str(self._ffmpeg),
+            "-hide_banner",
+            "-loglevel",
+            "fatal",
+            f"-dump_attachment:{stream_index}",
+            str(output_path),
+            "-i",
+            str(input_path),
+            "-t",
+            "0",
+            "-f",
+            "null",
+            "-y",
+            os.devnull,
+        ]
+        log_path = self._log_dir / f"ffmpeg_attachment_s{stream_index}.log" if self._log_dir else None
+        rc, _out = run_tool(cmd, on_output=self._on_output, log_path=log_path)
+        return rc
 
     def extract_track(
         self,

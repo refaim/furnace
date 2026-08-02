@@ -7,6 +7,7 @@ from typing import Any, Protocol, runtime_checkable
 from furnace.core.progress import ProgressSample
 
 from .audio_profile import AudioMetrics
+from .fonts import FontFace, FontResolution
 from .models import (
     METRIC_NAMES,
     AnalyzeStatus,
@@ -18,6 +19,8 @@ from .models import (
     EncodeResult,
     MetricPool,
     MetricScores,
+    Movie,
+    Track,
     VideoParams,
 )
 
@@ -186,6 +189,26 @@ class AudioExtractor(Protocol):
         delay_ms: int,
         on_progress: Callable[[ProgressSample], None] | None = None,
     ) -> int: ...
+
+
+@runtime_checkable
+class MediaExtractor(AudioExtractor, Protocol):
+    def extract_attachment(
+        self,
+        input_path: Path,
+        stream_index: int,
+        output_path: Path,
+    ) -> int: ...
+
+
+@runtime_checkable
+class FontInspector(Protocol):
+    def inspect(self, path: Path) -> tuple[FontFace, ...]: ...
+
+
+@runtime_checkable
+class FontResolverPort(Protocol):
+    def resolve(self, movie: Movie, selected_subtitles: list[Track]) -> FontResolution: ...
 
 
 @runtime_checkable

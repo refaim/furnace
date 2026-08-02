@@ -18,6 +18,7 @@ from textual.widgets import Header
 from .adapters.dovi_tool import DoviToolAdapter
 from .adapters.eac3to import Eac3toAdapter
 from .adapters.ffmpeg import FFmpegAdapter
+from .adapters.fonts import FontToolsAdapter
 from .adapters.makemkv import MakemkvAdapter
 from .adapters.mkclean import MkcleanAdapter
 from .adapters.mkvmerge import MkvmergeAdapter
@@ -46,6 +47,7 @@ from .services.analysis_pipeline import AnalysisPipeline
 from .services.analyzer import Analyzer
 from .services.disc_demuxer import DiscDemuxer
 from .services.executor import Executor
+from .services.font_resolver import FontResolver
 from .services.planner import PlannerService
 from .services.scan_service import ScanService
 from .services.scanner import Scanner
@@ -565,6 +567,7 @@ def plan(
             und_resolver=_und_resolver if not dry_run else None,
             reporter=reporter,
             ignore_langs=ignore_langs,
+            font_resolver=FontResolver(ffmpeg_adapter, FontToolsAdapter()),
         )
         if not dry_run:
             reporter.resume()

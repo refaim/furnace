@@ -571,6 +571,7 @@ class Analyzer:
                         filename=filename,
                         mime_type=mime_type,
                         source_file=path,
+                        stream_index=int(stream["index"]),
                     )
                 )
         return attachments

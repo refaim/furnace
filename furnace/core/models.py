@@ -3,6 +3,7 @@ from __future__ import annotations
 import enum
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from .audio_profile import AudioProfile
 from .downmix import STEREO_CHANNELS, SURROUND_5_1_CHANNELS, THREE_CHANNELS, DownmixMode
@@ -238,6 +239,7 @@ class Attachment:
     filename: str
     mime_type: str
     source_file: Path
+    stream_index: int = -1
 
 
 @dataclass
@@ -317,7 +319,7 @@ class Job:
     video_params: VideoParams
     audio: list[AudioInstruction]
     subtitles: list[SubtitleInstruction]
-    attachments: list[dict[str, str]]
+    attachments: list[dict[str, Any]]
     copy_chapters: bool
     chapters_source: str | None
     status: JobStatus = JobStatus.PENDING

@@ -42,6 +42,7 @@ def executor_with_mocks() -> tuple[Executor, SimpleNamespace]:
         video_copier=MagicMock(),
     )
     mocks.audio_extractor.extract_track.return_value = 0
+    mocks.audio_extractor.extract_attachment.return_value = 0
     mocks.audio_extractor.ffmpeg_to_wav.return_value = 0
     mocks.audio_extractor.decode_full_wav.return_value = 0
     mocks.audio_extractor.stereo_to_mono_wav.return_value = 0
@@ -1026,7 +1027,7 @@ def _pipeline_job(
     dv_mode: DvMode | None = None,
     copy_chapters: bool = False,
     chapters_source: str | None = None,
-    attachments: list[dict[str, str]] | None = None,
+    attachments: list[dict[str, Any]] | None = None,
     duration_s: float = 5400.0,
 ) -> Any:
     return make_job(
@@ -1967,7 +1968,75 @@ class TestRunPipelineAttachments:
         output_path.parent.mkdir(parents=True, exist_ok=True)
         executor._run_pipeline(job, output_path, tmp_path)
         mux_call = mocks.muxer.mux.call_args
-        assert len(mux_call.kwargs["attachments"]) == 1
+        assert mux_call.kwargs["attachments"] == [
+            (Path("/src/font.ttf"), "font.ttf", "font/sfnt"),
+        ]
+        mocks.audio_extractor.extract_attachment.assert_not_called()
+
+    def test_container_attachment_is_extracted(
+        self,
+        executor_with_mocks: tuple[Executor, SimpleNamespace],
+        tmp_path: Path,
+    ) -> None:
+        executor, mocks = executor_with_mocks
+
+        def fake_extract(input_path: Path, stream_index: int, output_path: Path) -> int:
+            output_path.write_bytes(b"FONT")
+            return 0
+
+        def fake_clean(input_path: Any, output_path: Any, on_progress: Any = None) -> int:
+            Path(output_path).write_bytes(b"CLEAN")
+            return 0
+
+        mocks.audio_extractor.extract_attachment.side_effect = fake_extract
+        mocks.cleaner.clean.side_effect = fake_clean
+        job = _pipeline_job(
+            tmp_path,
+            attachments=[
+                {
+                    "source_file": "/src/movie.mkv",
+                    "stream_index": 4,
+                    "filename": "font.ttf",
+                    "mime_type": "font/ttf",
+                },
+            ],
+        )
+        output_path = Path(job.output_file)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        executor._run_pipeline(job, output_path, tmp_path)
+
+        mocks.audio_extractor.extract_attachment.assert_called_once()
+        extract_args = mocks.audio_extractor.extract_attachment.call_args.args
+        assert extract_args[0] == Path("/src/movie.mkv")
+        assert extract_args[1] == 4
+        assert extract_args[2].name == "attachment_0_font.ttf"
+        mux_attachment = mocks.muxer.mux.call_args.kwargs["attachments"][0]
+        assert mux_attachment == (extract_args[2], "font.ttf", "font/ttf")
+
+    def test_failed_container_attachment_extraction_raises(
+        self,
+        executor_with_mocks: tuple[Executor, SimpleNamespace],
+        tmp_path: Path,
+    ) -> None:
+        executor, mocks = executor_with_mocks
+        mocks.audio_extractor.extract_attachment.return_value = 1
+        job = _pipeline_job(
+            tmp_path,
+            attachments=[
+                {
+                    "source_file": "/src/movie.mkv",
+                    "stream_index": 4,
+                    "filename": "font.ttf",
+                    "mime_type": "font/ttf",
+                },
+            ],
+        )
+        output_path = Path(job.output_file)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        with pytest.raises(RuntimeError, match=r"font\.ttf"):
+            executor._run_pipeline(job, output_path, tmp_path)
 
 
 class TestRunPipelineVideoMeta:

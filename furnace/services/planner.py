@@ -15,6 +15,7 @@ from furnace.core.detect import (
     is_hdr_transfer,
     resolve_color_metadata,
 )
+from furnace.core.fonts import is_font_attachment
 from furnace.core.models import (
     STEREO_CHANNELS,
     SURROUND_5_1_CHANNELS,
@@ -36,7 +37,7 @@ from furnace.core.models import (
     VideoInfo,
     VideoParams,
 )
-from furnace.core.ports import PlanReporter, Previewer
+from furnace.core.ports import FontResolverPort, PlanReporter, Previewer
 from furnace.core.quality import calculate_gop, final_output_dimensions, force_16_9_sar, interpolate_cq
 from furnace.core.rules import get_audio_action, get_subtitle_action
 
@@ -74,12 +75,14 @@ class PlannerService:
         reporter: PlanReporter | None = None,
         *,
         ignore_langs: bool = False,
+        font_resolver: FontResolverPort | None = None,
     ) -> None:
         self._previewer = previewer
         self._track_selector = track_selector
         self._und_resolver = und_resolver
         self._reporter = reporter
         self._ignore_langs = ignore_langs
+        self._font_resolver = font_resolver
 
     def create_plan(
         self,
@@ -223,14 +226,39 @@ class PlannerService:
             sub_instr = self._build_subtitle_instruction(track, is_default=is_default)
             sub_instructions.append(sub_instr)
 
-        attachments_dicts: list[dict[str, Any]] = [
-            {
-                "filename": att.filename,
-                "mime_type": att.mime_type,
-                "source_file": str(att.source_file),
+        if self._font_resolver is not None:
+            resolution = self._font_resolver.resolve(movie, selected_subs)
+            selected_attachments = resolution.attachments
+            if resolution.missing:
+                missing = ", ".join(
+                    sorted(
+                        f"{requirement.family} ({'bold' if requirement.bold else 'regular'}, "
+                        f"{'italic' if requirement.italic else 'roman'})"
+                        for requirement in resolution.missing
+                    )
+                )
+                logger.warning("%s: missing subtitle fonts: %s", movie.main_file.name, missing)
+        else:
+            has_ass = any(
+                track.codec_id is SubtitleCodecId.ASS or track.codec_name.casefold() in {"ass", "ssa"}
+                for track in selected_subs
+            )
+            selected_attachments = tuple(
+                attachment
+                for attachment in movie.attachments
+                if has_ass or not is_font_attachment(attachment.filename, attachment.mime_type)
+            )
+
+        attachments_dicts: list[dict[str, Any]] = []
+        for attachment in selected_attachments:
+            attachment_dict: dict[str, Any] = {
+                "filename": attachment.filename,
+                "mime_type": attachment.mime_type,
+                "source_file": str(attachment.source_file),
             }
-            for att in movie.attachments
-        ]
+            if attachment.stream_index >= 0:
+                attachment_dict["stream_index"] = attachment.stream_index
+            attachments_dicts.append(attachment_dict)
 
         copy_chapters = movie.has_chapters
         chapters_source: str | None = str(movie.main_file) if movie.has_chapters else None

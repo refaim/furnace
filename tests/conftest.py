@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 from furnace.core.models import (
     Attachment,
@@ -220,7 +221,7 @@ def make_job(
     video_params: VideoParams | None = None,
     audio: list[AudioInstruction] | None = None,
     subtitles: list[SubtitleInstruction] | None = None,
-    attachments: list[dict[str, str]] | None = None,
+    attachments: list[dict[str, Any]] | None = None,
     copy_chapters: bool = True,
     chapters_source: str | None = None,
     status: JobStatus = JobStatus.PENDING,

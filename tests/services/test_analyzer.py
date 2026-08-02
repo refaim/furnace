@@ -1399,8 +1399,10 @@ class TestAttachments:
         assert len(movie.attachments) == 2
         assert movie.attachments[0].filename == "Arial.ttf"
         assert movie.attachments[0].mime_type == "application/x-truetype-font"
+        assert movie.attachments[0].stream_index == 4
         assert movie.attachments[1].filename == "OpenSans.otf"
         assert movie.attachments[1].mime_type == "font/otf"
+        assert movie.attachments[1].stream_index == 5
 
     def test_attachment_no_filename_skipped(self, tmp_path: Path) -> None:
         probe_data = _h264_probe_data()

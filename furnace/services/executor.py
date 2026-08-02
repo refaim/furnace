@@ -31,10 +31,10 @@ from furnace.core.models import (
 from furnace.core.ports import (
     AacEncoder,
     AudioDecoder,
-    AudioExtractor,
     Cleaner,
     DoviProcessor,
     Encoder,
+    MediaExtractor,
     Muxer,
     Prober,
     Tagger,
@@ -109,7 +109,7 @@ class Executor:
     def __init__(
         self,
         encoder: Encoder,
-        audio_extractor: AudioExtractor,
+        audio_extractor: MediaExtractor,
         audio_decoder: AudioDecoder,
         aac_encoder: AacEncoder,
         muxer: Muxer,
@@ -396,10 +396,18 @@ class Executor:
             self._progress.add_tool_line("[furnace] Muxing tracks")
 
         attachments: list[tuple[Path, str, str]] = []
-        for att_dict in job.attachments:
+        for position, att_dict in enumerate(job.attachments):
             att_path = Path(att_dict["source_file"])
             filename = att_dict["filename"]
             mime_type = att_dict["mime_type"]
+            stream_index = att_dict.get("stream_index")
+            if stream_index is not None:
+                safe_name = Path(filename).name
+                extracted_path = temp_dir / f"attachment_{position}_{safe_name}"
+                rc = self._audio_extractor.extract_attachment(att_path, int(stream_index), extracted_path)
+                if rc != 0:
+                    raise RuntimeError(f"Attachment extraction failed for {filename} with return code {rc}")
+                att_path = extracted_path
             attachments.append((att_path, filename, mime_type))
 
         chapters_source: Path | None = None
