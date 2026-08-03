@@ -132,6 +132,30 @@ def _three_zero_metrics(rms_c: float = -24.0) -> AudioMetrics:
     )
 
 
+def _five_zero_metrics(
+    rms_c: float = -22.0,
+    rms_ls: float = -28.0,
+    rms_rs: float = -28.5,
+) -> AudioMetrics:
+    return AudioMetrics(
+        channels=5,
+        rms_l=-25.0,
+        rms_r=-25.5,
+        rms_c=rms_c,
+        rms_lfe=None,
+        rms_ls=rms_ls,
+        rms_rs=rms_rs,
+        rms_lb=None,
+        rms_rb=None,
+        corr_lr=0.3,
+        corr_ls_l=0.1,
+        corr_rs_r=0.1,
+        corr_ls_rs=0.2,
+        corr_lb_ls=None,
+        corr_rb_rs=None,
+    )
+
+
 def _t(channels: int | None = 6, codec: str = "dts", layout: str = "5.1") -> Track:
     return make_track(
         index=1,
@@ -610,6 +634,47 @@ class TestRenderDetectorPanel:
         )
         panel = _render_detector_panel(track)
         assert "real stereo" in panel
+
+    def test_real_5_0_lists_five_channels_and_no_lfe(self) -> None:
+        from furnace.ui.tui import _render_detector_panel
+
+        track = _t(channels=5, layout="5.0(side)")
+        track.audio_profile = AudioProfile(
+            verdict=Verdict.REAL,
+            score=0,
+            suggested=None,
+            reasons=(),
+            metrics=_five_zero_metrics(),
+        )
+        panel = _render_detector_panel(track)
+        assert "real 5.0" in panel
+        assert "   L    [" in panel
+        assert "   R    [" in panel
+        assert "   C    [" in panel
+        assert "   Ls   [" in panel
+        assert "   Rs   [" in panel
+        assert "   LFE  [" not in panel
+        assert "   Lb   [" not in panel
+
+    def test_fake_5_0_annotates_the_silent_surrounds(self) -> None:
+        from furnace.ui.tui import _render_detector_panel
+
+        track = _t(channels=5, layout="5.0(side)")
+        track.audio_profile = AudioProfile(
+            verdict=Verdict.FAKE,
+            score=2,
+            suggested=DownmixMode.STEREO,
+            reasons=(
+                "both surrounds are silent (Ls=-70, Rs=-70 dB)",
+                "center is way louder than everything else (15 dB above)",
+            ),
+            metrics=_five_zero_metrics(rms_c=-10.0, rms_ls=-70.0, rms_rs=-70.0),
+        )
+        panel = _render_detector_panel(track)
+        assert "FAKE 5.0" in panel
+        assert "suggested STEREO" in panel
+        assert panel.count("<- silent") == 2
+        assert "<- dominant" in panel
 
     def test_fake_2_1_shows_the_dead_lfe(self) -> None:
         from furnace.ui.tui import _render_detector_panel

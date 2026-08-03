@@ -119,6 +119,36 @@ def _write_synthetic_three_channel_wav(
     )
 
 
+def _write_synthetic_five_zero_wav(
+    path: Path,
+    ffmpeg: Path,
+    layout: str,
+    *,
+    surrounds_silent: bool = True,
+    seconds: float = 2.0,
+) -> None:
+    silence = f"anullsrc=r=48000:cl=mono:d={seconds}"
+    left_surround = silence if surrounds_silent else f"sine=frequency=1700:duration={seconds}:sample_rate=48000"
+    right_surround = silence if surrounds_silent else f"sine=frequency=2300:duration={seconds}:sample_rate=48000"
+    left_back, right_back = ("SL", "SR") if layout.endswith("(side)") else ("BL", "BR")
+    subprocess.run(
+        [
+            str(ffmpeg), "-v", "error", "-y",
+            "-f", "lavfi", "-i", f"sine=frequency=1000:duration={seconds}:sample_rate=48000",
+            "-f", "lavfi", "-i", f"sine=frequency=300:duration={seconds}:sample_rate=48000",
+            "-f", "lavfi", "-i", f"sine=frequency=700:duration={seconds}:sample_rate=48000",
+            "-f", "lavfi", "-i", left_surround,
+            "-f", "lavfi", "-i", right_surround,
+            "-filter_complex",
+            f"[0:a][1:a][2:a][3:a][4:a]join=inputs=5:channel_layout={layout}:"
+            f"map=0.0-FL|1.0-FR|2.0-FC|3.0-{left_back}|4.0-{right_back}[a]",
+            "-map", "[a]", "-c:a", "pcm_s16le", str(path),
+        ],
+        check=True,
+        capture_output=True,
+    )
+
+
 @pytest.fixture
 def adapter() -> FFmpegAdapter:
     ffmpeg_path, ffprobe_path = _resolve_ffmpeg_paths()
@@ -222,6 +252,57 @@ def test_profile_audio_track_3_0_center_is_a_mix_of_the_fronts(tmp_path: Path, a
     profile = classify_audio(metrics)
     assert profile.verdict is Verdict.FAKE
     assert any("mix of the fronts" in r for r in profile.reasons)
+
+
+@pytest.mark.parametrize("layout", ["5.0", "5.0(side)"])
+def test_profile_audio_track_5_0_synthetic_wav(tmp_path: Path, adapter: FFmpegAdapter, layout: str) -> None:
+    wav_path = tmp_path / "synthetic_5_0.wav"
+    _write_synthetic_five_zero_wav(wav_path, _resolve_ffmpeg_paths()[0], layout)
+
+    metrics = adapter.profile_audio_track(
+        path=wav_path,
+        stream_index=0,
+        channels=5,
+        duration_s=2.0,
+        channel_layout=layout,
+    )
+
+    assert metrics.channels == 5
+    assert metrics.rms_lfe is None, "a 5.0 track has no LFE — none may be fabricated"
+    assert metrics.rms_c is not None
+    assert metrics.rms_c > -30, f"expected a loud center, got {metrics.rms_c}"
+    assert metrics.rms_l > -30
+    assert metrics.rms_r > -30
+    assert metrics.rms_ls is not None
+    assert metrics.rms_ls < -80, f"expected a silent Ls, got {metrics.rms_ls}"
+    assert metrics.rms_rs is not None
+    assert metrics.rms_rs < -80
+
+    profile = classify_audio(metrics)
+    assert profile.verdict is Verdict.SUSPICIOUS
+    assert profile.suggested is DownmixMode.STEREO
+    assert any("both surrounds are silent" in r for r in profile.reasons)
+    assert not any("LFE" in r for r in profile.reasons)
+
+
+def test_a_live_5_0_track_profiles_as_real(tmp_path: Path, adapter: FFmpegAdapter) -> None:
+    wav_path = tmp_path / "live_5_0.wav"
+    _write_synthetic_five_zero_wav(
+        wav_path,
+        _resolve_ffmpeg_paths()[0],
+        "5.0(side)",
+        surrounds_silent=False,
+    )
+
+    metrics = adapter.profile_audio_track(
+        path=wav_path,
+        stream_index=0,
+        channels=5,
+        duration_s=2.0,
+        channel_layout="5.0(side)",
+    )
+
+    assert classify_audio(metrics).verdict is Verdict.REAL
 
 
 def test_the_declared_layout_decides_how_the_third_channel_is_read(

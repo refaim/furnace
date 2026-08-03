@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -1844,6 +1845,26 @@ def _dead_lfe_2_1_metrics() -> AudioMetrics:
     )
 
 
+def _silent_surrounds_5_0_metrics() -> AudioMetrics:
+    return AudioMetrics(
+        channels=5,
+        rms_l=-25.0,
+        rms_r=-25.5,
+        rms_c=-10.0,
+        rms_lfe=None,
+        rms_ls=-70.0,
+        rms_rs=-70.0,
+        rms_lb=None,
+        rms_rb=None,
+        corr_lr=0.3,
+        corr_ls_l=0.1,
+        corr_rs_r=0.1,
+        corr_ls_rs=0.2,
+        corr_lb_ls=None,
+        corr_rb_rs=None,
+    )
+
+
 def _derived_center_3_0_metrics() -> AudioMetrics:
     return AudioMetrics(
         channels=3,
@@ -2007,6 +2028,120 @@ class TestAudioProfiling:
         assert movie is not None
         assert movie.audio_tracks[0].audio_profile is None
         prober.profile_audio_track.assert_not_called()
+
+    def _five_channel_probe_data(self, layout: str | None) -> dict[str, Any]:
+        audio: dict[str, Any] = {
+            "index": 1,
+            "codec_type": "audio",
+            "codec_name": "ac3",
+            "channels": 5,
+            "tags": {"language": "rus"},
+            "disposition": {"default": 1, "forced": 0},
+        }
+        if layout is not None:
+            audio["channel_layout"] = layout
+        return {
+            "streams": [
+                {
+                    "index": 0,
+                    "codec_type": "video",
+                    "codec_name": "mpeg2video",
+                    "width": 720,
+                    "height": 576,
+                    "avg_frame_rate": "25/1",
+                    "duration": "100.0",
+                    "field_order": "progressive",
+                    "pix_fmt": "yuv420p",
+                },
+                audio,
+            ],
+            "format": {"duration": "100.0"},
+            "chapters": [],
+        }
+
+    @pytest.mark.parametrize("layout", ["5.0", "5.0(side)"])
+    def test_forwards_the_5_0_layout_and_attaches_the_verdict(self, tmp_path: Path, layout: str) -> None:
+        scan_result = make_scan_result(tmp_path)
+        prober = make_prober(probe_data=self._five_channel_probe_data(layout))
+        prober.profile_audio_track.return_value = _silent_surrounds_5_0_metrics()
+
+        with (
+            patch("furnace.services.analyzer.should_skip_file", return_value=(False, "")),
+            patch("furnace.services.analyzer.detect_hdr", return_value=HdrMetadata()),
+            patch("furnace.services.analyzer.check_unsupported_codecs", return_value=None),
+        ):
+            outcome = Analyzer(prober=prober).analyze(scan_result)
+
+        movie = outcome.movie
+        assert movie is not None
+        profile = movie.audio_tracks[0].audio_profile
+        assert profile is not None
+        assert profile.verdict == Verdict.FAKE
+        prober.profile_audio_track.assert_called_once_with(
+            path=scan_result.main_file,
+            stream_index=1,
+            channels=5,
+            duration_s=100.0,
+            channel_layout=layout,
+        )
+
+    @pytest.mark.parametrize("layout", ["4.1", None])
+    def test_skips_unhandled_five_channel_layouts(self, tmp_path: Path, layout: str | None) -> None:
+        scan_result = make_scan_result(tmp_path)
+        prober = make_prober(probe_data=self._five_channel_probe_data(layout))
+
+        with (
+            patch("furnace.services.analyzer.should_skip_file", return_value=(False, "")),
+            patch("furnace.services.analyzer.detect_hdr", return_value=HdrMetadata()),
+            patch("furnace.services.analyzer.check_unsupported_codecs", return_value=None),
+        ):
+            outcome = Analyzer(prober=prober).analyze(scan_result)
+
+        movie = outcome.movie
+        assert movie is not None
+        assert movie.audio_tracks[0].audio_profile is None
+        prober.profile_audio_track.assert_not_called()
+
+    def test_an_unprofileable_five_channel_layout_is_logged_as_a_warning(
+        self,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        scan_result = make_scan_result(tmp_path)
+        prober = make_prober(probe_data=self._five_channel_probe_data("4.1"))
+
+        with (
+            caplog.at_level(logging.WARNING, logger="furnace.services.analyzer"),
+            patch("furnace.services.analyzer.should_skip_file", return_value=(False, "")),
+            patch("furnace.services.analyzer.detect_hdr", return_value=HdrMetadata()),
+            patch("furnace.services.analyzer.check_unsupported_codecs", return_value=None),
+        ):
+            Analyzer(prober=prober).analyze(scan_result)
+
+        assert any("Not profiling track" in r.message for r in caplog.records)
+
+    def test_a_mono_track_is_skipped_without_a_warning(
+        self,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        scan_result = make_scan_result(tmp_path)
+        probe_data = self._five_channel_probe_data("4.1")
+        probe_data["streams"][1]["channels"] = 1
+        del probe_data["streams"][1]["channel_layout"]
+        prober = make_prober(probe_data=probe_data)
+
+        with (
+            caplog.at_level(logging.INFO, logger="furnace.services.analyzer"),
+            patch("furnace.services.analyzer.should_skip_file", return_value=(False, "")),
+            patch("furnace.services.analyzer.detect_hdr", return_value=HdrMetadata()),
+            patch("furnace.services.analyzer.check_unsupported_codecs", return_value=None),
+        ):
+            Analyzer(prober=prober).analyze(scan_result)
+
+        skipped = [r for r in caplog.records if "Not profiling track" in r.message]
+        assert skipped, "the skip must still be logged"
+        assert all(r.levelno == logging.INFO for r in skipped)
 
     def test_skips_1ch_track(self, tmp_path: Path) -> None:
         scan_result = make_scan_result(tmp_path)

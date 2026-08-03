@@ -4,7 +4,7 @@ import enum
 from dataclasses import dataclass
 from typing import TypeGuard, cast
 
-from .downmix import STEREO_CHANNELS, THREE_CHANNELS, DownmixMode
+from .downmix import STEREO_CHANNELS, SURROUND_5_0_CHANNELS, THREE_CHANNELS, DownmixMode
 
 _SURROUND_5_1_CHANNELS = 6
 _SURROUND_7_1_CHANNELS = 8
@@ -14,6 +14,12 @@ _UNAMBIGUOUS_CHANNEL_COUNTS = frozenset({STEREO_CHANNELS, _SURROUND_5_1_CHANNELS
 LAYOUT_2_1 = "2.1"
 LAYOUT_3_0 = "3.0"
 THREE_CHANNEL_LAYOUTS = frozenset({LAYOUT_2_1, LAYOUT_3_0})
+
+LAYOUT_5_0 = "5.0"
+LAYOUT_5_0_SIDE = "5.0(side)"
+FIVE_CHANNEL_LAYOUTS = frozenset({LAYOUT_5_0, LAYOUT_5_0_SIDE})
+
+LAYOUT_SENSITIVE_CHANNELS = frozenset({THREE_CHANNELS, SURROUND_5_0_CHANNELS})
 
 
 SURROUND_SILENT_DB = -50.0
@@ -74,7 +80,9 @@ class AudioProfile:
 def is_profileable(channels: int | None, channel_layout: str | None) -> TypeGuard[int]:
     if channels in _UNAMBIGUOUS_CHANNEL_COUNTS:
         return True
-    return channels == THREE_CHANNELS and channel_layout in THREE_CHANNEL_LAYOUTS
+    if channels == THREE_CHANNELS:
+        return channel_layout in THREE_CHANNEL_LAYOUTS
+    return channels == SURROUND_5_0_CHANNELS and channel_layout in FIVE_CHANNEL_LAYOUTS
 
 
 def classify_audio(metrics: AudioMetrics) -> AudioProfile:
@@ -86,7 +94,7 @@ def classify_audio(metrics: AudioMetrics) -> AudioProfile:
         if metrics.rms_c is not None:
             return _classify_three_zero(metrics)
         raise ValueError("three-channel metrics carry neither LFE nor center")
-    if metrics.channels in (_SURROUND_5_1_CHANNELS, _SURROUND_7_1_CHANNELS):
+    if metrics.channels in (SURROUND_5_0_CHANNELS, _SURROUND_5_1_CHANNELS, _SURROUND_7_1_CHANNELS):
         return _classify_multichannel(metrics)
     raise ValueError(f"unsupported channels: {metrics.channels}")
 
@@ -164,7 +172,12 @@ def _classify_stereo(metrics: AudioMetrics) -> AudioProfile:
 
 def _classify_multichannel(metrics: AudioMetrics) -> AudioProfile:
     rms_c = cast("float", metrics.rms_c)
-    rms_lfe = cast("float", metrics.rms_lfe)
+    rms_lfe = metrics.rms_lfe
+    if metrics.channels == SURROUND_5_0_CHANNELS:
+        if rms_lfe is not None:
+            raise ValueError("5-channel metrics carry an LFE")
+    elif rms_lfe is None:
+        raise ValueError(f"{metrics.channels}-channel metrics carry no LFE")
     rms_ls = cast("float", metrics.rms_ls)
     rms_rs = cast("float", metrics.rms_rs)
     corr_ls_l = cast("float", metrics.corr_ls_l)
@@ -181,10 +194,14 @@ def _classify_multichannel(metrics: AudioMetrics) -> AudioProfile:
             f"both surrounds are silent (Ls={rms_ls:.0f}, Rs={rms_rs:.0f} dB)",
         )
 
-    sig_lfe_dead = rms_lfe < LFE_DEAD_DB
-    if sig_lfe_dead:
+    if rms_lfe is not None and rms_lfe < LFE_DEAD_DB:
         score += 1
         reasons.append(f"LFE is dead ({rms_lfe:.0f} dB in the loudest window)")
+
+    corr_c_lr = metrics.corr_c_lr
+    if corr_c_lr is not None and corr_c_lr > CENTER_COPY_CORR:
+        score += 2
+        reasons.append(f"center is a mix of the fronts (corr C~L+R={corr_c_lr:.2f})")
 
     center_dom = rms_c - max(metrics.rms_l, metrics.rms_r, rms_ls, rms_rs)
     sig_center_dom = center_dom > CENTER_DOM_DB

@@ -13,13 +13,14 @@ from typing import Any
 import numpy as np
 
 from furnace.core.audio_profile import (
+    FIVE_CHANNEL_LAYOUTS,
     LAYOUT_2_1,
     LAYOUT_3_0,
     THREE_CHANNEL_LAYOUTS,
     AudioMetrics,
 )
 from furnace.core.detect import aggregate_crop, cropdetect_limit
-from furnace.core.downmix import THREE_CHANNELS
+from furnace.core.downmix import SURROUND_5_0_CHANNELS, THREE_CHANNELS
 from furnace.core.models import CropRect, VideoParams
 from furnace.core.progress import ProgressSample
 
@@ -1021,6 +1022,10 @@ class FFmpegAdapter:
             layout = channel_layout
             if layout == LAYOUT_2_1:
                 lfe_col = _LFE_COL_2_1
+        elif channels == SURROUND_5_0_CHANNELS:
+            if channel_layout not in FIVE_CHANNEL_LAYOUTS:
+                raise ValueError(f"profile_audio_track: unsupported 5-channel layout {channel_layout!r}")
+            layout = channel_layout
         elif channels == _CHANNELS_5_1:
             layout = "5.1"
             lfe_col = _LFE_COL_MULTI
@@ -1101,6 +1106,27 @@ class FFmpegAdapter:
                 corr_lb_ls=None,
                 corr_rb_rs=None,
                 corr_c_lr=_pearson(third, left + right) if is_center else None,
+            )
+
+        if channels == SURROUND_5_0_CHANNELS:
+            left, right, center, ls, rs = cols
+            return AudioMetrics(
+                channels=SURROUND_5_0_CHANNELS,
+                rms_l=_rms_db(left),
+                rms_r=_rms_db(right),
+                rms_c=_rms_db(center),
+                rms_lfe=None,
+                rms_ls=_rms_db(ls),
+                rms_rs=_rms_db(rs),
+                rms_lb=None,
+                rms_rb=None,
+                corr_lr=_pearson(left, right),
+                corr_ls_l=_pearson(ls, left),
+                corr_rs_r=_pearson(rs, right),
+                corr_ls_rs=_pearson(ls, rs),
+                corr_lb_ls=None,
+                corr_rb_rs=None,
+                corr_c_lr=_pearson(center, left + right),
             )
 
         if channels == _CHANNELS_5_1:

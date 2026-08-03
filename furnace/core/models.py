@@ -6,10 +6,17 @@ from pathlib import Path
 from typing import Any
 
 from .audio_profile import AudioProfile
-from .downmix import STEREO_CHANNELS, SURROUND_5_1_CHANNELS, THREE_CHANNELS, DownmixMode
+from .downmix import (
+    STEREO_CHANNELS,
+    SURROUND_5_0_CHANNELS,
+    SURROUND_5_1_CHANNELS,
+    THREE_CHANNELS,
+    DownmixMode,
+)
 
 __all__ = [
     "STEREO_CHANNELS",
+    "SURROUND_5_0_CHANNELS",
     "SURROUND_5_1_CHANNELS",
     "THREE_CHANNELS",
     "AnalysisOutcome",

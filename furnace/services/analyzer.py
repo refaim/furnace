@@ -8,7 +8,7 @@ from typing import Any
 
 from charset_normalizer import from_path as _from_path
 
-from furnace.core.audio_profile import classify_audio, is_profileable
+from furnace.core.audio_profile import LAYOUT_SENSITIVE_CHANNELS, classify_audio, is_profileable
 from furnace.core.detect import (
     check_unsupported_codecs,
     classify_grain,
@@ -24,7 +24,6 @@ from furnace.core.detect import (
     should_skip_file,
 )
 from furnace.core.models import (
-    THREE_CHANNELS,
     AnalysisOutcome,
     AnalyzeStatus,
     Attachment,
@@ -263,7 +262,7 @@ class Analyzer:
 
         for track in audio_tracks:
             if not is_profileable(track.channels, track.channel_layout):
-                log = logger.warning if track.channels == THREE_CHANNELS else logger.info
+                log = logger.warning if track.channels in LAYOUT_SENSITIVE_CHANNELS else logger.info
                 log(
                     "Not profiling track %d for fakeness: channels=%s layout=%r",
                     track.index,

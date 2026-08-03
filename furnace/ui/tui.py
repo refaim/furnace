@@ -12,9 +12,10 @@ from textual.containers import Container
 from textual.screen import Screen
 from textual.widgets import Footer, Header, Input, ListItem, ListView, Static
 
-from furnace.core.audio_profile import LAYOUT_2_1, LAYOUT_3_0, AudioMetrics, Verdict
+from furnace.core.audio_profile import LAYOUT_2_1, LAYOUT_3_0, LAYOUT_5_0, AudioMetrics, Verdict
 from furnace.core.models import (
     STEREO_CHANNELS,
+    SURROUND_5_0_CHANNELS,
     SURROUND_5_1_CHANNELS,
     THREE_CHANNELS,
     CropRect,
@@ -68,6 +69,8 @@ def _layout_word(metrics: AudioMetrics) -> str:
         return "stereo"
     if metrics.channels == THREE_CHANNELS:
         return LAYOUT_2_1 if metrics.rms_lfe is not None else LAYOUT_3_0
+    if metrics.channels == SURROUND_5_0_CHANNELS:
+        return LAYOUT_5_0
     return "surround"
 
 
@@ -109,6 +112,14 @@ def _render_detector_panel(track: Track | None, downmix: DownmixMode | None = No
             channel_values.append(("LFE", m.rms_lfe))
         else:
             channel_values.append(("C", cast("float", m.rms_c)))
+    elif m.channels == SURROUND_5_0_CHANNELS:
+        channel_values = [
+            ("L", m.rms_l),
+            ("R", m.rms_r),
+            ("C", m.rms_c if m.rms_c is not None else _BAR_MIN_DB),
+            ("Ls", m.rms_ls if m.rms_ls is not None else _BAR_MIN_DB),
+            ("Rs", m.rms_rs if m.rms_rs is not None else _BAR_MIN_DB),
+        ]
     elif m.channels == SURROUND_5_1_CHANNELS:
         channel_values = [
             ("L", m.rms_l),
