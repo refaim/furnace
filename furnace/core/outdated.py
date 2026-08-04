@@ -55,6 +55,7 @@ _TARGET_QUALITY_FIXED = (2, 11, 0)
 _GRAIN_LOSS_FIXED = (2, 7, 0)
 _COLOR_TAGS_FIXED = (2, 7, 2)
 _CONTAINER_MASTERING_FIXED = (2, 29, 0)
+_CROP_RESCALE_FIXED = (2, 32, 0)
 _MONO_DOWNMIX_VERSION = (2, 0, 0)
 _MONO_DRC_MAX_VERSION = (1, 19, 3)
 
@@ -74,6 +75,7 @@ def classify_outdated(
     color_transfer: str | None,
     audio_channels: Sequence[int | None],
     container_mastering_display: bool,
+    crop_rescaled: bool | None,
 ) -> tuple[Defect, ...]:
     if unreadable:
         return (Defect("unreadable", Severity.UNREADABLE, Fix.NONE),)
@@ -122,6 +124,9 @@ def classify_outdated(
         and height < _HD_MIN_HEIGHT
     ):
         defects.append(Defect("grain loss", Severity.QUALITY, Fix.RE_ENCODE))
+
+    if is_av1 and version < _CROP_RESCALE_FIXED and crop_rescaled is True:
+        defects.append(Defect("crop rescale", Severity.QUALITY, Fix.RE_ENCODE))
 
     if (
         encoder_family is EncoderFamily.AV1_NVENC

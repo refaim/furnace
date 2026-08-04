@@ -17,6 +17,8 @@ def _make_vp(
     source_height: int = 2160,
     dv_mode: DvMode | None = None,
     hdr: HdrMetadata | None = None,
+    sar_num: int = 1,
+    sar_den: int = 1,
 ) -> VideoParams:
     return VideoParams(
         cq=cq,
@@ -35,6 +37,8 @@ def _make_vp(
         source_codec="hevc",
         source_bitrate=80_000_000,
         dv_mode=dv_mode,
+        sar_num=sar_num,
+        sar_den=sar_den,
     )
 
 
@@ -98,6 +102,16 @@ class TestNVEncCProbeCommand:
         idx = cmd.index("--vmaf")
         assert "vmaf_4k_v0.6.1" in cmd[idx + 1]
         assert "--vship-cvvdp" not in cmd
+
+    def test_probe_vmaf_model_follows_the_encoded_size_not_the_source(self) -> None:
+        # SAR correction scales an SD frame past the 4K model threshold.
+        cmd = _capture_probe_cmd(
+            _make_vp(source_width=2560, source_height=1088, sar_num=4, sar_den=3),
+            qvbr=30,
+            metric="vmaf",
+        )
+        idx = cmd.index("--vmaf")
+        assert "vmaf_4k_v0.6.1" in cmd[idx + 1]
 
     def test_probe_vmaf_single_metric_1080p_model(self) -> None:
         cmd = _capture_probe_cmd(

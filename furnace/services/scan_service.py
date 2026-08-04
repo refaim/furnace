@@ -9,6 +9,7 @@ from furnace.core.ports import Prober
 from furnace.core.scan import (
     ScanRow,
     VideoSummary,
+    parse_crop_rescale,
     parse_encoder_family,
     parse_furnace_version,
     row_matches,
@@ -30,6 +31,7 @@ def _classify_row(row: ScanRow) -> tuple[Defect, ...]:
         color_transfer=row.video.color_transfer,
         audio_channels=tuple(track.channels for track in row.audio),
         container_mastering_display=row.video.container_mastering_display,
+        crop_rescaled=row.crop_rescaled,
     )
 
 
@@ -92,6 +94,11 @@ class ScanService:
                 settings = tags.get("ENCODER_SETTINGS", tags.get("encoder_settings"))
                 family = parse_encoder_family(settings)
                 video, audio, subtitles = summarize_streams(probe_json)
+                output_size = (
+                    (video.width, video.height)
+                    if video.width is not None and video.height is not None
+                    else None
+                )
                 row = ScanRow(
                     path=path,
                     furnace_version=version,
@@ -99,6 +106,7 @@ class ScanService:
                     audio=audio,
                     subtitles=subtitles,
                     encoder_family=family,
+                    crop_rescaled=parse_crop_rescale(settings, family, output_size),
                 )
                 defects = _classify_row(row)
                 if defects:

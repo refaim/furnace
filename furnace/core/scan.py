@@ -7,6 +7,7 @@ from typing import Any
 
 from .detect import detect_hdr
 from .outdated import Defect, EncoderFamily
+from .quality import ALIGNMENT
 
 _FURNACE_TAG_RE = re.compile(r"^Furnace v(\d+)\.(\d+)\.(\d+)$")
 
@@ -49,6 +50,59 @@ def parse_encoder_family(settings: str | None) -> EncoderFamily:
     return EncoderFamily.UNKNOWN
 
 
+_CROP_TAG_RE = re.compile(r"(?:^|[\s/])crop=(\d+):(\d+):(\d+):(\d+)")
+
+_NVENCC_FAMILIES: tuple[EncoderFamily, ...] = (
+    EncoderFamily.AV1_NVENC,
+    EncoderFamily.HEVC_NVENC,
+)
+
+
+def parse_crop_rescale(
+    settings: str | None,
+    family: EncoderFamily,
+    output_size: tuple[int, int] | None,
+) -> bool | None:
+    """Whether the encode reached its final size by rescaling the frame.
+
+    Cutting a few more pixels off the crop is free; rescaling to reach the same
+    size resamples every pixel and skews the aspect. Returns None when the tag
+    says too little to tell.
+
+    SVT-AV1 records the rectangle it kept (``crop=w:h:x:y``), and the file
+    itself carries what that rectangle became, so the two just get compared: an
+    axis that came out smaller was squashed, one that came out larger was
+    stretched to square pixels, which is legitimate, and one that matches was
+    never resampled. Nothing about the source size is assumed -- only that a
+    stretch outgrows the <8px alignment residue, which every real SAR clears by
+    an order of magnitude. A SAR within a few pixels of unity, reachable when
+    SAR Fix derives one from an almost-16:9 source, breaks that tie and reads
+    as a rescale.
+
+    NVEncC records only the pixels it removed (``crop=top:bottom:left:right``),
+    never the source size, so the kept size can only be inferred by assuming
+    the source itself sat on the 8px grid. That holds for every disc
+    (720/1920/3840) but not for a web rip like 1920x804, where the answer
+    inverts: a clean file reads as rescaled and a rescaled one reads as clean.
+    It also cannot see a rescale that happened with no crop recorded at all.
+    The tag carries nothing better; only the version gate in classify_outdated
+    bounds it.
+    """
+    if settings is None:
+        return None
+    match = _CROP_TAG_RE.search(settings)
+    if match is None:
+        return None
+    first, second, third, fourth = (int(group) for group in match.groups())
+    if family in _NVENCC_FAMILIES:
+        return (first + second) % ALIGNMENT != 0 or (third + fourth) % ALIGNMENT != 0
+    if family is EncoderFamily.AV1_SVT:
+        if output_size is None:
+            return None
+        return output_size[0] < first or output_size[1] < second
+    return None
+
+
 @dataclass(frozen=True)
 class AudioTrackSummary:
     language: str | None
@@ -83,6 +137,7 @@ class ScanRow:
     subtitles: tuple[SubtitleTrackSummary, ...]
     unreadable: bool = False
     encoder_family: EncoderFamily = EncoderFamily.UNKNOWN
+    crop_rescaled: bool | None = None
     defects: tuple[Defect, ...] = ()
 
 

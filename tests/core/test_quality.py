@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import pytest
+
 from furnace.core.models import CropRect, VideoParams
 from furnace.core.quality import (
     CQ_ANCHORS,
-    align_dimensions,
+    align_down,
+    aligned_crop,
     calculate_gop,
     correct_sar,
     final_output_dimensions,
@@ -96,36 +99,16 @@ class TestInterpolateCq:
         assert interpolate_cq(q) == 35
 
 
-class TestAlignDimensions:
+class TestAlignDown:
     def test_already_aligned(self) -> None:
-        result = align_dimensions(1920, 1080, 0, 0)
-        assert result == CropRect(w=1920, h=1080, x=0, y=0)
+        assert align_down(1920) == 1920
 
-    def test_8x8_alignment(self) -> None:
-        result = align_dimensions(1922, 1082, 10, 20)
-        assert result.w == 1920
-        assert result.h == 1080
-        assert result.x == 11
-        assert result.y == 21
+    @pytest.mark.parametrize("trim", [1, 2, 3, 4, 5, 6, 7])
+    def test_trims_down_to_the_grid(self, trim: int) -> None:
+        assert align_down(1920 + trim) == 1920
 
-    def test_default_zero_offset(self) -> None:
-        result = align_dimensions(1922, 1082)
-        assert result.x == 1
-        assert result.y == 1
-
-    def test_centering_integer_division(self) -> None:
-        result = align_dimensions(1921, 1080)
-        assert result.w == 1920
-        assert result.x == 0
-
-    def test_trim_7(self) -> None:
-        result = align_dimensions(1007, 1080, 5, 0)
-        assert result.w == 1000
-        assert result.x == 5 + 3
-
-    def test_zero_values(self) -> None:
-        result = align_dimensions(0, 0, 0, 0)
-        assert result == CropRect(w=0, h=0, x=0, y=0)
+    def test_zero(self) -> None:
+        assert align_down(0) == 0
 
 
 class TestCalculateGop:
@@ -247,6 +230,125 @@ class TestFinalOutputDimensions:
     def test_no_crop_pal_dvd_anamorphic(self) -> None:
         vp = _vp(source_width=720, source_height=576, sar_num=16, sar_den=15)
         assert final_output_dimensions(vp) == (768, 576)
+
+    def test_uhd_scope_crop_off_grid(self) -> None:
+        vp = _vp(
+            source_width=3840,
+            source_height=2160,
+            crop=CropRect(w=3840, h=1606, x=0, y=276),
+        )
+        assert final_output_dimensions(vp) == (3840, 1600)
+
+
+class TestAlignedCrop:
+    def test_none_when_full_frame_already_aligned(self) -> None:
+        vp = _vp(source_width=1920, source_height=1080)
+        assert aligned_crop(vp) is None
+
+    def test_none_when_crop_covers_whole_aligned_frame(self) -> None:
+        vp = _vp(
+            source_width=1920,
+            source_height=1080,
+            crop=CropRect(w=1920, h=1080, x=0, y=0),
+        )
+        assert aligned_crop(vp) is None
+
+    def test_full_frame_off_grid_becomes_a_crop(self) -> None:
+        vp = _vp(source_width=1916, source_height=802)
+        assert aligned_crop(vp) == CropRect(w=1912, h=800, x=0, y=0)
+
+    def test_aligned_crop_passes_through(self) -> None:
+        crop = CropRect(w=1920, h=800, x=0, y=140)
+        vp = _vp(source_width=1920, source_height=1080, crop=crop)
+        assert aligned_crop(vp) == crop
+
+    def test_off_grid_crop_absorbs_the_trim(self) -> None:
+        vp = _vp(
+            source_width=3840,
+            source_height=2160,
+            crop=CropRect(w=3840, h=1606, x=0, y=276),
+        )
+        assert aligned_crop(vp) == CropRect(w=3840, h=1600, x=0, y=280)
+
+    @pytest.mark.parametrize("trim", [2, 4, 6])
+    def test_absorbed_trim_leaves_every_edge_even(self, trim: int) -> None:
+        vp = _vp(
+            source_width=3840,
+            source_height=2160,
+            crop=CropRect(w=3840 - trim, h=1600 + trim, x=trim, y=276),
+        )
+        crop = aligned_crop(vp)
+        assert crop is not None
+        assert crop.x % 2 == 0
+        assert crop.y % 2 == 0
+        assert (3840 - crop.x - crop.w) % 2 == 0
+        assert (2160 - crop.y - crop.h) % 2 == 0
+
+    def test_trim_comes_off_the_far_edge_when_the_crop_starts_at_zero(self) -> None:
+        # Moving the left edge off zero would cost NVDEC hardware decode, and
+        # there is no bar on that side to stay centred against anyway.
+        vp = _vp(source_width=852, source_height=480)
+        assert aligned_crop(vp) == CropRect(w=848, h=480, x=0, y=0)
+
+    def test_anamorphic_scaled_axis_is_left_alone(self) -> None:
+        # NTSC 4:3 stretches the HEIGHT, so the off-grid crop height stays put
+        # and the resize lands it on the grid; trimming first skewed the aspect.
+        crop = CropRect(w=720, h=434, x=0, y=22)
+        vp = _vp(source_width=720, source_height=480, crop=crop, sar_num=8, sar_den=9)
+        assert aligned_crop(vp) == crop
+        assert final_output_dimensions(vp) == (720, 488)
+
+    def test_anamorphic_scaled_width_is_left_alone(self) -> None:
+        # PAL 16:9 stretches the WIDTH, so a crop with dead columns keeps its
+        # off-grid width and the resize lands it on the grid.
+        crop = CropRect(w=716, h=424, x=2, y=76)
+        vp = _vp(source_width=720, source_height=576, crop=crop, sar_num=64, sar_den=45)
+        assert aligned_crop(vp) == crop
+        assert final_output_dimensions(vp) == (1016, 424)
+
+    def test_anamorphic_unscaled_axis_is_still_aligned(self) -> None:
+        # PAL 16:9 stretches the WIDTH; the height is never resampled, so the
+        # trim belongs in the crop here too and the output keeps its aspect.
+        vp = _vp(
+            source_width=720,
+            source_height=576,
+            crop=CropRect(w=720, h=428, x=0, y=74),
+            sar_num=16,
+            sar_den=15,
+        )
+        assert aligned_crop(vp) == CropRect(w=720, h=424, x=0, y=76)
+        assert final_output_dimensions(vp) == (768, 424)
+
+    def test_anamorphic_pillarbox_trades_aspect_for_an_untouched_axis(self) -> None:
+        # NTSC 4:3 stretches the height, so an off-grid crop WIDTH is now cut
+        # instead of scaled. That drops a horizontal resample and leaves the
+        # vertical rounding error (~0.75% of aspect) uncancelled, where before
+        # the two squashes partly cancelled. Bounded and worth the sharpness.
+        vp = _vp(
+            source_width=720,
+            source_height=480,
+            crop=CropRect(w=708, h=480, x=6, y=0),
+            sar_num=8,
+            sar_den=9,
+        )
+        assert aligned_crop(vp) == CropRect(w=704, h=480, x=8, y=0)
+        assert final_output_dimensions(vp) == (704, 536)
+
+    def test_anamorphic_off_grid_source_without_crop(self) -> None:
+        vp = _vp(source_width=720, source_height=574, sar_num=16, sar_den=15)
+        assert aligned_crop(vp) == CropRect(w=720, h=568, x=0, y=0)
+        assert final_output_dimensions(vp) == (768, 568)
+
+    @pytest.mark.parametrize("trim", [1, 2, 3, 4, 5, 6, 7])
+    def test_aligned_crop_never_reaches_outside_the_requested_crop(self, trim: int) -> None:
+        crop = CropRect(w=1920 - trim, h=1080 - trim, x=3, y=3)
+        vp = _vp(source_width=1920, source_height=1080, crop=crop)
+        aligned = aligned_crop(vp)
+        assert aligned is not None
+        assert aligned.x >= crop.x
+        assert aligned.y >= crop.y
+        assert aligned.x + aligned.w <= crop.x + crop.w
+        assert aligned.y + aligned.h <= crop.y + crop.h
 
     def test_crop_pal_dvd_anamorphic_bug_case(self) -> None:
         vp = _vp(

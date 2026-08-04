@@ -306,11 +306,11 @@ class TestSvtAv1VideoFilter:
         vf = _vf(_make_vp(crop=None))
         assert "crop=" not in vf
 
-    def test_crop_with_alignment_scale(self) -> None:
+    def test_crop_with_alignment_absorbs_trim(self) -> None:
         vp = _make_vp(crop=CropRect(w=1910, h=798, x=5, y=141))
         vf = _vf(vp)
-        assert "crop=1910:798:5:141" in vf
-        assert "scale=1904:792:flags=spline" in vf
+        assert "crop=1904:792:8:144" in vf
+        assert "scale=" not in vf
 
     def test_scale_from_sar_no_crop(self) -> None:
         vp = _make_vp(source_width=720, source_height=480, sar_num=4, sar_den=3)
@@ -370,6 +370,11 @@ class TestSvtAv1EncoderSettings:
         vp = _make_vp(crop=CropRect(w=1920, h=800, x=0, y=140))
         settings = _adapter()._build_encoder_settings(vp)
         assert "crop=1920:800:0:140" in settings
+
+    def test_settings_record_the_aligned_crop(self) -> None:
+        vp = _make_vp(crop=CropRect(w=1910, h=798, x=5, y=141))
+        settings = _adapter()._build_encoder_settings(vp)
+        assert "crop=1904:792:8:144" in settings
 
     def test_settings_without_crop(self) -> None:
         settings = _adapter()._build_encoder_settings(_make_vp(crop=None))

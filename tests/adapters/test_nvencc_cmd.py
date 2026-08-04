@@ -232,11 +232,33 @@ class TestNVEncCCrop:
     def test_crop_with_alignment(self) -> None:
         vp = _make_vp(crop=CropRect(w=3830, h=2150, x=3, y=5))
         cmd = _cmd(vp)
-        assert "--crop" in cmd
-        idx = cmd.index("--output-res")
-        assert cmd[idx + 1] == "3824x2144"
+        idx = cmd.index("--crop")
+        assert cmd[idx + 1] == "6,8,10,8"
+        assert "--output-res" not in cmd
         assert "--sar" not in cmd
         assert "--vpp-resize" not in cmd
+
+    def test_scope_uhd_crop_off_grid_is_cropped_not_scaled(self) -> None:
+        vp = _make_vp(crop=CropRect(w=3840, h=1606, x=0, y=276))
+        cmd = _cmd(vp)
+        idx = cmd.index("--crop")
+        assert cmd[idx + 1] == "0,280,0,280"
+        assert "--output-res" not in cmd
+
+    def test_source_off_grid_without_crop_is_cropped(self) -> None:
+        vp = _make_vp()
+        vp.source_width, vp.source_height = 3840, 2158
+        cmd = _cmd(vp)
+        idx = cmd.index("--crop")
+        assert cmd[idx + 1] == "0,0,0,6"
+        assert "--output-res" not in cmd
+
+    def test_hwdec_survives_alignment_of_a_full_width_frame(self) -> None:
+        vp = _make_vp(crop=CropRect(w=3836, h=2160, x=0, y=0))
+        cmd = _cmd(vp)
+        assert cmd[1] == "--avhw"
+        idx = cmd.index("--crop")
+        assert cmd[idx + 1] == "0,0,8,0"
 
 
 class TestNVEncCDeinterlace:
@@ -281,6 +303,22 @@ class TestNVEncCDolbyVision:
         cmd = _cmd(vp, rpu_path=None)
         assert "--dolby-vision-rpu" not in cmd
         assert "--dolby-vision-profile" not in cmd
+
+    def test_rpu_crop_flag_follows_the_crop_actually_emitted(self) -> None:
+        # An off-grid source is cropped even though the plan asked for no crop;
+        # the RPU active area has to be told, or it keeps describing the
+        # uncropped frame.
+        vp = _make_vp(dv_mode=DvMode.TO_8_1)
+        vp.source_width, vp.source_height = 3840, 2158
+        cmd = _cmd(vp, rpu_path=Path("rpu.bin"))
+        assert "--crop" in cmd
+        assert _contains_subseq(cmd, ["--dolby-vision-rpu-prm", "crop=true"])
+
+    def test_no_rpu_crop_flag_when_the_crop_is_a_no_op(self) -> None:
+        vp = _make_vp(dv_mode=DvMode.TO_8_1, crop=CropRect(w=3840, h=2160, x=0, y=0))
+        cmd = _cmd(vp, rpu_path=Path("rpu.bin"))
+        assert "--crop" not in cmd
+        assert "--dolby-vision-rpu-prm" not in cmd
 
 
 class TestNVEncCSar:
@@ -458,6 +496,12 @@ class TestNVEncCEncoderSettings:
         vp = _make_vp(crop=CropRect(w=3560, h=2160, x=140, y=0))
         settings = adapter._build_encoder_settings(vp)
         assert "crop=0:0:140:140" in settings
+
+    def test_settings_record_the_aligned_crop(self) -> None:
+        adapter = _adapter()
+        vp = _make_vp(crop=CropRect(w=3840, h=1606, x=0, y=276))
+        settings = adapter._build_encoder_settings(vp)
+        assert "crop=280:280:0:0" in settings
 
     def test_settings_with_dv(self) -> None:
         adapter = _adapter()

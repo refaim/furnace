@@ -39,9 +39,23 @@ class TestGeometryFilters:
     def test_empty_for_plain_square_pixel(self) -> None:
         assert geometry_filters(_make_vp()) == []
 
-    def test_crop_and_anamorphic_scale(self) -> None:
+    def test_off_grid_crop_is_absorbed_not_scaled(self) -> None:
         vp = _make_vp(crop=CropRect(w=1910, h=798, x=5, y=141))
-        assert geometry_filters(vp) == ["crop=1910:798:5:141", "scale=1904:792:flags=spline"]
+        assert geometry_filters(vp) == ["crop=1904:792:8:144"]
+
+    def test_off_grid_anamorphic_crop_is_left_for_the_scale(self) -> None:
+        vp = _make_vp(
+            source_width=720,
+            source_height=480,
+            crop=CropRect(w=720, h=434, x=0, y=22),
+            sar_num=8,
+            sar_den=9,
+        )
+        assert geometry_filters(vp) == ["crop=720:434:0:22", "scale=720:488:flags=spline"]
+
+    def test_off_grid_source_without_crop_is_cropped(self) -> None:
+        vp = _make_vp(source_width=1920, source_height=1078)
+        assert geometry_filters(vp) == ["crop=1920:1072:0:0"]
 
     def test_deinterlace_runs_first(self) -> None:
         vp = _make_vp(deinterlace=True, crop=CropRect(w=1920, h=800, x=0, y=140))
@@ -49,9 +63,9 @@ class TestGeometryFilters:
         assert geom[0] == "bwdif=send_frame"
         assert geom[1].startswith("crop=")
 
-    def test_scale_only_when_size_changes(self) -> None:
+    def test_full_frame_crop_is_dropped_as_a_no_op(self) -> None:
         vp = _make_vp(crop=CropRect(w=1920, h=1080, x=0, y=0))
-        assert geometry_filters(vp) == ["crop=1920:1080:0:0"]
+        assert geometry_filters(vp) == []
 
     def test_anamorphic_scale_without_crop(self) -> None:
         vp = _make_vp(source_width=720, source_height=576, sar_num=16, sar_den=15)

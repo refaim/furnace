@@ -7,6 +7,7 @@ from pathlib import Path
 from furnace.core.color import CICP_MATRIX, CICP_PRIMARIES, CICP_TRANSFER
 from furnace.core.models import EncodeResult, VideoParams
 from furnace.core.progress import ProgressSample
+from furnace.core.quality import aligned_crop
 
 from ._geometry import build_vf
 from ._subprocess import OutputCallback, run_tool
@@ -65,8 +66,9 @@ class SvtAv1Adapter:
         ]
         if vp.deinterlace:
             parts.append("bwdif=send_frame")
-        if vp.crop is not None:
-            parts.append(f"crop={vp.crop.w}:{vp.crop.h}:{vp.crop.x}:{vp.crop.y}")
+        crop = aligned_crop(vp)
+        if crop is not None:
+            parts.append(f"crop={crop.w}:{crop.h}:{crop.x}:{crop.y}")
         return " / ".join(parts)
 
     def _build_encode_cmd(

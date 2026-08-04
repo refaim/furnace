@@ -20,6 +20,7 @@ def make_probe(
     color_transfer: str | None = None,
     color_space: str | None = None,
     height: int | None = None,
+    width: int | None = None,
     container_mastering_display: bool = False,
     audios: tuple[tuple[str | None, str, int | None], ...] = (),
     subs: tuple[tuple[str | None, str], ...] = (),
@@ -37,6 +38,8 @@ def make_probe(
             vs["color_space"] = color_space
         if height is not None:
             vs["height"] = height
+        if width is not None:
+            vs["width"] = width
         streams.append(vs)
     for lang, codec, channels in audios:
         s: dict[str, Any] = {"codec_type": "audio", "codec_name": codec, "channels": channels}
@@ -485,9 +488,7 @@ class TestOutdated:
         assert [d.reason for d in rows[0].defects] == ["soft QVBR (HDR)", "container mastering"]
         assert rows[0].defects[0].fix is Fix.RE_ENCODE
 
-    def test_hdr_encode_without_container_mastering_flagged_remux_only(
-        self, tmp_path: Path
-    ) -> None:
+    def test_hdr_encode_without_container_mastering_flagged_remux_only(self, tmp_path: Path) -> None:
         movie = tmp_path / "toystory.mkv"
         movie.touch()
         probe = make_probe(
@@ -533,6 +534,95 @@ class TestOutdated:
             height=1600,
             color_space="bt2020nc",
             color_transfer="smpte2084",
+        )
+        service, _ = make_service({movie: probe})
+
+        rows, _ = service.scan(tmp_path, outdated=True)
+
+        assert rows == []
+
+    def test_off_grid_crop_tag_flagged_as_rescaled(self, tmp_path: Path) -> None:
+        movie = tmp_path / "ralph.mkv"
+        movie.touch()
+        probe = make_probe(
+            encoder="Furnace v2.31.0",
+            encoder_settings=("av1_nvenc / NVEncC=9.29 / main / crop=276:278:0:0 / dolby-vision=10.1"),
+            video="av1",
+            height=1600,
+            color_space="bt2020nc",
+            color_transfer="smpte2084",
+            container_mastering_display=True,
+        )
+        service, _ = make_service({movie: probe})
+
+        rows, _ = service.scan(tmp_path, outdated=True)
+
+        assert [d.reason for d in rows[0].defects] == ["crop rescale"]
+        assert rows[0].crop_rescaled is True
+
+    def test_on_grid_crop_tag_not_flagged(self, tmp_path: Path) -> None:
+        movie = tmp_path / "insideout.mkv"
+        movie.touch()
+        probe = make_probe(
+            encoder="Furnace v2.31.0",
+            encoder_settings=("av1_nvenc / NVEncC=9.29 / main / crop=276:276:0:0 / dolby-vision=10.1"),
+            video="av1",
+            height=1608,
+            color_space="bt2020nc",
+            color_transfer="smpte2084",
+            container_mastering_display=True,
+        )
+        service, _ = make_service({movie: probe})
+
+        rows, _ = service.scan(tmp_path, outdated=True)
+
+        assert rows == []
+
+    def test_missing_crop_tag_leaves_the_verdict_unknown(self, tmp_path: Path) -> None:
+        movie = tmp_path / "nocrop.mkv"
+        movie.touch()
+        probe = make_probe(
+            encoder="Furnace v2.31.0",
+            encoder_settings="av1_nvenc / NVEncC=9.29 / main",
+            video="av1",
+            height=2160,
+            color_space="bt2020nc",
+            color_transfer="smpte2084",
+            container_mastering_display=True,
+        )
+        service, _ = make_service({movie: probe})
+
+        rows, _ = service.scan(tmp_path, outdated=True)
+
+        assert rows == []
+
+    def test_svt_row_judged_by_the_files_own_size(self, tmp_path: Path) -> None:
+        movie = tmp_path / "grainy.mkv"
+        movie.touch()
+        probe = make_probe(
+            encoder="Furnace v2.31.0",
+            encoder_settings="av1_svt / SVT-AV1 / preset=4 / crf=23 / crop=1910:800:5:140",
+            video="av1",
+            width=1904,
+            height=800,
+            color_space="bt709",
+        )
+        service, _ = make_service({movie: probe})
+
+        rows, _ = service.scan(tmp_path, outdated=True)
+
+        assert [d.reason for d in rows[0].defects] == ["crop rescale"]
+
+    def test_svt_anamorphic_stretch_is_not_flagged(self, tmp_path: Path) -> None:
+        movie = tmp_path / "dvd.mkv"
+        movie.touch()
+        probe = make_probe(
+            encoder="Furnace v2.31.0",
+            encoder_settings="av1_svt / SVT-AV1 / preset=4 / crf=23 / crop=702:568:9:4",
+            video="av1",
+            width=992,
+            height=568,
+            color_space="bt709",
         )
         service, _ = make_service({movie: probe})
 

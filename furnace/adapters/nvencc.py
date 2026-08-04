@@ -9,7 +9,7 @@ from pathlib import Path
 
 from furnace.core.models import CropRect, EncodeResult, VideoParams
 from furnace.core.progress import ProgressSample
-from furnace.core.quality import final_output_dimensions
+from furnace.core.quality import aligned_crop, final_output_dimensions
 
 from ._subprocess import OutputCallback, run_tool
 
@@ -136,8 +136,9 @@ class NVEncCAdapter:
         if vp.deinterlace:
             parts.append("deinterlace=nnedi(nns=64,nsize=32x6,slow)")
 
-        if vp.crop is not None:
-            left, top, right, bottom = _convert_crop(vp.crop, vp.source_width, vp.source_height)
+        crop = aligned_crop(vp)
+        if crop is not None:
+            left, top, right, bottom = _convert_crop(crop, vp.source_width, vp.source_height)
             parts.append(f"crop={top}:{bottom}:{left}:{right}")
 
         if vp.dv_mode is not None:
@@ -152,8 +153,8 @@ class NVEncCAdapter:
             return ["--vship-cvvdp"]
         if metric == "vmaf":
             n_threads = max(1, (os.cpu_count() or 4) - 2)
-            pixel_area = vp.crop.w * vp.crop.h if vp.crop is not None else vp.source_width * vp.source_height
-            model = "vmaf_4k_v0.6.1" if pixel_area >= _VMAF_4K_MIN_PIXEL_AREA else "vmaf_v0.6.1"
+            final_w, final_h = final_output_dimensions(vp)
+            model = "vmaf_4k_v0.6.1" if final_w * final_h >= _VMAF_4K_MIN_PIXEL_AREA else "vmaf_v0.6.1"
             return ["--vmaf", f"model={model},threads={n_threads},subsample=8"]
         raise ValueError(f"unknown probe metric {metric!r}")
 
@@ -169,7 +170,8 @@ class NVEncCAdapter:
     ) -> list[str | Path]:
         cmd: list[str | Path] = [self._nvencc]
 
-        use_hwdec = vp.source_codec in _NVDEC_CODECS and (vp.crop is None or vp.crop.x == 0)
+        crop = aligned_crop(vp)
+        use_hwdec = vp.source_codec in _NVDEC_CODECS and (crop is None or crop.x == 0)
         cmd.append("--avhw" if use_hwdec else "--avsw")
 
         cmd += ["-c", "av1", "--profile", "main", "--output-depth", "10"]
@@ -193,9 +195,9 @@ class NVEncCAdapter:
         cmd += ["--gop-len", str(vp.gop)]
         cmd += ["--strict-gop", "--repeat-headers"]
 
-        if vp.crop is not None:
+        if crop is not None:
             left, top, right, bottom = _convert_crop(
-                vp.crop,
+                crop,
                 vp.source_width,
                 vp.source_height,
             )
@@ -205,8 +207,8 @@ class NVEncCAdapter:
             cmd += ["--vpp-nnedi", "nns=64,nsize=32x6,quality=slow"]
 
         final_w, final_h = final_output_dimensions(vp)
-        pre_resize_w = vp.crop.w if vp.crop is not None else vp.source_width
-        pre_resize_h = vp.crop.h if vp.crop is not None else vp.source_height
+        pre_resize_w = crop.w if crop is not None else vp.source_width
+        pre_resize_h = crop.h if crop is not None else vp.source_height
         if (final_w, final_h) != (pre_resize_w, pre_resize_h):
             cmd += ["--output-res", f"{final_w}x{final_h}"]
 
@@ -235,7 +237,7 @@ class NVEncCAdapter:
         if rpu_path is not None:
             cmd += ["--dolby-vision-rpu", str(rpu_path)]
             cmd += ["--dolby-vision-profile", "10.1"]
-            if vp.crop is not None:
+            if crop is not None:
                 cmd += ["--dolby-vision-rpu-prm", "crop=true"]
 
         if probe_metric is not None:

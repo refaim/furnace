@@ -27,6 +27,7 @@ def classify(**overrides: object) -> tuple[Defect, ...]:
         "color_transfer": None,
         "audio_channels": (6,),
         "container_mastering_display": False,
+        "crop_rescaled": None,
     }
     params.update(overrides)
     return classify_outdated(**params)  # type: ignore[arg-type]
@@ -254,6 +255,40 @@ class TestSoftQvbrHdr:
 
     def test_fires_independent_of_height(self) -> None:
         assert "soft QVBR (HDR)" in _reasons(classify(version=(2, 9, 0), height=None, color_transfer="smpte2084"))
+
+
+class TestCropRescale:
+    def test_fires_for_off_grid_crop_before_the_fix(self) -> None:
+        defects = classify(version=(2, 31, 0), crop_rescaled=True)
+        assert Defect("crop rescale", Severity.QUALITY, Fix.RE_ENCODE) in defects
+
+    def test_boundary_version_2_32_0_does_not_fire(self) -> None:
+        assert "crop rescale" not in _reasons(classify(version=(2, 32, 0), crop_rescaled=True))
+
+    def test_a_crop_that_was_not_rescaled_does_not_fire(self) -> None:
+        assert "crop rescale" not in _reasons(classify(version=(2, 31, 0), crop_rescaled=False))
+
+    def test_unknown_crop_does_not_fire(self) -> None:
+        assert "crop rescale" not in _reasons(classify(version=(2, 31, 0), crop_rescaled=None))
+
+    def test_fires_for_svt_family(self) -> None:
+        assert "crop rescale" in _reasons(
+            classify(
+                encoder_family=EncoderFamily.AV1_SVT,
+                version=(2, 31, 0),
+                crop_rescaled=True,
+            )
+        )
+
+    def test_passthrough_family_does_not_fire(self) -> None:
+        assert "crop rescale" not in _reasons(
+            classify(
+                encoder_family=EncoderFamily.PASSTHROUGH,
+                version=(2, 31, 0),
+                crop_rescaled=True,
+            )
+        )
+
 
 class TestContainerMasteringDisplay:
     def test_fires_for_pre_fix_hdr10(self) -> None:

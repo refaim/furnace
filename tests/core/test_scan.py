@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from furnace.core.models import CropRect, VideoParams
 from furnace.core.outdated import EncoderFamily
 from furnace.core.scan import (
     AudioTrackSummary,
@@ -10,6 +11,7 @@ from furnace.core.scan import (
     VideoSummary,
     bit_depth_from_pix_fmt,
     hdr_label,
+    parse_crop_rescale,
     parse_encoder_family,
     parse_furnace_version,
     parse_version_arg,
@@ -499,3 +501,160 @@ def test_row_matches_union_encoded_or_max_version() -> None:
 
 def test_row_matches_union_all_false() -> None:
     assert row_matches((2, 0, 0), not_encoded=True, encoded=False, max_version=(1, 19, 3)) is False
+
+
+_NVENC_PREFIX = "av1_nvenc / NVEncC=9.29 / main / output-depth=10 / qvbr=30"
+_SVT_PREFIX = "av1_svt / SVT-AV1 / preset=4 / crf=23"
+
+
+def _off_grid_uhd_vp() -> VideoParams:
+    """A crop whose recorded fields are deliberately NOT all multiples of 8.
+
+    Both tags then change meaning under a field-order swap, so the round-trip
+    tests catch a writer that reorders them.
+    """
+    return _uhd_vp(CropRect(w=3840, h=1606, x=0, y=270))
+
+
+def _uhd_vp(crop: CropRect) -> VideoParams:
+    return VideoParams(
+        cq=30,
+        crop=crop,
+        deinterlace=False,
+        color_matrix="bt2020nc",
+        color_range="tv",
+        color_transfer="smpte2084",
+        color_primaries="bt2020",
+        hdr=None,
+        gop=120,
+        fps_num=24000,
+        fps_den=1001,
+        source_width=3840,
+        source_height=2160,
+        source_codec="hevc",
+    )
+
+
+def test_parse_crop_rescale_none_settings() -> None:
+    assert parse_crop_rescale(None, EncoderFamily.AV1_NVENC, None) is None
+
+
+def test_parse_crop_rescale_no_crop_tag() -> None:
+    assert parse_crop_rescale(_NVENC_PREFIX, EncoderFamily.AV1_NVENC, None) is None
+
+
+def test_parse_crop_rescale_nvencc_on_grid_crop() -> None:
+    settings = f"{_NVENC_PREFIX} / crop=276:276:0:0 / dolby-vision=10.1"
+    assert parse_crop_rescale(settings, EncoderFamily.AV1_NVENC, None) is False
+
+
+def test_parse_crop_rescale_nvencc_off_grid_height() -> None:
+    settings = f"{_NVENC_PREFIX} / crop=276:278:0:0 / dolby-vision=10.1"
+    assert parse_crop_rescale(settings, EncoderFamily.AV1_NVENC, None) is True
+
+
+def test_parse_crop_rescale_nvencc_off_grid_width() -> None:
+    settings = f"{_NVENC_PREFIX} / crop=0:0:6:0"
+    assert parse_crop_rescale(settings, EncoderFamily.AV1_NVENC, None) is True
+
+
+def test_parse_crop_rescale_hevc_nvencc_reads_same_layout() -> None:
+    settings = "hevc_nvenc / NVEncC=7.0 / main / crop=276:278:0:0"
+    assert parse_crop_rescale(settings, EncoderFamily.HEVC_NVENC, None) is True
+
+
+def test_parse_crop_rescale_unknown_family() -> None:
+    assert parse_crop_rescale("x264 / crop=276:278:0:0", EncoderFamily.UNKNOWN, None) is None
+
+
+def test_parse_crop_rescale_passthrough_family() -> None:
+    settings = "video stream copied (passthrough) / crop=276:278:0:0"
+    assert parse_crop_rescale(settings, EncoderFamily.PASSTHROUGH, None) is None
+
+
+def test_parse_crop_rescale_malformed_crop_tag() -> None:
+    settings = f"{_NVENC_PREFIX} / crop=276:278 / dolby-vision=10.1"
+    assert parse_crop_rescale(settings, EncoderFamily.AV1_NVENC, None) is None
+
+
+def test_parse_crop_rescale_ignores_lookalike_key() -> None:
+    settings = f"{_NVENC_PREFIX} / autocrop=276:278:0:0"
+    assert parse_crop_rescale(settings, EncoderFamily.AV1_NVENC, None) is None
+
+
+def test_parse_crop_rescale_nvencc_asymmetric_but_on_grid() -> None:
+    settings = f"{_NVENC_PREFIX} / crop=2:6:0:0"
+    assert parse_crop_rescale(settings, EncoderFamily.AV1_NVENC, None) is False
+
+
+def test_parse_crop_rescale_nvencc_misreads_an_off_grid_source() -> None:
+    """Known limit: the NVEncC tag records removed pixels, not the kept size.
+
+    A 1920x804 source cropped to 1920x720 removes 42+42 and was never rescaled,
+    yet reads as a rescale. Only the version gate keeps this out of the scan.
+    """
+    settings = f"{_NVENC_PREFIX} / crop=42:42:0:0"
+    assert parse_crop_rescale(settings, EncoderFamily.AV1_NVENC, None) is True
+
+
+class TestSvtCropRescale:
+    """SVT records the rectangle it kept, so the file's own size settles it.
+
+    Every case below is a real shape measured in the library: an axis that came
+    out smaller was squashed, one that came out larger was stretched to square
+    pixels, and one that matches was never resampled.
+    """
+
+    def test_axis_shrank_was_squashed(self) -> None:
+        settings = f"{_SVT_PREFIX} / crop=720:574:0:2"
+        assert parse_crop_rescale(settings, EncoderFamily.AV1_SVT, (768, 568)) is True
+
+    def test_width_shrank_was_squashed(self) -> None:
+        settings = f"{_SVT_PREFIX} / crop=1910:800:5:140"
+        assert parse_crop_rescale(settings, EncoderFamily.AV1_SVT, (1904, 800)) is True
+
+    def test_axis_grew_is_an_anamorphic_stretch(self) -> None:
+        settings = f"{_SVT_PREFIX} / crop=718:576:2:0"
+        assert parse_crop_rescale(settings, EncoderFamily.AV1_SVT, (760, 576)) is False
+
+    def test_size_unchanged_is_clean(self) -> None:
+        settings = f"{_SVT_PREFIX} / crop=1920:800:0:140"
+        assert parse_crop_rescale(settings, EncoderFamily.AV1_SVT, (1920, 800)) is False
+
+    def test_one_axis_stretched_the_other_squashed(self) -> None:
+        settings = f"{_SVT_PREFIX} / crop=718:430:2:73"
+        assert parse_crop_rescale(settings, EncoderFamily.AV1_SVT, (1016, 424)) is True
+
+    def test_off_grid_kept_size_alone_is_not_a_rescale(self) -> None:
+        # 702 is off the grid, but the width was stretched and the height never
+        # moved -- the old mod-8 rule called 16 library files rescaled here.
+        settings = f"{_SVT_PREFIX} / crop=702:568:9:4"
+        assert parse_crop_rescale(settings, EncoderFamily.AV1_SVT, (992, 568)) is False
+
+    def test_without_the_output_size_it_cannot_tell(self) -> None:
+        settings = f"{_SVT_PREFIX} / crop=1910:798:5:141"
+        assert parse_crop_rescale(settings, EncoderFamily.AV1_SVT, None) is None
+
+
+def test_parse_crop_rescale_round_trips_the_nvencc_writer() -> None:
+    """The reader's field order has to match what the adapter actually writes."""
+    from pathlib import Path
+
+    from furnace.adapters.nvencc import NVEncCAdapter
+
+    adapter = NVEncCAdapter(Path("NVEncC64.exe"))
+    adapter._version_cached = "9.29"  # keep the version probe off the real binary
+    written = adapter._build_encoder_settings(_off_grid_uhd_vp())
+    assert "crop=274:286:0:0" in written
+    assert parse_crop_rescale(written, EncoderFamily.AV1_NVENC, None) is False
+
+
+def test_parse_crop_rescale_round_trips_the_svt_writer() -> None:
+    from pathlib import Path
+
+    from furnace.adapters.svtav1 import SvtAv1Adapter
+
+    adapter = SvtAv1Adapter(Path("ffmpeg.exe"))
+    written = adapter._build_encoder_settings(_off_grid_uhd_vp())
+    assert "crop=3840:1600:0:274" in written
+    assert parse_crop_rescale(written, EncoderFamily.AV1_SVT, (3840, 1600)) is False

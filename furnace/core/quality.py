@@ -31,15 +31,22 @@ def calculate_gop(fps_num: int, fps_den: int) -> int:
     return math.ceil(fps_num / fps_den) * 5
 
 
-def align_dimensions(w: int, h: int, x: int = 0, y: int = 0) -> CropRect:
-    trim_w = w % 8
-    trim_h = h % 8
-    return CropRect(
-        w=w - trim_w,
-        h=h - trim_h,
-        x=x + trim_w // 2,
-        y=y + trim_h // 2,
-    )
+ALIGNMENT = 8
+
+
+def align_down(value: int) -> int:
+    return value - value % ALIGNMENT
+
+
+def _aligned_edge(offset: int, trim: int) -> int:
+    # An edge sitting at 0 has no bar to stay centred against, and moving it
+    # would cost NVDEC hardware decode, so the whole trim goes to the far edge.
+    if trim == 0 or offset == 0:
+        return offset
+    # Otherwise split the trim across both edges, rounding up to an even offset:
+    # 4:2:0 chroma is half resolution and has no sample at an odd one, and
+    # rounding down would pull the edge back over a row the crop had excluded.
+    return (offset + trim // 2 + 1) & ~1
 
 
 def correct_sar(width: int, height: int, sar_num: int, sar_den: int) -> tuple[int, int]:
@@ -57,10 +64,39 @@ def force_16_9_sar(width: int, height: int) -> tuple[int, int]:
     return num // divisor, den // divisor
 
 
+def aligned_crop(vp: VideoParams) -> CropRect | None:
+    """The rectangle the encoder should cut out, mod-8 trim included.
+
+    Encoders want dimensions on an 8px grid. Taking the odd few pixels off the
+    crop costs nothing; rescaling the frame to reach the same size resamples
+    every pixel and skews the aspect, so the trim belongs here and not in a
+    resize. Returns None when nothing needs cutting.
+
+    On anamorphic sources correct_sar stretches exactly one axis to reach
+    square pixels. That axis is left alone: the resize has to land it on the
+    grid anyway, and pre-trimming only moves which multiple of 8 it lands on,
+    which the resize then bakes into the aspect -- measured at up to 2.5% of
+    the display aspect on NTSC 4:3. The other axis is not resampled at all, so
+    it gets the same treatment as a square-pixel source.
+    """
+    source = CropRect(w=vp.source_width, h=vp.source_height, x=0, y=0)
+    crop = vp.crop if vp.crop is not None else source
+    trim_w = crop.w % ALIGNMENT if vp.sar_num <= vp.sar_den else 0
+    trim_h = crop.h % ALIGNMENT if vp.sar_num >= vp.sar_den else 0
+    aligned = CropRect(
+        w=crop.w - trim_w,
+        h=crop.h - trim_h,
+        x=_aligned_edge(crop.x, trim_w),
+        y=_aligned_edge(crop.y, trim_h),
+    )
+    return None if aligned == source else aligned
+
+
 def final_output_dimensions(vp: VideoParams) -> tuple[int, int]:
-    cur_w = vp.crop.w if vp.crop is not None else vp.source_width
-    cur_h = vp.crop.h if vp.crop is not None else vp.source_height
-    if vp.sar_num != vp.sar_den:
-        cur_w, cur_h = correct_sar(cur_w, cur_h, vp.sar_num, vp.sar_den)
-    aligned = align_dimensions(cur_w, cur_h)
-    return aligned.w, aligned.h
+    crop = aligned_crop(vp)
+    cur_w = crop.w if crop is not None else vp.source_width
+    cur_h = crop.h if crop is not None else vp.source_height
+    if vp.sar_num == vp.sar_den:
+        return cur_w, cur_h
+    scaled_w, scaled_h = correct_sar(cur_w, cur_h, vp.sar_num, vp.sar_den)
+    return align_down(scaled_w), align_down(scaled_h)
