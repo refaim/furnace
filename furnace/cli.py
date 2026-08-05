@@ -542,7 +542,16 @@ def plan(
             reporter=reporter,
             max_workers=workers,
         )
-        batch = pipeline.run(scan_results, copy_video=copy_video, dry_run=dry_run)
+        grain_overrides: dict[Path, bool] | None = None
+        if not dry_run:
+            grain_overrides = {**disc_grain_overrides, **plain_grain_overrides} or None
+
+        batch = pipeline.run(
+            scan_results,
+            copy_video=copy_video,
+            dry_run=dry_run,
+            grain_overrides=grain_overrides,
+        )
         movies_with_paths = batch.movies
         precomputed_crops = batch.crops
 
@@ -577,10 +586,6 @@ def plan(
         )
         if not dry_run:
             reporter.resume()
-
-        grain_overrides: dict[Path, bool] | None = None
-        if not dry_run:
-            grain_overrides = {**disc_grain_overrides, **plain_grain_overrides} or None
 
         plan_obj = planner.create_plan(
             movies=movies_with_paths,

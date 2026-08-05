@@ -30,6 +30,8 @@ class _FakeAnalyzer:
         scan_result: ScanResult,
         *,
         on_progress: Callable[[float], None] | None = None,
+        copy_video: bool = False,  # noqa: ARG002
+        grain_override: bool | None = None,  # noqa: ARG002
     ) -> AnalysisOutcome:
         assert on_progress is not None
         on_progress(1.0)

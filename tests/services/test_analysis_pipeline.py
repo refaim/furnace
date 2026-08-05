@@ -32,14 +32,18 @@ class _CropCall:
 class _FakeAnalyzer:
     def __init__(self, outcomes: dict[Path, AnalysisOutcome]) -> None:
         self._outcomes = outcomes
+        self.calls: list[tuple[Path, bool, bool | None]] = []
 
     def analyze(
         self,
         scan_result: ScanResult,
         *,
         on_progress: Callable[[float], None] | None = None,
+        copy_video: bool = False,
+        grain_override: bool | None = None,
     ) -> AnalysisOutcome:
         assert on_progress is not None
+        self.calls.append((scan_result.main_file, copy_video, grain_override))
         on_progress(0.5)
         on_progress(1.0)
         return self._outcomes[scan_result.main_file]
@@ -165,6 +169,38 @@ def test_dry_run_skips_crop_detection(tmp_path: Path) -> None:
     assert [m.main_file for m, _ in result.movies] == [sr.main_file]
 
 
+def test_copy_video_and_grain_overrides_reach_the_analyzer(tmp_path: Path) -> None:
+    sr_a = _sr(tmp_path, "a.mkv")
+    sr_b = _sr(tmp_path, "b.mkv")
+    outcomes = {sr_a.main_file: _done(sr_a.main_file), sr_b.main_file: _done(sr_b.main_file)}
+    analyzer = _FakeAnalyzer(outcomes)
+    pipeline = _build_pipeline(analyzer, _FakeProber(), RecordingPlanReporter())
+
+    pipeline.run(
+        [sr_a, sr_b],
+        copy_video=True,
+        dry_run=False,
+        grain_overrides={sr_b.main_file: False},
+    )
+
+    assert sorted(analyzer.calls) == sorted(
+        [
+            (sr_a.main_file, True, None),
+            (sr_b.main_file, True, False),
+        ]
+    )
+
+
+def test_grain_overrides_default_to_empty(tmp_path: Path) -> None:
+    sr = _sr(tmp_path, "a.mkv")
+    analyzer = _FakeAnalyzer({sr.main_file: _done(sr.main_file)})
+    pipeline = _build_pipeline(analyzer, _FakeProber(), RecordingPlanReporter())
+
+    pipeline.run([sr], copy_video=False, dry_run=False)
+
+    assert analyzer.calls == [(sr.main_file, False, None)]
+
+
 def test_copy_video_passthrough_skips_crop(tmp_path: Path) -> None:
     sr = _sr(tmp_path, "a.mkv")
     outcomes = {sr.main_file: _done(sr.main_file)}
@@ -258,6 +294,8 @@ def test_process_applies_analyze_and_crop_weights(tmp_path: Path) -> None:
             scan_result: ScanResult,
             *,
             on_progress: Callable[[float], None] | None = None,
+            copy_video: bool = False,  # noqa: ARG002
+            grain_override: bool | None = None,  # noqa: ARG002
         ) -> AnalysisOutcome:
             assert on_progress is not None
             on_progress(0.5)
@@ -284,7 +322,14 @@ def test_process_applies_analyze_and_crop_weights(tmp_path: Path) -> None:
             return None
 
     pipeline = _build_pipeline(_CapAnalyzer(), _CapProber(), RecordingPlanReporter())
-    index, outcome, crop = pipeline._process(0, sr, file_progress, copy_video=False, dry_run=False)
+    index, outcome, crop = pipeline._process(
+        0,
+        sr,
+        file_progress,
+        copy_video=False,
+        dry_run=False,
+        grain_overrides={},
+    )
 
     assert index == 0
     assert outcome.status is AnalyzeStatus.DONE

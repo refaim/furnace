@@ -31,7 +31,7 @@ def make_prober(
     prober.run_idet.return_value = 0.0
     prober.probe_hdr_side_data.return_value = hdr_side_data or []
     prober.sample_repeat_pict.return_value = []
-    prober.sample_grain.return_value = []
+    prober.sample_grain.return_value = [0.8, 0.9, 0.7, 0.8, 0.8]
     prober.sample_field_pairing.return_value = (0, 0)
     return prober
 
@@ -1115,18 +1115,121 @@ class TestGrainPath:
             hdr_transfer=transfer,
         )
 
-    def test_probe_failure_fails_soft_to_grainy(self, tmp_path: Path) -> None:
+    def test_passthrough_skips_the_probe_entirely(self, tmp_path: Path) -> None:
+        scan_result = make_scan_result(tmp_path)
+        prober = make_prober(probe_data=_h264_probe_data())
+
+        with patch("furnace.services.analyzer.should_skip_file", return_value=(False, "")):
+            outcome = Analyzer(prober=prober).analyze(scan_result, copy_video=True)
+
+        assert outcome.status is AnalyzeStatus.DONE
+        movie = outcome.movie
+        assert movie is not None
+        assert movie.video.grainy is False
+        prober.sample_grain.assert_not_called()
+
+    @pytest.mark.parametrize("broken", [RuntimeError("ffmpeg crash"), None])
+    def test_passthrough_survives_a_broken_probe(self, tmp_path: Path, broken: Exception | None) -> None:
+        scan_result = make_scan_result(tmp_path)
+        prober = make_prober(probe_data=_h264_probe_data())
+        if broken is not None:
+            prober.sample_grain.side_effect = broken
+        else:
+            prober.sample_grain.return_value = []
+
+        with patch("furnace.services.analyzer.should_skip_file", return_value=(False, "")):
+            outcome = Analyzer(prober=prober).analyze(scan_result, copy_video=True)
+
+        assert outcome.status is AnalyzeStatus.DONE
+        assert outcome.movie is not None
+
+    def test_copy_video_on_interlaced_is_not_passthrough_so_it_still_probes(self, tmp_path: Path) -> None:
+        scan_result = make_scan_result(tmp_path)
+        prober = make_prober(probe_data=_ntsc_dvd_probe_data())
+        prober.run_idet.return_value = 0.9
+
+        with patch("furnace.services.analyzer.should_skip_file", return_value=(False, "")):
+            outcome = Analyzer(prober=prober).analyze(scan_result, copy_video=True)
+
+        assert outcome.status is AnalyzeStatus.DONE
+        movie = outcome.movie
+        assert movie is not None
+        assert movie.video.interlaced is True
+        prober.sample_grain.assert_called_once()
+
+    @pytest.mark.parametrize("override", [True, False])
+    def test_manual_override_skips_the_probe(self, tmp_path: Path, override: bool) -> None:
         scan_result = make_scan_result(tmp_path)
         prober = make_prober(probe_data=_ntsc_dvd_probe_data())
         prober.sample_grain.side_effect = RuntimeError("ffmpeg crash")
 
         with patch("furnace.services.analyzer.should_skip_file", return_value=(False, "")):
-            outcome = Analyzer(prober=prober).analyze(scan_result)
+            outcome = Analyzer(prober=prober).analyze(scan_result, grain_override=override)
 
         assert outcome.status is AnalyzeStatus.DONE
-        movie = outcome.movie
-        assert movie is not None
-        assert movie.video.grainy is True
+        assert outcome.movie is not None
+        prober.sample_grain.assert_not_called()
+
+    def test_a_skipped_probe_keeps_the_progress_shape(self, tmp_path: Path) -> None:
+        scan_result = make_scan_result(tmp_path)
+        prober = make_prober(probe_data=_ntsc_dvd_probe_data())
+        fractions: list[float] = []
+
+        with patch("furnace.services.analyzer.should_skip_file", return_value=(False, "")):
+            outcome = Analyzer(prober=prober).analyze(
+                scan_result,
+                on_progress=fractions.append,
+                grain_override=True,
+            )
+
+        assert outcome.status is AnalyzeStatus.DONE
+        assert fractions == pytest.approx([1 / 3, 2 / 3, 1.0, 1.0])
+
+    @pytest.mark.parametrize("exc", [RuntimeError("ffmpeg crash"), OSError("gone"), ValueError("junk")])
+    def test_probe_failure_fails_the_file(self, tmp_path: Path, exc: Exception) -> None:
+        scan_result = make_scan_result(tmp_path)
+        prober = make_prober(probe_data=_ntsc_dvd_probe_data())
+        prober.sample_grain.side_effect = exc
+        fractions: list[float] = []
+
+        with patch("furnace.services.analyzer.should_skip_file", return_value=(False, "")):
+            outcome = Analyzer(prober=prober).analyze(scan_result, on_progress=fractions.append)
+
+        assert outcome.status is AnalyzeStatus.FAILED
+        assert outcome.movie is None
+        assert outcome.detail == "grain probe failed"
+        assert fractions == pytest.approx([1 / 3, 2 / 3])
+
+    def test_probe_measuring_no_window_fails_the_file(self, tmp_path: Path) -> None:
+        scan_result = make_scan_result(tmp_path)
+        prober = make_prober(probe_data=_ntsc_dvd_probe_data())
+        prober.sample_grain.return_value = []
+
+        with patch("furnace.services.analyzer.should_skip_file", return_value=(False, "")):
+            outcome = Analyzer(prober=prober).analyze(scan_result)
+
+        assert outcome.status is AnalyzeStatus.FAILED
+        assert outcome.movie is None
+        assert outcome.detail == "grain probe measured nothing"
+
+    def test_a_failed_probe_stops_before_the_audio_profiling(self, tmp_path: Path) -> None:
+        scan_result = make_scan_result(tmp_path)
+        healthy = make_prober(probe_data=_h264_probe_data())
+
+        with patch("furnace.services.analyzer.should_skip_file", return_value=(False, "")):
+            good = Analyzer(prober=healthy).analyze(scan_result)
+
+        assert good.status is AnalyzeStatus.DONE
+        assert healthy.profile_audio_track.call_count == 2
+
+        broken = make_prober(probe_data=_h264_probe_data())
+        broken.sample_grain.side_effect = RuntimeError("ffmpeg crash")
+
+        with patch("furnace.services.analyzer.should_skip_file", return_value=(False, "")):
+            outcome = Analyzer(prober=broken).analyze(scan_result)
+
+        assert outcome.status is AnalyzeStatus.FAILED
+        broken.profile_audio_track.assert_not_called()
 
     def test_grain_probe_counts_as_progress_stage(self, tmp_path: Path) -> None:
         scan_result = make_scan_result(tmp_path)

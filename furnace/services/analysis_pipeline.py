@@ -54,7 +54,9 @@ class AnalysisPipeline:
         *,
         copy_video: bool,
         dry_run: bool,
+        grain_overrides: dict[Path, bool] | None = None,
     ) -> AnalysisBatchResult:
+        effective_grain_overrides = grain_overrides or {}
         n = len(scan_results)
         self._reporter.analyze_batch_start(n)
 
@@ -69,6 +71,7 @@ class AnalysisPipeline:
                     file_progress,
                     copy_video=copy_video,
                     dry_run=dry_run,
+                    grain_overrides=effective_grain_overrides,
                 ): i
                 for i, sr in enumerate(scan_results)
             }
@@ -106,6 +109,7 @@ class AnalysisPipeline:
         *,
         copy_video: bool,
         dry_run: bool,
+        grain_overrides: dict[Path, bool],
     ) -> tuple[int, AnalysisOutcome, CropRect | None]:
         def _set(frac: float) -> None:
             file_progress[index] = frac
@@ -113,6 +117,8 @@ class AnalysisPipeline:
         outcome = self._analyzer.analyze(
             scan_result,
             on_progress=lambda f: _set(f * _ANALYZE_WEIGHT),
+            copy_video=copy_video,
+            grain_override=grain_overrides.get(scan_result.main_file),
         )
         crop: CropRect | None = None
         if outcome.movie is not None and not dry_run:

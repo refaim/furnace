@@ -12,6 +12,7 @@ from furnace.core.audio_profile import LAYOUT_SENSITIVE_CHANNELS, classify_audio
 from furnace.core.detect import (
     check_unsupported_codecs,
     classify_grain,
+    classify_passthrough,
     detect_field_separated,
     detect_forced_subtitles,
     detect_hdr,
@@ -91,6 +92,8 @@ class Analyzer:
         scan_result: ScanResult,
         *,
         on_progress: Callable[[float], None] | None = None,
+        copy_video: bool = False,
+        grain_override: bool | None = None,
     ) -> AnalysisOutcome:
         main_file = scan_result.main_file
         output_path = scan_result.output_path
@@ -246,17 +249,26 @@ class Analyzer:
             stages_done += 1
             _emit()
 
-        try:
-            flicker = self._prober.sample_grain(
-                main_file,
-                video_info.duration_s,
-                hdr_transfer=hdr_tonemap_transfer(video_info.color_transfer),
-            )
+        passthrough, _passthrough_reason = classify_passthrough(video_info, copy_video=copy_video)
+        if grain_override is not None:
+            logger.info("%s: grain probe skipped, overridden by hand", name)
+        elif passthrough:
+            logger.info("%s: grain probe skipped, video is copied verbatim", name)
+        else:
+            try:
+                flicker = self._prober.sample_grain(
+                    main_file,
+                    video_info.duration_s,
+                    hdr_transfer=hdr_tonemap_transfer(video_info.color_transfer),
+                )
+            except (OSError, RuntimeError, ValueError):
+                logger.exception("Grain probe failed for %s", name)
+                return AnalysisOutcome(None, AnalyzeStatus.FAILED, "grain probe failed")
+            if not flicker:
+                logger.error("%s: grain probe measured no usable window", name)
+                return AnalysisOutcome(None, AnalyzeStatus.FAILED, "grain probe measured nothing")
             video_info.grainy = classify_grain(flicker)
-        except (OSError, RuntimeError, ValueError) as exc:
-            logger.warning("grain probe failed for %s: %s", name, exc)
-            video_info.grainy = True
-        logger.info("%s: grain verdict %s", name, "GRAINY" if video_info.grainy else "CLEAN")
+            logger.info("%s: grain verdict %s", name, "GRAINY" if video_info.grainy else "CLEAN")
         stages_done += 1
         _emit()
 
