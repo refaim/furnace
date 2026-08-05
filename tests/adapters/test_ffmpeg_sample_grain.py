@@ -4,6 +4,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import numpy as np
+import pytest
 
 from furnace.adapters.ffmpeg import FFmpegAdapter, _parse_y4m_luma
 
@@ -87,6 +88,47 @@ def test_sample_grain_never_downscales() -> None:
         cmd = call.args[0]
         assert cmd[cmd.index("-vf") + 1] == "format=gray"
         assert not any("scale" in str(arg) for arg in cmd)
+
+
+_PQ_GRAY_CHAIN = (
+    "zscale=tin=smpte2084:min=2020_ncl:pin=2020:t=linear:npl=100,"
+    "zscale=tin=linear:min=2020_ncl:pin=2020:t=bt709:m=bt709:p=bt709:r=tv,"
+    "format=gray"
+)
+_HLG_GRAY_CHAIN = (
+    "zscale=tin=arib-std-b67:min=2020_ncl:pin=2020:t=linear:npl=100,"
+    "zscale=tin=linear:min=2020_ncl:pin=2020:t=bt709:m=bt709:p=bt709:r=tv,"
+    "format=gray"
+)
+
+
+@pytest.mark.parametrize(
+    ("hdr_transfer", "expected_vf"),
+    [
+        (None, "format=gray"),
+        ("smpte2084", _PQ_GRAY_CHAIN),
+        ("arib-std-b67", _HLG_GRAY_CHAIN),
+    ],
+)
+def test_sample_grain_tonemaps_hdr_before_measuring(
+    hdr_transfer: str | None,
+    expected_vf: str,
+) -> None:
+    adapter = FFmpegAdapter(Path("ffmpeg"), Path("ffprobe"))
+
+    with patch(
+        "furnace.adapters.ffmpeg.subprocess.run",
+        return_value=_fake_result(_raw_frames(24, 2.0)),
+    ) as mock_run:
+        adapter.sample_grain(Path("v.mkv"), duration_s=1000.0, hdr_transfer=hdr_transfer)
+
+    for call in mock_run.call_args_list:
+        cmd = call.args[0]
+        vf = cmd[cmd.index("-vf") + 1]
+        assert vf == expected_vf
+        assert cmd[cmd.index("-pix_fmt") + 1] == "gray"
+        assert not [f for f in vf.split(",") if f.startswith("scale=")]
+        assert vf.split(",")[-1] == "format=gray"
 
 
 def test_sample_grain_reads_the_resolution_ffmpeg_delivers() -> None:

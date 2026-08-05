@@ -13,7 +13,7 @@ from furnace.core.detect import (
     cropdetect_limit,
     detect_forced_subtitles,
     detect_hdr,
-    hdr_transfer_for_cropdetect,
+    hdr_tonemap_transfer,
     is_dvd_resolution,
     resolve_color_metadata,
     should_skip_file,
@@ -673,12 +673,12 @@ class TestHdrTransferForCropdetect:
             (None, None),
         ],
     )
-    def test_hdr_transfer_for_cropdetect(
+    def test_hdr_tonemap_transfer(
         self,
         color_transfer: str | None,
         expected: str | None,
     ) -> None:
-        assert hdr_transfer_for_cropdetect(color_transfer) == expected
+        assert hdr_tonemap_transfer(color_transfer) == expected
 
 
 def _vi(

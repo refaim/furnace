@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from furnace.core.detect import classify_grain, is_hdr_transfer, needs_grain_probe
+from furnace.core.detect import classify_grain, hdr_tonemap_transfer, is_hdr_transfer
 from tests.conftest import make_video_info, make_video_params
 
 
@@ -18,18 +18,18 @@ class TestIsHdrTransfer:
         assert is_hdr_transfer(None) is False
 
 
-class TestNeedsGrainProbe:
-    def test_sdr_probed_regardless_of_resolution(self) -> None:
-        assert needs_grain_probe("bt709") is True
-        assert needs_grain_probe("smpte170m") is True
-        assert needs_grain_probe("bt470bg") is True
+class TestGrainProbeCoversHdr:
+    def test_sdr_probed_without_tonemap(self) -> None:
+        assert hdr_tonemap_transfer("bt709") is None
+        assert hdr_tonemap_transfer("smpte170m") is None
+        assert hdr_tonemap_transfer("bt470bg") is None
 
     def test_untagged_transfer_probed_as_sdr(self) -> None:
-        assert needs_grain_probe(None) is True
+        assert hdr_tonemap_transfer(None) is None
 
-    def test_hdr_never_probed(self) -> None:
-        assert needs_grain_probe("smpte2084") is False
-        assert needs_grain_probe("arib-std-b67") is False
+    def test_hdr_probed_through_a_tonemap(self) -> None:
+        assert hdr_tonemap_transfer("smpte2084") == "smpte2084"
+        assert hdr_tonemap_transfer("arib-std-b67") == "arib-std-b67"
 
 
 class TestClassifyGrain:

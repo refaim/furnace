@@ -636,7 +636,37 @@ async def test_file_selector_grain_defaults_prelit_and_untouched() -> None:
         await pilot.press("d")
         await pilot.pause()
     assert isinstance(app.result, FileSelection)
-    assert app.result.grain == {p1: True}
+    assert app.result.grain == {}
+
+
+async def test_file_selector_grain_toggled_off_a_prelit_default() -> None:
+    p1 = Path("/demux/sd.mkv")
+    files = [(p1, 3600.0, 1_000_000)]
+    app = _HostApp(lambda: FileSelectorScreen(files=files, grain_files={p1}, grain_defaults={p1}))
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, FileSelectorScreen)
+        await pilot.press("g")
+        assert "GRAIN" not in screen._render_line(0)
+        await pilot.press("d")
+        await pilot.pause()
+    assert isinstance(app.result, FileSelection)
+    assert app.result.grain == {p1: False}
+
+
+async def test_file_selector_grain_toggled_back_to_the_default_is_not_an_override() -> None:
+    p1 = Path("/demux/sd.mkv")
+    files = [(p1, 3600.0, 1_000_000)]
+    app = _HostApp(lambda: FileSelectorScreen(files=files, grain_files={p1}, grain_defaults={p1}))
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("g")
+        await pilot.press("g")
+        await pilot.press("d")
+        await pilot.pause()
+    assert isinstance(app.result, FileSelection)
+    assert app.result.grain == {}
 
 
 async def test_file_selector_grain_packing_only_selected_sd() -> None:
@@ -652,15 +682,17 @@ async def test_file_selector_grain_packing_only_selected_sd() -> None:
         assert "GRAIN" in screen._render_line(0)
         assert "GRAIN" in screen._render_line(1)
         assert "GRAIN" not in screen._render_line(2)
+        await pilot.press("g")
         screen.action_move_down()
         await pilot.press("space")
+        await pilot.press("g")
         screen.action_move_down()
         await pilot.press("g")
         assert "GRAIN" not in screen._render_line(2)
         await pilot.press("d")
         await pilot.pause()
     assert isinstance(app.result, FileSelection)
-    assert app.result.grain == {p1: True}
+    assert app.result.grain == {p1: False}
     assert p2 not in app.result.selected
     assert p3 in app.result.selected
 

@@ -16,8 +16,8 @@ from furnace.core.detect import (
     detect_forced_subtitles,
     detect_hdr,
     detect_soft_telecine,
+    hdr_tonemap_transfer,
     needs_field_rate_probe,
-    needs_grain_probe,
     needs_idet,
     needs_pulldown_probe,
     should_deinterlace,
@@ -176,13 +176,12 @@ class Analyzer:
             video_info.fps_den,
             video_info.height,
         )
-        grain_will_run = needs_grain_probe(video_info.color_transfer)
         n_profileable = sum(1 for t in audio_tracks if is_profileable(t.channels, t.channel_layout))
         total_stages = (
             (1 if idet_will_run else 0)
             + (1 if field_rate_will_run else 0)
             + (1 if pulldown_will_run else 0)
-            + (1 if grain_will_run else 0)
+            + 1
             + n_profileable
         )
         stages_done = 0
@@ -247,16 +246,19 @@ class Analyzer:
             stages_done += 1
             _emit()
 
-        if grain_will_run:
-            try:
-                flicker = self._prober.sample_grain(main_file, video_info.duration_s)
-                video_info.grainy = classify_grain(flicker)
-            except (OSError, RuntimeError, ValueError) as exc:
-                logger.warning("grain probe failed for %s: %s", name, exc)
-                video_info.grainy = True
-            logger.info("%s: grain verdict %s", name, "GRAINY" if video_info.grainy else "CLEAN")
-            stages_done += 1
-            _emit()
+        try:
+            flicker = self._prober.sample_grain(
+                main_file,
+                video_info.duration_s,
+                hdr_transfer=hdr_tonemap_transfer(video_info.color_transfer),
+            )
+            video_info.grainy = classify_grain(flicker)
+        except (OSError, RuntimeError, ValueError) as exc:
+            logger.warning("grain probe failed for %s: %s", name, exc)
+            video_info.grainy = True
+        logger.info("%s: grain verdict %s", name, "GRAINY" if video_info.grainy else "CLEAN")
+        stages_done += 1
+        _emit()
 
         detect_forced_subtitles(subtitle_tracks)
 

@@ -29,7 +29,7 @@ from .adapters.qaac import QaacAdapter
 from .adapters.svtav1 import SvtAv1Adapter
 from .adapters.vship_metrics import VshipMetricsAdapter
 from .config import load_config
-from .core.detect import classify_grain, needs_grain_probe
+from .core.detect import classify_grain, hdr_tonemap_transfer
 from .core.models import (
     DiscSource,
     DiscTitle,
@@ -240,16 +240,22 @@ def _probe_file_infos(demuxed_paths: list[Path], ffmpeg_adapter: FFmpegAdapter) 
 
 
 def _grain_toggle_files(file_infos: list[_FileInfo]) -> set[Path]:
-    return {p for (p, _dur, _size, height, transfer) in file_infos if height > 0 and needs_grain_probe(transfer)}
+    return {p for (p, _dur, _size, height, _transfer) in file_infos if height > 0}
 
 
 def _sar_toggle_files(file_infos: list[_FileInfo]) -> set[Path]:
     return {p for (p, _dur, _size, height, _transfer) in file_infos if 0 < height < _HD_MIN_HEIGHT}
 
 
-def _classify_one(path: Path, dur: float, ffmpeg_adapter: FFmpegAdapter) -> bool:
+def _classify_one(
+    path: Path,
+    dur: float,
+    transfer: str | None,
+    ffmpeg_adapter: FFmpegAdapter,
+) -> bool:
     try:
-        return classify_grain(ffmpeg_adapter.sample_grain(path, dur))
+        samples = ffmpeg_adapter.sample_grain(path, dur, hdr_transfer=hdr_tonemap_transfer(transfer))
+        return classify_grain(samples)
     except (OSError, RuntimeError, ValueError):
         logger.warning("grain pre-probe failed for %s, defaulting to GRAINY", path)
         return True
@@ -261,8 +267,8 @@ def _grain_pre_probe(
     ffmpeg_adapter: FFmpegAdapter,
 ) -> set[Path]:
     grain_defaults: set[Path] = set()
-    for p, dur, _size, _height, _transfer in file_infos:
-        if p in grain_files and _classify_one(p, dur, ffmpeg_adapter):
+    for p, dur, _size, _height, transfer in file_infos:
+        if p in grain_files and _classify_one(p, dur, transfer, ffmpeg_adapter):
             grain_defaults.add(p)
     return grain_defaults
 

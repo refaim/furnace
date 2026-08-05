@@ -1061,7 +1061,11 @@ class TestGrainPath:
         movie = outcome.movie
         assert movie is not None
         assert movie.video.grainy is True
-        prober.sample_grain.assert_called_once_with(scan_result.main_file, 4889.0)
+        prober.sample_grain.assert_called_once_with(
+            scan_result.main_file,
+            4889.0,
+            hdr_transfer=None,
+        )
 
     def test_clean_source_not_flagged(self, tmp_path: Path) -> None:
         scan_result = make_scan_result(tmp_path)
@@ -1090,11 +1094,13 @@ class TestGrainPath:
         assert movie.video.grainy is True
         prober.sample_grain.assert_called_once()
 
-    def test_hdr_source_never_probed(self, tmp_path: Path) -> None:
+    @pytest.mark.parametrize("transfer", ["smpte2084", "arib-std-b67"])
+    def test_hdr_source_probed_through_a_tonemap(self, tmp_path: Path, transfer: str) -> None:
         scan_result = make_scan_result(tmp_path)
         data = _h264_probe_data()
-        data["streams"][0]["color_transfer"] = "smpte2084"
+        data["streams"][0]["color_transfer"] = transfer
         prober = make_prober(probe_data=data)
+        prober.sample_grain.return_value = [0.8, 0.9, 0.7, 0.8, 0.8]
 
         with patch("furnace.services.analyzer.should_skip_file", return_value=(False, "")):
             outcome = Analyzer(prober=prober).analyze(scan_result)
@@ -1102,8 +1108,12 @@ class TestGrainPath:
         assert outcome.status is AnalyzeStatus.DONE
         movie = outcome.movie
         assert movie is not None
-        assert movie.video.grainy is False
-        prober.sample_grain.assert_not_called()
+        assert movie.video.grainy is True
+        prober.sample_grain.assert_called_once_with(
+            scan_result.main_file,
+            movie.video.duration_s,
+            hdr_transfer=transfer,
+        )
 
     def test_probe_failure_fails_soft_to_grainy(self, tmp_path: Path) -> None:
         scan_result = make_scan_result(tmp_path)

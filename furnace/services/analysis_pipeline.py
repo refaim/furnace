@@ -8,7 +8,7 @@ from pathlib import Path
 
 from furnace.core.detect import (
     classify_passthrough,
-    hdr_transfer_for_cropdetect,
+    hdr_tonemap_transfer,
     is_dvd_resolution,
 )
 from furnace.core.models import (
@@ -142,7 +142,7 @@ class AnalysisPipeline:
                 movie.video.duration_s,
                 interlaced=movie.video.interlaced,
                 is_dvd=is_dvd,
-                hdr_transfer=hdr_transfer_for_cropdetect(movie.video.color_transfer),
+                hdr_transfer=hdr_tonemap_transfer(movie.video.color_transfer),
                 on_progress=_forward,
             )
         except (OSError, RuntimeError, ValueError) as exc:

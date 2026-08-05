@@ -685,7 +685,7 @@ class FileSelectorScreen(Screen[FileSelection]):
         grain = {
             f[0]: g
             for f, sel, g in zip(self._files, self._selected, self._grain, strict=True)
-            if sel and f[0] in self._grain_files
+            if sel and f[0] in self._grain_files and g != (f[0] in self._grain_defaults)
         }
         self.dismiss(FileSelection(selected=selected, sar_override=sar_set, grain=grain))
 

@@ -202,7 +202,7 @@ def is_hdr_transfer(color_transfer: str | None) -> bool:
     return color_transfer in _HDR_TRANSFERS
 
 
-def hdr_transfer_for_cropdetect(color_transfer: str | None) -> str | None:
+def hdr_tonemap_transfer(color_transfer: str | None) -> str | None:
     return color_transfer if color_transfer in _HDR_TRANSFERS else None
 
 
@@ -334,10 +334,6 @@ def detect_soft_telecine(fps_num: int, fps_den: int, repeat_picts: Sequence[int]
 
 
 _GRAIN_FLICKER_THRESHOLD = 0.40
-
-
-def needs_grain_probe(color_transfer: str | None) -> bool:
-    return not is_hdr_transfer(color_transfer)
 
 
 def classify_grain(flicker_samples: Sequence[float]) -> bool:

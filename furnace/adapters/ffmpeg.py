@@ -121,6 +121,15 @@ def _parse_y4m_luma(buf: bytes) -> np.ndarray | None:
     return np.stack(frames).reshape(len(frames), height, width)
 
 
+def _tonemap_to_bt709(hdr_transfer: str | None) -> list[str]:
+    if hdr_transfer is None:
+        return []
+    return [
+        f"zscale=tin={hdr_transfer}:min=2020_ncl:pin=2020:t=linear:npl=100",
+        "zscale=tin=linear:min=2020_ncl:pin=2020:t=bt709:m=bt709:p=bt709:r=tv",
+    ]
+
+
 def _border_side_levels(frames: np.ndarray) -> tuple[float, float, float, float]:
     rows = frames.mean(axis=2).max(axis=0)
     cols = frames.mean(axis=1).max(axis=0)
@@ -264,13 +273,7 @@ class FFmpegAdapter:
         parts: list[str] = []
         if interlaced:
             parts.append("yadif")
-        if hdr_transfer is not None:
-            parts.append(
-                f"zscale=tin={hdr_transfer}:min=2020_ncl:pin=2020:t=linear:npl=100",
-            )
-            parts.append(
-                "zscale=tin=linear:min=2020_ncl:pin=2020:t=bt709:m=bt709:p=bt709:r=tv",
-            )
+        parts += _tonemap_to_bt709(hdr_transfer)
         parts.append("format=yuv420p")
         return parts
 
@@ -588,8 +591,15 @@ class FFmpegAdapter:
             return (0, 0)
         return (frames, packets)
 
-    def sample_grain(self, path: Path, duration_s: float) -> list[float]:
+    def sample_grain(
+        self,
+        path: Path,
+        duration_s: float,
+        *,
+        hdr_transfer: str | None = None,
+    ) -> list[float]:
         values: list[float] = []
+        vf = ",".join([*_tonemap_to_bt709(hdr_transfer), "format=gray"])
 
         for pct in _GRAIN_WINDOWS:
             seek = duration_s * pct
@@ -604,7 +614,7 @@ class FFmpegAdapter:
                 "-frames:v",
                 str(_GRAIN_FRAMES),
                 "-vf",
-                "format=gray",
+                vf,
                 "-strict",
                 "-1",
                 "-f",

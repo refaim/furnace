@@ -40,6 +40,7 @@ from furnace.core.models import (
 from furnace.core.ports import FontResolverPort, PlanReporter, Previewer
 from furnace.core.quality import calculate_gop, final_output_dimensions, force_16_9_sar, interpolate_cq
 from furnace.core.rules import get_audio_action, get_subtitle_action
+from furnace.core.target_quality import grain_uses_svt
 
 logger = logging.getLogger(__name__)
 
@@ -412,22 +413,28 @@ class PlannerService:
             sar_num = video.sar_num
             sar_den = video.sar_den
 
+        manual_grain = grain_overrides.get(source_file)
         if passthrough:
             grain = False
-        elif source_file in grain_overrides:
-            grain = grain_overrides[source_file]
+        elif manual_grain is not None:
+            grain = manual_grain
         else:
             grain = video.grainy
 
-        if grain and is_hdr_transfer(resolved.transfer):
+        if (
+            grain
+            and manual_grain is None
+            and is_hdr_transfer(resolved.transfer)
+            and not is_hdr_transfer(video.color_transfer)
+        ):
             logger.info(
-                "%s: HDR (%s) — grain path is SDR-only, encoding on the NVEnc/CVVDP path",
+                "%s: HDR without a transfer tag — the grain probe measured PQ code values "
+                "untonemapped, so its verdict is not trusted",
                 source_file.name,
-                resolved.transfer,
             )
             grain = False
 
-        return VideoParams(
+        params = VideoParams(
             cq=cq,
             crop=crop,
             deinterlace=deinterlace,
@@ -449,6 +456,17 @@ class PlannerService:
             passthrough=passthrough,
             grain=grain,
         )
+
+        if params.grain and is_hdr_transfer(resolved.transfer) and grain_uses_svt(params):
+            logger.info(
+                "%s: SD HDR (%s) — the SD grain search scores with SSIMULACRA2, which cannot "
+                "read PQ/HLG; encoding on the NVEnc/CVVDP path",
+                source_file.name,
+                resolved.transfer,
+            )
+            params.grain = False
+
+        return params
 
     def _build_audio_instruction(
         self,

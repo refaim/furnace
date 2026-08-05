@@ -56,7 +56,13 @@ class Prober(Protocol):
 
     def sample_field_pairing(self, path: Path) -> tuple[int, int]: ...
 
-    def sample_grain(self, path: Path, duration_s: float) -> list[float]: ...
+    def sample_grain(
+        self,
+        path: Path,
+        duration_s: float,
+        *,
+        hdr_transfer: str | None = None,
+    ) -> list[float]: ...
 
     def profile_audio_track(
         self,

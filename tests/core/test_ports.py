@@ -39,7 +39,13 @@ class _MinimalProber:
     def sample_repeat_pict(self, path: Path, duration_s: float) -> list[int]:  # noqa: ARG002
         return []
 
-    def sample_grain(self, path: Path, duration_s: float) -> list[float]:  # noqa: ARG002
+    def sample_grain(
+        self,
+        path: Path,  # noqa: ARG002
+        duration_s: float,  # noqa: ARG002
+        *,
+        hdr_transfer: str | None = None,  # noqa: ARG002
+    ) -> list[float]:
         return []
 
     def sample_field_pairing(self, path: Path) -> tuple[int, int]:  # noqa: ARG002
@@ -123,11 +129,14 @@ def test_prober_has_sample_grain() -> None:
 
 def test_prober_sample_grain_signature() -> None:
     sig = inspect.signature(Prober.sample_grain)
-    assert list(sig.parameters) == ["self", "path", "duration_s"]
+    assert list(sig.parameters) == ["self", "path", "duration_s", "hdr_transfer"]
+    assert sig.parameters["hdr_transfer"].kind is inspect.Parameter.KEYWORD_ONLY
+    assert sig.parameters["hdr_transfer"].default is None
 
     hints = typing.get_type_hints(Prober.sample_grain)
     assert hints["path"] is Path
     assert hints["duration_s"] is float
+    assert hints["hdr_transfer"] == (str | None)
     assert hints["return"] == list[float]
 
 
