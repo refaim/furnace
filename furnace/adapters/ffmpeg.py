@@ -1094,6 +1094,7 @@ class FFmpegAdapter:
                 corr_ls_rs=None,
                 corr_lb_ls=None,
                 corr_rb_rs=None,
+                corr_c_lr=None,
             )
 
         if channels == THREE_CHANNELS:
@@ -1157,6 +1158,7 @@ class FFmpegAdapter:
                 corr_ls_rs=_pearson(ls, rs),
                 corr_lb_ls=None,
                 corr_rb_rs=None,
+                corr_c_lr=_pearson(center, left + right),
             )
 
         left, right, center, _lfe, lb, rb, ls, rs = cols
@@ -1176,6 +1178,7 @@ class FFmpegAdapter:
             corr_ls_rs=_pearson(ls, rs),
             corr_lb_ls=_pearson(lb, ls),
             corr_rb_rs=_pearson(rb, rs),
+            corr_c_lr=_pearson(center, left + right),
         )
 
     def stereo_to_mono_wav(

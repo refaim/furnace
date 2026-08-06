@@ -65,7 +65,7 @@ class AudioMetrics:
     corr_ls_rs: float | None
     corr_lb_ls: float | None
     corr_rb_rs: float | None
-    corr_c_lr: float | None = None
+    corr_c_lr: float | None
 
 
 @dataclass(frozen=True)
@@ -198,8 +198,10 @@ def _classify_multichannel(metrics: AudioMetrics) -> AudioProfile:
         score += 1
         reasons.append(f"LFE is dead ({rms_lfe:.0f} dB in the loudest window)")
 
+    if metrics.corr_c_lr is None:
+        raise ValueError(f"{metrics.channels}-channel metrics carry no center correlation")
     corr_c_lr = metrics.corr_c_lr
-    if corr_c_lr is not None and corr_c_lr > CENTER_COPY_CORR:
+    if corr_c_lr > CENTER_COPY_CORR:
         score += 2
         reasons.append(f"center is a mix of the fronts (corr C~L+R={corr_c_lr:.2f})")
 

@@ -46,6 +46,7 @@ def _profile(verdict: Verdict) -> AudioProfile:
         corr_ls_rs=None,
         corr_lb_ls=None,
         corr_rb_rs=None,
+        corr_c_lr=None,
     )
     return AudioProfile(verdict=verdict, score=0, suggested=None, reasons=(), metrics=metrics)
 

@@ -27,6 +27,7 @@ def _fake_profile(suggested: DownmixMode | None) -> AudioProfile:
         corr_ls_rs=0.2,
         corr_lb_ls=None,
         corr_rb_rs=None,
+        corr_c_lr=0.2,
     )
     return AudioProfile(
         verdict=Verdict.FAKE,
@@ -54,6 +55,7 @@ def _suspicious_profile() -> AudioProfile:
         corr_ls_rs=0.863,
         corr_lb_ls=None,
         corr_rb_rs=None,
+        corr_c_lr=0.2,
     )
     return AudioProfile(
         verdict=Verdict.SUSPICIOUS,
@@ -81,6 +83,7 @@ def _real_profile() -> AudioProfile:
         corr_ls_rs=0.2,
         corr_lb_ls=None,
         corr_rb_rs=None,
+        corr_c_lr=0.2,
     )
     return AudioProfile(
         verdict=Verdict.REAL,
@@ -108,6 +111,7 @@ def _two_one_metrics(rms_lfe: float = -120.0) -> AudioMetrics:
         corr_ls_rs=None,
         corr_lb_ls=None,
         corr_rb_rs=None,
+        corr_c_lr=None,
     )
 
 
@@ -153,6 +157,7 @@ def _five_zero_metrics(
         corr_ls_rs=0.2,
         corr_lb_ls=None,
         corr_rb_rs=None,
+        corr_c_lr=0.2,
     )
 
 
@@ -630,6 +635,7 @@ class TestRenderDetectorPanel:
                 corr_ls_rs=None,
                 corr_lb_ls=None,
                 corr_rb_rs=None,
+                corr_c_lr=None,
             ),
         )
         panel = _render_detector_panel(track)
@@ -701,6 +707,7 @@ class TestRenderDetectorPanel:
                 corr_ls_rs=None,
                 corr_lb_ls=None,
                 corr_rb_rs=None,
+                corr_c_lr=None,
             ),
         )
         panel = _render_detector_panel(track)
@@ -736,6 +743,7 @@ class TestRenderDetectorPanel:
                 corr_ls_rs=None,
                 corr_lb_ls=None,
                 corr_rb_rs=None,
+                corr_c_lr=0.2,
             ),
         )
         panel = _render_detector_panel(track)
@@ -828,6 +836,7 @@ class TestRenderDetectorPanel:
                 corr_ls_rs=None,
                 corr_lb_ls=None,
                 corr_rb_rs=None,
+                corr_c_lr=None,
             ),
         )
         assert "real 2.1" in _render_detector_panel(track)
@@ -861,6 +870,7 @@ class TestRenderDetectorPanel:
                 corr_ls_rs=0.2,
                 corr_lb_ls=None,
                 corr_rb_rs=None,
+                corr_c_lr=0.2,
             ),
         )
         panel = _render_detector_panel(track)
@@ -895,6 +905,7 @@ class TestRenderDetectorPanel:
                 corr_ls_rs=None,
                 corr_lb_ls=None,
                 corr_rb_rs=None,
+                corr_c_lr=None,
             ),
         )
         panel = _render_detector_panel(track)
@@ -936,6 +947,7 @@ class TestRenderDetectorPanel:
                 corr_ls_rs=0.2,
                 corr_lb_ls=None,
                 corr_rb_rs=None,
+                corr_c_lr=0.2,
             ),
         )
         panel = _render_detector_panel(track)
@@ -966,6 +978,7 @@ class TestRenderDetectorPanel:
                 corr_ls_rs=0.3,
                 corr_lb_ls=0.4,
                 corr_rb_rs=0.4,
+                corr_c_lr=0.2,
             ),
         )
         panel = _render_detector_panel(track)
@@ -1000,6 +1013,7 @@ class TestRenderDetectorPanel:
                 corr_ls_rs=0.9,
                 corr_lb_ls=None,
                 corr_rb_rs=None,
+                corr_c_lr=0.2,
             ),
         )
         panel = _render_detector_panel(track)

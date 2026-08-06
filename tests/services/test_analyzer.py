@@ -1935,6 +1935,7 @@ def _real_5_1_metrics() -> AudioMetrics:
         corr_ls_rs=0.4,
         corr_lb_ls=None,
         corr_rb_rs=None,
+        corr_c_lr=0.15,
     )
 
 
@@ -1955,6 +1956,7 @@ def _dead_lfe_2_1_metrics() -> AudioMetrics:
         corr_ls_rs=None,
         corr_lb_ls=None,
         corr_rb_rs=None,
+        corr_c_lr=None,
     )
 
 
@@ -1975,6 +1977,7 @@ def _silent_surrounds_5_0_metrics() -> AudioMetrics:
         corr_ls_rs=0.2,
         corr_lb_ls=None,
         corr_rb_rs=None,
+        corr_c_lr=0.2,
     )
 
 

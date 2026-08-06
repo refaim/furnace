@@ -95,6 +95,7 @@ def _fake_stereo_profile() -> AudioProfile:
         corr_ls_rs=0.2,
         corr_lb_ls=None,
         corr_rb_rs=None,
+        corr_c_lr=0.2,
     )
     return AudioProfile(
         verdict=Verdict.FAKE,
@@ -372,6 +373,7 @@ async def test_track_selector_detector_panel_refreshes_on_highlight() -> None:
         corr_ls_rs=0.2,
         corr_lb_ls=None,
         corr_rb_rs=None,
+        corr_c_lr=0.2,
     )
     fake_metrics = AudioMetrics(
         channels=6,
@@ -389,6 +391,7 @@ async def test_track_selector_detector_panel_refreshes_on_highlight() -> None:
         corr_ls_rs=0.2,
         corr_lb_ls=None,
         corr_rb_rs=None,
+        corr_c_lr=0.2,
     )
     t0 = _audio_track(index=1)
     t0.audio_profile = AudioProfile(

@@ -13,6 +13,7 @@ from furnace.adapters.ffmpeg import (
     _pearson,
     _rms_db,
 )
+from furnace.core.audio_profile import AudioMetrics
 
 
 def _adapter() -> FFmpegAdapter:
@@ -286,6 +287,60 @@ class TestProfileAudioTrack:
         with patch("furnace.adapters.ffmpeg.subprocess.run", side_effect=fake_run):
             metrics = adapter.profile_audio_track(Path("v.mkv"), 0, 6, 60.0)
         assert metrics.rms_l == -120.0
+
+
+_DESCENDING_LEVELS = (0.50, 0.40, 0.30, 0.25, 0.20, 0.15, 0.10, 0.05)
+
+
+def _center_window(channels: int, *, derived: bool) -> np.ndarray:
+    n = 4800
+    t = np.linspace(0.0, 1.0, n, dtype=np.float32)
+    cols = [
+        level * np.sin(2 * np.pi * (i + 1) * 10 * t) for i, level in enumerate(_DESCENDING_LEVELS[:channels])
+    ]
+    if derived:
+        cols[2] = (cols[0] + cols[1]) / 2
+    return np.stack(cols, axis=1)
+
+
+def _profile_window(channels: int, *, derived: bool) -> AudioMetrics:
+    adapter = _adapter()
+    window = _center_window(channels, derived=derived)
+    with patch.object(adapter, "_decode_pcm_window", side_effect=lambda *a, **k: window):
+        return adapter.profile_audio_track(Path("v.mkv"), 1, channels, 1000.0)
+
+
+class TestCenterDerivedFromTheFronts:
+    @pytest.mark.parametrize("channels", [6, 8])
+    def test_a_center_that_is_the_front_mix_correlates_to_one(self, channels: int) -> None:
+        metrics = _profile_window(channels, derived=True)
+        assert metrics.corr_c_lr is not None
+        assert metrics.corr_c_lr > 0.999
+
+    @pytest.mark.parametrize("channels", [6, 8])
+    def test_an_independent_center_does_not_correlate_with_the_fronts(self, channels: int) -> None:
+        metrics = _profile_window(channels, derived=False)
+        assert metrics.corr_c_lr is not None
+        assert abs(metrics.corr_c_lr) < 0.01
+
+    def test_5_1_columns_map_to_the_declared_channel_order(self) -> None:
+        m = _profile_window(6, derived=False)
+        assert m.rms_c is not None
+        assert m.rms_lfe is not None
+        assert m.rms_ls is not None
+        assert m.rms_rs is not None
+        assert m.rms_l > m.rms_r > m.rms_c > m.rms_lfe > m.rms_ls > m.rms_rs
+
+    def test_7_1_columns_map_to_the_declared_channel_order(self) -> None:
+        m = _profile_window(8, derived=False)
+        assert m.rms_c is not None
+        assert m.rms_lfe is not None
+        assert m.rms_lb is not None
+        assert m.rms_rb is not None
+        assert m.rms_ls is not None
+        assert m.rms_rs is not None
+        assert m.rms_l > m.rms_r > m.rms_c > m.rms_lfe
+        assert m.rms_lfe > m.rms_lb > m.rms_rb > m.rms_ls > m.rms_rs
 
 
 def _sparse_lfe_windows(channels: int, loud_window: int) -> list[np.ndarray]:

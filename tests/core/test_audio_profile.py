@@ -32,6 +32,7 @@ def _stereo_metrics(*, corr: float = 0.5, rms_l: float = -20.0, rms_r: float = -
         corr_ls_rs=None,
         corr_lb_ls=None,
         corr_rb_rs=None,
+        corr_c_lr=None,
     )
 
 
@@ -47,6 +48,7 @@ def _five_one_metrics(
     corr_ls_l: float = 0.1,
     corr_rs_r: float = 0.1,
     corr_ls_rs: float = 0.2,
+    corr_c_lr: float | None = 0.2,
 ) -> AudioMetrics:
     return AudioMetrics(
         channels=6,
@@ -64,6 +66,7 @@ def _five_one_metrics(
         corr_ls_rs=corr_ls_rs,
         corr_lb_ls=None,
         corr_rb_rs=None,
+        corr_c_lr=corr_c_lr,
     )
 
 
@@ -123,6 +126,7 @@ def _two_one_metrics(
         corr_ls_rs=None,
         corr_lb_ls=None,
         corr_rb_rs=None,
+        corr_c_lr=None,
     )
 
 
@@ -369,10 +373,9 @@ class TestClassifyFiveZero:
         assert p.verdict == Verdict.FAKE
         assert p.score == 2
 
-    def test_a_missing_center_correlation_is_not_held_against_the_track(self) -> None:
-        p = classify_audio(dataclasses.replace(_five_zero_metrics(), corr_c_lr=None))
-        assert p.verdict == Verdict.REAL
-        assert p.reasons == ()
+    def test_a_missing_center_correlation_fails_loudly(self) -> None:
+        with pytest.raises(ValueError, match="5-channel metrics carry no center correlation"):
+            classify_audio(dataclasses.replace(_five_zero_metrics(), corr_c_lr=None))
 
     def test_the_real_dvd_case(self) -> None:
         p = classify_audio(
@@ -421,6 +424,7 @@ def test_classify_rejects_three_channels_without_lfe_or_center() -> None:
         corr_ls_rs=None,
         corr_lb_ls=None,
         corr_rb_rs=None,
+        corr_c_lr=None,
     )
     with pytest.raises(ValueError, match="three-channel metrics carry neither LFE nor center"):
         classify_audio(metrics)
@@ -456,6 +460,53 @@ def test_classify_real_5_1_returns_real() -> None:
     assert profile.score == 0
     assert profile.suggested is None
     assert profile.reasons == ()
+
+
+def test_classify_5_1_center_derived_from_the_fronts_is_fake() -> None:
+    p = classify_audio(_five_one_metrics(corr_c_lr=0.99))
+    assert p.verdict == Verdict.FAKE
+    assert p.score == 2
+    assert p.suggested == DownmixMode.STEREO
+    assert any("mix of the fronts" in r for r in p.reasons)
+
+
+def test_classify_5_1_center_correlation_exactly_at_the_threshold_is_real() -> None:
+    p = classify_audio(_five_one_metrics(corr_c_lr=0.95))
+    assert p.verdict == Verdict.REAL
+    assert p.score == 0
+
+
+def test_classify_5_1_center_correlation_just_above_the_threshold_is_fake() -> None:
+    p = classify_audio(_five_one_metrics(corr_c_lr=0.951))
+    assert p.verdict == Verdict.FAKE
+    assert p.score == 2
+
+
+def test_classify_5_1_missing_center_correlation_fails_loudly() -> None:
+    with pytest.raises(ValueError, match="6-channel metrics carry no center correlation"):
+        classify_audio(_five_one_metrics(corr_c_lr=None))
+
+
+def test_the_real_bluray_dialogue_forward_case_stays_suspicious() -> None:
+    p = classify_audio(
+        _five_one_metrics(
+            rms_l=-33.9,
+            rms_r=-35.2,
+            rms_c=-23.1,
+            rms_lfe=-33.8,
+            rms_ls=-38.7,
+            rms_rs=-40.0,
+            corr_lr=0.466,
+            corr_ls_l=0.560,
+            corr_rs_r=0.649,
+            corr_ls_rs=0.666,
+            corr_c_lr=0.912,
+        ),
+    )
+    assert p.verdict == Verdict.SUSPICIOUS
+    assert p.score == 1
+    assert any("way louder" in r for r in p.reasons)
+    assert not any("mix of the fronts" in r for r in p.reasons)
 
 
 def test_classify_stereo_mono_is_fake() -> None:
@@ -523,6 +574,7 @@ def test_classify_unsupported_channels_raises() -> None:
         corr_ls_rs=None,
         corr_lb_ls=None,
         corr_rb_rs=None,
+        corr_c_lr=None,
     )
     with pytest.raises(ValueError, match="unsupported channels: 4"):
         classify_audio(m)
@@ -560,6 +612,7 @@ def _seven_one_metrics(
     corr_ls_rs: float = 0.2,
     corr_lb_ls: float = 0.2,
     corr_rb_rs: float = 0.2,
+    corr_c_lr: float | None = 0.2,
 ) -> AudioMetrics:
     return AudioMetrics(
         channels=8,
@@ -577,6 +630,7 @@ def _seven_one_metrics(
         corr_ls_rs=corr_ls_rs,
         corr_lb_ls=corr_lb_ls,
         corr_rb_rs=corr_rb_rs,
+        corr_c_lr=corr_c_lr,
     )
 
 
@@ -707,6 +761,31 @@ def test_seven_one_healthy_back_surrounds_add_no_hint() -> None:
     assert not any("7.1 back surrounds" in r for r in p.reasons)
 
 
+def test_classify_7_1_center_derived_from_the_fronts_is_fake() -> None:
+    p = classify_audio(_seven_one_metrics(corr_c_lr=0.99))
+    assert p.verdict == Verdict.FAKE
+    assert p.score == 2
+    assert p.suggested == DownmixMode.STEREO
+    assert any("mix of the fronts" in r for r in p.reasons)
+
+
+def test_classify_7_1_missing_center_correlation_fails_loudly() -> None:
+    with pytest.raises(ValueError, match="8-channel metrics carry no center correlation"):
+        classify_audio(_seven_one_metrics(corr_c_lr=None))
+
+
+def test_classify_7_1_center_correlation_exactly_at_the_threshold_is_real() -> None:
+    p = classify_audio(_seven_one_metrics(corr_c_lr=0.95))
+    assert p.verdict == Verdict.REAL
+    assert p.score == 0
+
+
+def test_classify_7_1_center_correlation_just_above_the_threshold_is_fake() -> None:
+    p = classify_audio(_seven_one_metrics(corr_c_lr=0.951))
+    assert p.verdict == Verdict.FAKE
+    assert p.score == 2
+
+
 _SIGNAL_NAMES = (
     "silent_surrounds",
     "lfe_dead",
@@ -714,6 +793,7 @@ _SIGNAL_NAMES = (
     "fronts_mono",
     "surrounds_copy",
     "ls_rs_ident",
+    "center_derived",
 )
 _SIGNAL_POINTS = {
     "silent_surrounds": 1,
@@ -729,8 +809,6 @@ _SIGNAL_POINTS = {
 def _build_metrics_from_signals(active: frozenset[str], channels: int = 6) -> AudioMetrics:
     if channels == 5 and "lfe_dead" in active:
         raise ValueError("a 5.0 track has no LFE to kill")
-    if channels != 5 and "center_derived" in active:
-        raise ValueError("only 5.0 metrics carry a center correlation")
     rms_l = -25.0
     rms_r = -26.0
     rms_c = -23.0
@@ -775,7 +853,7 @@ def _build_metrics_from_signals(active: frozenset[str], channels: int = 6) -> Au
         corr_ls_rs=corr_ls_rs,
         corr_lb_ls=None,
         corr_rb_rs=None,
-        corr_c_lr=0.99 if "center_derived" in active else None,
+        corr_c_lr=0.99 if "center_derived" in active else 0.2,
     )
 
 
@@ -823,7 +901,7 @@ def test_classify_audio_combinatorial(active: frozenset[str]) -> None:
         )
 
 
-_FIVE_ZERO_SIGNAL_NAMES = (*(s for s in _SIGNAL_NAMES if s != "lfe_dead"), "center_derived")
+_FIVE_ZERO_SIGNAL_NAMES = tuple(s for s in _SIGNAL_NAMES if s != "lfe_dead")
 _FIVE_ZERO_COMBINATIONS = [
     frozenset(combo)
     for n in range(len(_FIVE_ZERO_SIGNAL_NAMES) + 1)
@@ -855,11 +933,6 @@ def test_classify_five_zero_combinatorial(active: frozenset[str]) -> None:
 def test_the_five_zero_signal_builder_rejects_a_dead_lfe() -> None:
     with pytest.raises(ValueError, match="no LFE to kill"):
         _build_metrics_from_signals(frozenset({"lfe_dead"}), channels=5)
-
-
-def test_the_surround_signal_builder_rejects_a_center_correlation() -> None:
-    with pytest.raises(ValueError, match=r"only 5\.0 metrics carry a center correlation"):
-        _build_metrics_from_signals(frozenset({"center_derived"}))
 
 
 _STEREO_GRID = [

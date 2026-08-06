@@ -74,6 +74,7 @@ class _MinimalProber:
             corr_ls_rs=None,
             corr_lb_ls=None,
             corr_rb_rs=None,
+            corr_c_lr=None,
         )
 
 

@@ -89,6 +89,74 @@ def _write_synthetic_5_1_wav(path: Path, seconds: float = 2.0, sample_rate: int 
         w.writeframes(bytes(frames))
 
 
+def _write_derived_center_wav(
+    path: Path,
+    channels: int,
+    *,
+    derived: bool = True,
+    seconds: float = 2.0,
+    sample_rate: int = 48000,
+) -> None:
+    n = int(seconds * sample_rate)
+    freqs = [1000, 300, 700, 90, 1700, 2300, 3100, 3700][:channels]
+    with wave.open(str(path), "wb") as w:
+        w.setnchannels(channels)
+        w.setsampwidth(2)
+        w.setframerate(sample_rate)
+        frames = bytearray()
+        for i in range(n):
+            tones = [0.25 * math.sin(2 * math.pi * f * i / sample_rate) for f in freqs]
+            if derived:
+                tones[2] = (tones[0] + tones[1]) / 2
+            for value in tones:
+                frames += struct.pack("<h", int(value * 32767))
+        w.writeframes(bytes(frames))
+
+
+@pytest.mark.parametrize("channels", [6, 8])
+def test_a_center_derived_from_the_fronts_profiles_as_fake(
+    tmp_path: Path,
+    adapter: FFmpegAdapter,
+    channels: int,
+) -> None:
+    wav_path = tmp_path / f"derived_center_{channels}.wav"
+    _write_derived_center_wav(wav_path, channels)
+
+    metrics = adapter.profile_audio_track(
+        path=wav_path,
+        stream_index=0,
+        channels=channels,
+        duration_s=2.0,
+    )
+
+    assert metrics.corr_c_lr is not None
+    assert metrics.corr_c_lr > 0.95, f"expected a derived center, got corr={metrics.corr_c_lr}"
+    profile = classify_audio(metrics)
+    assert profile.verdict is Verdict.FAKE
+    assert any("mix of the fronts" in r for r in profile.reasons)
+
+
+@pytest.mark.parametrize("channels", [6, 8])
+def test_an_independent_center_profiles_as_real(
+    tmp_path: Path,
+    adapter: FFmpegAdapter,
+    channels: int,
+) -> None:
+    wav_path = tmp_path / f"real_center_{channels}.wav"
+    _write_derived_center_wav(wav_path, channels, derived=False)
+
+    metrics = adapter.profile_audio_track(
+        path=wav_path,
+        stream_index=0,
+        channels=channels,
+        duration_s=2.0,
+    )
+
+    assert metrics.corr_c_lr is not None
+    assert abs(metrics.corr_c_lr) < 0.05
+    assert classify_audio(metrics).verdict is Verdict.REAL
+
+
 def _write_synthetic_three_channel_wav(
     path: Path,
     ffmpeg: Path,
