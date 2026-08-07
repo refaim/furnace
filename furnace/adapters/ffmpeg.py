@@ -487,7 +487,7 @@ class FFmpegAdapter:
 
         return total_interlaced / total
 
-    def probe_hdr_side_data(self, path: Path) -> list[dict[str, Any]]:
+    def _run_hdr_side_data_probe(self, path: Path) -> subprocess.CompletedProcess[str]:
         cmd = [
             str(self._ffprobe),
             "-v",
@@ -502,16 +502,29 @@ class FFmpegAdapter:
             str(path),
         ]
         logger.debug("probe_hdr_side_data cmd: %s", cmd)
-        result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", check=False)
-        if result.returncode != 0:
-            logger.warning("probe_hdr_side_data failed (rc=%d), returning []", result.returncode)
-            return []
-        data: dict[str, Any] = json.loads(result.stdout)
+        return subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", check=False)
+
+    @staticmethod
+    def _first_frame_side_data(stdout: str) -> list[dict[str, Any]]:
+        data: dict[str, Any] = json.loads(stdout)
         frames = data.get("frames", [])
         if not frames:
             return []
         side_data: list[dict[str, Any]] = frames[0].get("side_data_list", [])
         return side_data
+
+    def probe_hdr_side_data(self, path: Path) -> list[dict[str, Any]]:
+        result = self._run_hdr_side_data_probe(path)
+        if result.returncode != 0:
+            logger.warning("probe_hdr_side_data failed (rc=%d), returning []", result.returncode)
+            return []
+        return self._first_frame_side_data(result.stdout)
+
+    def probe_hdr_side_data_strict(self, path: Path) -> list[dict[str, Any]]:
+        result = self._run_hdr_side_data_probe(path)
+        if result.returncode != 0:
+            raise RuntimeError(f"HDR side-data probe failed (rc={result.returncode}) for {path}")
+        return self._first_frame_side_data(result.stdout)
 
     def sample_repeat_pict(self, path: Path, duration_s: float) -> list[int]:
         points = (0.10, 0.30, 0.50, 0.70, 0.90)

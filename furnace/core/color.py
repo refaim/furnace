@@ -34,6 +34,16 @@ CICP_MATRIX: dict[str, int] = {
     "bt2020c": 10,
 }
 
+_CONTENT_LIGHT_RE = re.compile(r"MaxCLL=(\d+)\s*,\s*MaxFALL=(\d+)")
+
+
+def parse_content_light(value: str) -> tuple[str, str] | None:
+    match = _CONTENT_LIGHT_RE.match(value)
+    if match is None:
+        return None
+    return match.group(1), match.group(2)
+
+
 _CHROMATICITY_UNITS = 50000
 _LUMINANCE_UNITS = 10000
 

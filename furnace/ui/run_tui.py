@@ -108,6 +108,8 @@ def _build_steps(job: Job) -> list[str]:
     if not vp.passthrough:
         if vp.dv_mode is not None:
             steps.append("Extract DV RPU")
+        if vp.hdr is not None and vp.hdr.is_hdr10_plus:
+            steps.append("Extract HDR10+ metadata")
         steps.append("Search quality")
     steps.extend(["Encode video", "Assemble MKV", "Set metadata", "Optimize index"])
     return steps

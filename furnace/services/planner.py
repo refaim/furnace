@@ -387,7 +387,7 @@ class PlannerService:
         gop = calculate_gop(video.fps_num, video.fps_den)
 
         system = detect_video_system(video.height, video.fps_num, video.fps_den)
-        has_hdr = bool(video.hdr.mastering_display or video.hdr.content_light)
+        has_hdr = bool(video.hdr.mastering_display or video.hdr.content_light or video.hdr.is_hdr10_plus)
         resolved = resolve_color_metadata(
             matrix_raw=video.color_matrix_raw,
             transfer_raw=video.color_transfer,
@@ -397,9 +397,6 @@ class PlannerService:
         )
 
         deinterlace = video.interlaced and not passthrough
-
-        if video.hdr.is_hdr10_plus:
-            raise ValueError(f"HDR10+ not supported: {video.source_file.name}")
 
         dv_mode: DvMode | None = None
         if video.hdr.is_dolby_vision:
@@ -465,6 +462,12 @@ class PlannerService:
                 resolved.transfer,
             )
             params.grain = False
+
+        if video.hdr.is_hdr10_plus and grain_uses_svt(params):
+            raise ValueError(
+                f"HDR10+ cannot be encoded on the SVT-AV1 grain path, which carries no dynamic "
+                f"metadata: {source_file.name}"
+            )
 
         return params
 

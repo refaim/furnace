@@ -20,6 +20,7 @@ class ToolPaths:
     makemkvcon: Path
     nvencc: Path
     dovi_tool: Path | None
+    hdr10plus_tool: Path | None = None
     bestsource: Path | None = None
     vship: Path | None = None
 
@@ -100,6 +101,7 @@ def load_config(config_path: Path | None = None) -> ToolPaths:
         makemkvcon=resolved["makemkvcon"],
         nvencc=resolved["nvencc"],
         dovi_tool=optional_tool("dovi_tool"),
+        hdr10plus_tool=optional_tool("hdr10plus_tool"),
         bestsource=optional_tool("bestsource"),
         vship=optional_tool("vship"),
     )

@@ -117,6 +117,7 @@ def _make_tool_paths(tmp_path: Path) -> MagicMock:
     cfg.makemkvcon = tmp_path / "makemkvcon"
     cfg.nvencc = tmp_path / "nvencc"
     cfg.dovi_tool = None
+    cfg.hdr10plus_tool = None
     cfg.bestsource = None
     cfg.vship = None
     return cfg
@@ -1158,6 +1159,101 @@ class TestRunExecutorClosure:
         assert dovi_args[0] == cfg.dovi_tool
         assert dovi_args[1] == cfg.ffmpeg
         mock_executor_cls.return_value.run.assert_called_once()
+
+    def test_executor_fn_with_hdr10plus_tool(self, tmp_path: Path) -> None:
+        plan_file = tmp_path / "plan.json"
+        plan_obj = make_plan(
+            jobs=[make_job(job_id="j1", status=JobStatus.PENDING)],
+            destination=str(tmp_path / "out"),
+        )
+
+        cfg = _make_tool_paths(tmp_path)
+        cfg.hdr10plus_tool = tmp_path / "hdr10plus_tool"
+
+        captured_executor_fn: list[Any] = []
+
+        with (
+            patch("furnace.cli.load_config", return_value=cfg),
+            patch("furnace.cli.load_plan", return_value=plan_obj),
+            patch("furnace.cli._setup_logging"),
+            patch("furnace.cli.RunApp") as mock_run_app_cls,
+            patch("furnace.cli.ReportPrinter"),
+        ):
+
+            def _capture() -> None:
+                captured_executor_fn.append(mock_run_app_cls.call_args.kwargs["executor_fn"])
+
+            mock_run_app_cls.return_value.run.side_effect = _capture
+
+            result = runner.invoke(app, ["run", str(plan_file)])
+
+        assert result.exit_code == 0, result.output
+        executor_fn = captured_executor_fn[0]
+        mock_progress = MagicMock()
+
+        with (
+            patch("furnace.cli.FFmpegAdapter"),
+            patch("furnace.cli.Eac3toAdapter"),
+            patch("furnace.cli.QaacAdapter"),
+            patch("furnace.cli.MkvmergeAdapter"),
+            patch("furnace.cli.MkvpropeditAdapter"),
+            patch("furnace.cli.MkcleanAdapter"),
+            patch("furnace.cli.NVEncCAdapter"),
+            patch("furnace.cli.Hdr10PlusToolAdapter") as mock_hdr10plus,
+            patch("furnace.cli.Executor") as mock_executor_cls,
+        ):
+            executor_fn(mock_progress)
+
+        mock_hdr10plus.assert_called_once()
+        assert mock_hdr10plus.call_args.args[0] == cfg.hdr10plus_tool
+        assert mock_hdr10plus.call_args.args[1] == cfg.ffmpeg
+        executor_kwargs = mock_executor_cls.call_args.kwargs
+        assert executor_kwargs["hdr10plus_processor"] is mock_hdr10plus.return_value
+
+    def test_executor_fn_without_hdr10plus_tool(self, tmp_path: Path) -> None:
+        plan_file = tmp_path / "plan.json"
+        plan_obj = make_plan(
+            jobs=[make_job(job_id="j1", status=JobStatus.PENDING)],
+            destination=str(tmp_path / "out"),
+        )
+
+        cfg = _make_tool_paths(tmp_path)
+
+        captured_executor_fn: list[Any] = []
+
+        with (
+            patch("furnace.cli.load_config", return_value=cfg),
+            patch("furnace.cli.load_plan", return_value=plan_obj),
+            patch("furnace.cli._setup_logging"),
+            patch("furnace.cli.RunApp") as mock_run_app_cls,
+            patch("furnace.cli.ReportPrinter"),
+        ):
+
+            def _capture() -> None:
+                captured_executor_fn.append(mock_run_app_cls.call_args.kwargs["executor_fn"])
+
+            mock_run_app_cls.return_value.run.side_effect = _capture
+
+            result = runner.invoke(app, ["run", str(plan_file)])
+
+        assert result.exit_code == 0, result.output
+        executor_fn = captured_executor_fn[0]
+
+        with (
+            patch("furnace.cli.FFmpegAdapter"),
+            patch("furnace.cli.Eac3toAdapter"),
+            patch("furnace.cli.QaacAdapter"),
+            patch("furnace.cli.MkvmergeAdapter"),
+            patch("furnace.cli.MkvpropeditAdapter"),
+            patch("furnace.cli.MkcleanAdapter"),
+            patch("furnace.cli.NVEncCAdapter"),
+            patch("furnace.cli.Hdr10PlusToolAdapter") as mock_hdr10plus,
+            patch("furnace.cli.Executor") as mock_executor_cls,
+        ):
+            executor_fn(MagicMock())
+
+        mock_hdr10plus.assert_not_called()
+        assert mock_executor_cls.call_args.kwargs["hdr10plus_processor"] is None
 
     def test_executor_fn_stops_progress_on_error(self, tmp_path: Path) -> None:
         plan_file = tmp_path / "plan.json"
@@ -2267,8 +2363,8 @@ class TestPlanDetectRelPathFallback:
         reporter_inst.detect_disc_titles_done.assert_called_once_with(0)
 
 
-class TestPlanHdr10Plus:
-    def test_hdr10_plus_surfaces_failed_line_and_no_job(self, tmp_path: Path) -> None:
+class TestPlanAnalyzeFailure:
+    def test_failed_analysis_surfaces_a_line_and_no_job(self, tmp_path: Path) -> None:
         from furnace.core.models import ScanResult
 
         source = tmp_path / "src"
@@ -2300,7 +2396,7 @@ class TestPlanHdr10Plus:
             mock_demuxer_cls.return_value.detect.return_value = []
             mock_scanner_cls.return_value.scan.return_value = [scan_result]
             mock_analyzer_cls.return_value.analyze.return_value = AnalysisOutcome(
-                None, AnalyzeStatus.FAILED, "HDR10+ not supported"
+                None, AnalyzeStatus.FAILED, "probe failed: fixture detail"
             )
             mock_planner_cls.return_value.create_plan.return_value = plan_obj
 
@@ -2311,7 +2407,7 @@ class TestPlanHdr10Plus:
 
         assert result.exit_code == 0, result.output
         reporter_inst.analyze_batch_item.assert_called_once_with(
-            "movie.mkv", "HDR10+ not supported", status=AnalyzeStatus.FAILED
+            "movie.mkv", "probe failed: fixture detail", status=AnalyzeStatus.FAILED
         )
         call_kwargs = mock_planner_cls.return_value.create_plan.call_args.kwargs
         assert call_kwargs["movies"] == []

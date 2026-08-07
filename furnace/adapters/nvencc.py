@@ -7,6 +7,7 @@ import subprocess
 from collections.abc import Callable
 from pathlib import Path
 
+from furnace.core.color import parse_content_light
 from furnace.core.models import CropRect, EncodeResult, VideoParams
 from furnace.core.progress import ProgressSample
 from furnace.core.quality import aligned_crop, final_output_dimensions
@@ -47,13 +48,6 @@ _COLOR_RANGE_MAP: dict[str, str] = {
     "tv": "limited",
     "pc": "full",
 }
-
-
-def _parse_content_light(content_light: str) -> tuple[str, str] | None:
-    m = re.match(r"MaxCLL=(\d+)\s*,\s*MaxFALL=(\d+)", content_light)
-    if m:
-        return m.group(1), m.group(2)
-    return None
 
 
 def _convert_crop(crop: CropRect, source_width: int, source_height: int) -> tuple[int, int, int, int]:
@@ -144,6 +138,9 @@ class NVEncCAdapter:
         if vp.dv_mode is not None:
             parts.append("dolby-vision=10.1")
 
+        if vp.hdr is not None and vp.hdr.is_hdr10_plus:
+            parts.append("dhdr10=json")
+
         return " / ".join(parts)
 
     def _probe_metric_flags(self, metric: str, vp: VideoParams) -> list[str]:
@@ -165,6 +162,7 @@ class NVEncCAdapter:
         vp: VideoParams,
         *,
         rpu_path: Path | None = None,
+        dhdr10_json: Path | None = None,
         cq_override: int | None = None,
         probe_metric: str | None = None,
     ) -> list[str | Path]:
@@ -226,7 +224,7 @@ class NVEncCAdapter:
 
         if vp.hdr is not None:
             if vp.hdr.content_light:
-                parsed = _parse_content_light(vp.hdr.content_light)
+                parsed = parse_content_light(vp.hdr.content_light)
                 if parsed:
                     cll, fall = parsed
                     cmd += ["--max-cll", f"{cll},{fall}"]
@@ -239,6 +237,9 @@ class NVEncCAdapter:
             cmd += ["--dolby-vision-profile", "10.1"]
             if crop is not None:
                 cmd += ["--dolby-vision-rpu-prm", "crop=true"]
+
+        if dhdr10_json is not None:
+            cmd += ["--dhdr10-info", str(dhdr10_json)]
 
         if probe_metric is not None:
             cmd += self._probe_metric_flags(probe_metric, vp)
@@ -256,6 +257,7 @@ class NVEncCAdapter:
         *,
         on_progress: Callable[[ProgressSample], None] | None = None,
         rpu_path: Path | None = None,
+        dhdr10_json: Path | None = None,
         cq_override: int | None = None,
     ) -> EncodeResult:
         if rpu_path is not None:
@@ -264,11 +266,15 @@ class NVEncCAdapter:
             if parsed is not None and parsed < _MIN_DV_VERSION:
                 raise RuntimeError(f"AV1 Dolby Vision requires NVEncC >= 8.00 (detected {version}).")
 
+        if video_params.hdr is not None and video_params.hdr.is_hdr10_plus and dhdr10_json is None:
+            raise RuntimeError("HDR10+ content requires an extracted metadata JSON, but none was given.")
+
         cmd = self._build_encode_cmd(
             input_path,
             output_path,
             video_params,
             rpu_path=rpu_path,
+            dhdr10_json=dhdr10_json,
             cq_override=cq_override,
         )
         str_cmd = [str(c) for c in cmd]

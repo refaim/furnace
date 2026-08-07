@@ -44,6 +44,10 @@ logger = logging.getLogger(__name__)
 
 _TEXT_SUBTITLE_CODECS: set[SubtitleCodecId] = {SubtitleCodecId.SRT, SubtitleCodecId.ASS}
 
+_FRAME_PROBE_TRANSFERS: frozenset[str | None] = frozenset({"smpte2084", "arib-std-b67", "unknown", None})
+
+_HDR10PLUS_SOURCE_CODECS: frozenset[str] = frozenset({"hevc", "dvhe", "dvh1"})
+
 
 def _hdr_class(video: VideoInfo) -> str:
     if video.hdr.is_dolby_vision:
@@ -52,6 +56,8 @@ def _hdr_class(video: VideoInfo) -> str:
         bl = bl_map.get(compat, "none")
         prof = video.hdr.dv_profile if video.hdr.dv_profile is not None else "?"
         return f"DV P{prof} (BL={bl})"
+    if video.hdr.is_hdr10_plus:
+        return "HDR10+"
     if video.color_transfer == "smpte2084":
         return "HDR10"
     if video.color_transfer == "arib-std-b67":
@@ -127,8 +133,18 @@ class Analyzer:
             logger.exception("Failed to parse video info for %s", main_file)
             return AnalysisOutcome(None, AnalyzeStatus.FAILED, "parse failed")
 
-        if video_info.hdr.is_hdr10_plus:
-            return AnalysisOutcome(None, AnalyzeStatus.FAILED, "HDR10+ not supported")
+        copies_video, _copy_reason = classify_passthrough(video_info, copy_video=copy_video)
+        if (
+            video_info.hdr.is_hdr10_plus
+            and not copies_video
+            and video_info.codec_name not in _HDR10PLUS_SOURCE_CODECS
+        ):
+            return AnalysisOutcome(
+                None,
+                AnalyzeStatus.FAILED,
+                "re-encoding HDR10+ requires an HEVC source; use --copy-video to remux instead "
+                f"(codec: {video_info.codec_name})",
+            )
 
         audio_streams = [s for s in streams if s.get("codec_type") == "audio"]
         subtitle_streams = [s for s in streams if s.get("codec_type") == "subtitle"]
@@ -380,7 +396,7 @@ class Analyzer:
 
         stream_side_data: list[dict[str, Any]] = stream.get("side_data_list") or []
         frame_side_data: list[dict[str, Any]] = []
-        if color_transfer_raw in ("smpte2084", "arib-std-b67"):
+        if color_transfer_raw in _FRAME_PROBE_TRANSFERS:
             frame_side_data = self._prober.probe_hdr_side_data(path)
         side_data = [*stream_side_data, *frame_side_data]
         hdr = detect_hdr(stream, side_data)

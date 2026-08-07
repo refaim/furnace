@@ -125,9 +125,11 @@ class SvtAv1Adapter:
         *,
         on_progress: Callable[[ProgressSample], None] | None = None,
         rpu_path: Path | None = None,
+        dhdr10_json: Path | None = None,
         cq_override: int | None = None,
     ) -> EncodeResult:
         _ = rpu_path
+        _ = dhdr10_json
         cmd = self._build_encode_cmd(input_path, output_path, video_params, cq_override=cq_override)
         str_cmd = [str(c) for c in cmd]
         logger.debug("svtav1 cmd: %s", " ".join(str_cmd))

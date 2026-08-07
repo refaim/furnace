@@ -244,7 +244,7 @@ def test_analyze_batch_tty_streams_lines_and_counts() -> None:
     )
     reporter.analyze_batch_item(
         "b.mkv",
-        "HDR10+ not supported",
+        "probe failed: fixture detail",
         status=AnalyzeStatus.FAILED,
     )
     reporter.analyze_batch_finish()
@@ -252,7 +252,7 @@ def test_analyze_batch_tty_streams_lines_and_counts() -> None:
     text = buf.getvalue()
     assert "Analyze" in text
     assert "a.mkv -> h264" in text
-    assert "b.mkv -> FAILED — HDR10+ not supported" in text
+    assert "b.mkv -> FAILED — probe failed: fixture detail" in text
     assert "1.5/2" in text
 
 

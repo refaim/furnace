@@ -7,6 +7,7 @@ from furnace.core.color import (
     CICP_PRIMARIES,
     CICP_TRANSFER,
     MasteringDisplay,
+    parse_content_light,
     parse_mastering_display,
 )
 
@@ -108,6 +109,23 @@ class TestParseMasteringDisplay:
     def test_malformed_raises(self, value: str) -> None:
         with pytest.raises(ValueError, match="mastering display"):
             parse_mastering_display(value)
+
+
+class TestParseContentLight:
+    def test_valid_input(self) -> None:
+        assert parse_content_light("MaxCLL=1000,MaxFALL=400") == ("1000", "400")
+
+    def test_valid_with_spaces(self) -> None:
+        assert parse_content_light("MaxCLL=1000, MaxFALL=400") == ("1000", "400")
+
+    def test_zero_levels_parse(self) -> None:
+        assert parse_content_light("MaxCLL=0,MaxFALL=0") == ("0", "0")
+
+    def test_invalid_input(self) -> None:
+        assert parse_content_light("not valid") is None
+
+    def test_empty_levels_do_not_parse(self) -> None:
+        assert parse_content_light("MaxCLL=,MaxFALL=147") is None
 
 
 class TestConsistency:

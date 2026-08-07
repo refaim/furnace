@@ -19,6 +19,7 @@ from .adapters.dovi_tool import DoviToolAdapter
 from .adapters.eac3to import Eac3toAdapter
 from .adapters.ffmpeg import FFmpegAdapter
 from .adapters.fonts import FontToolsAdapter
+from .adapters.hdr10plus_tool import Hdr10PlusToolAdapter
 from .adapters.makemkv import MakemkvAdapter
 from .adapters.mkclean import MkcleanAdapter
 from .adapters.mkvmerge import MkvmergeAdapter
@@ -658,6 +659,14 @@ def run(
                 on_output=tool_output,
             )
 
+        hdr10plus_adapter: Hdr10PlusToolAdapter | None = None
+        if cfg.hdr10plus_tool is not None:
+            hdr10plus_adapter = Hdr10PlusToolAdapter(
+                cfg.hdr10plus_tool,
+                cfg.ffmpeg,
+                on_output=tool_output,
+            )
+
         target_quality = TargetQualityService(
             ffmpeg_adapter,
             nvencc_adapter,
@@ -676,6 +685,7 @@ def run(
             cleaner=mkclean_adapter,
             prober=ffmpeg_adapter,
             dovi_processor=dovi_adapter,
+            hdr10plus_processor=hdr10plus_adapter,
             video_copier=ffmpeg_adapter,
             target_quality=target_quality,
             progress=progress,

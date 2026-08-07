@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import pytest
-
 from furnace.core.models import (
     DvBlCompatibility,
     DvMode,
@@ -97,15 +95,15 @@ class TestPlannerDvMode:
         )
         assert vp.dv_mode == DvMode.COPY
 
-    def test_hdr10_plus_raises(self) -> None:
+    def test_hdr10_plus_without_dv_has_no_dv_mode(self) -> None:
         hdr = HdrMetadata(is_hdr10_plus=True)
         video = _make_video(hdr=hdr)
         planner = PlannerService(previewer=None)
-        with pytest.raises(ValueError, match="HDR10\\+"):
-            planner._build_video_params(
-                video,
-                crop=None,
-                source_file=video.source_file,
-                sar_overrides=set(),
-                grain_overrides={},
-            )
+        vp = planner._build_video_params(
+            video,
+            crop=None,
+            source_file=video.source_file,
+            sar_overrides=set(),
+            grain_overrides={},
+        )
+        assert vp.dv_mode is None

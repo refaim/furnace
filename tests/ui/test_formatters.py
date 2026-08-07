@@ -5,6 +5,7 @@ from furnace.core.models import (
     CropRect,
     DownmixMode,
     DvMode,
+    HdrMetadata,
     SubtitleAction,
     TrackType,
 )
@@ -322,6 +323,33 @@ class TestBuildSteps:
         steps = _build_steps(make_job(video_params=vp, audio=[], subtitles=[]))
         assert "Extract DV RPU" not in steps
         assert "Search quality" not in steps
+
+    def test_hdr10_plus_reencode_extracts_metadata_step(self) -> None:
+        vp = make_video_params(hdr=HdrMetadata(is_hdr10_plus=True))
+        steps = _build_steps(make_job(video_params=vp, audio=[], subtitles=[]))
+        assert steps == [
+            "Extract HDR10+ metadata",
+            "Search quality",
+            "Encode video",
+            "Assemble MKV",
+            "Set metadata",
+            "Optimize index",
+        ]
+
+    def test_dv_and_hdr10_plus_extract_both(self) -> None:
+        vp = make_video_params(dv_mode=DvMode.COPY, hdr=HdrMetadata(is_hdr10_plus=True))
+        steps = _build_steps(make_job(video_params=vp, audio=[], subtitles=[]))
+        assert steps[:2] == ["Extract DV RPU", "Extract HDR10+ metadata"]
+
+    def test_passthrough_hdr10_plus_skips_extract_step(self) -> None:
+        vp = make_video_params(passthrough=True, hdr=HdrMetadata(is_hdr10_plus=True))
+        steps = _build_steps(make_job(video_params=vp, audio=[], subtitles=[]))
+        assert "Extract HDR10+ metadata" not in steps
+
+    def test_static_hdr_without_hdr10_plus_has_no_extract_step(self) -> None:
+        vp = make_video_params(hdr=HdrMetadata(content_light="MaxCLL=1000,MaxFALL=400"))
+        steps = _build_steps(make_job(video_params=vp, audio=[], subtitles=[]))
+        assert "Extract HDR10+ metadata" not in steps
 
     def test_multiple_audio_tracks(self) -> None:
         audio = [

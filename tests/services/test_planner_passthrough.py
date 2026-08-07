@@ -2,8 +2,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
 from furnace.core.models import (
     AudioCodecId,
     CropRect,
@@ -192,17 +190,21 @@ class TestCreatePlanCopyVideo:
         assert vp.passthrough is False
         assert vp.dv_mode == DvMode.TO_8_1
 
-    def test_hdr10_plus_still_raises(self, tmp_path: Path) -> None:
+    def test_hdr10_plus_passes_through(self, tmp_path: Path) -> None:
         movie = _make_movie(tmp_path, _make_video(hdr=HdrMetadata(is_hdr10_plus=True)))
         planner = PlannerService(previewer=None)
 
-        with pytest.raises(ValueError, match="HDR10\\+"):
-            planner.create_plan(
-                [(movie, tmp_path / "out.mkv")],
-                audio_lang_filter=["eng"],
-                sub_lang_filter=["eng"],
-                copy_video=True,
-            )
+        plan = planner.create_plan(
+            [(movie, tmp_path / "out.mkv")],
+            audio_lang_filter=["eng"],
+            sub_lang_filter=["eng"],
+            copy_video=True,
+        )
+
+        vp = plan.jobs[0].video_params
+        assert vp.passthrough is True
+        assert vp.hdr is not None
+        assert vp.hdr.is_hdr10_plus
 
     def test_copy_video_default_false_unchanged(self, tmp_path: Path) -> None:
         movie = _make_movie(tmp_path, _make_video())

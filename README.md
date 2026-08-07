@@ -14,6 +14,7 @@ Batch video transcoder for home archival. Scans your movie collection, lets you 
 - **Anamorphic SAR fix** — detects and corrects wrong sample aspect ratio on DVD sources
 - **Dolby Vision** — Profile 7 FEL (converted to P8.1) and Profile 8 MEL, re-tagged as AV1 Profile 10.1, RPU handled via dovi_tool
 - **HDR10 passthrough** — mastering display, content light level, BT.2020/PQ preserved through encode
+- **HDR10+ passthrough** — per-frame SMPTE ST 2094-40 metadata extracted with hdr10plus_tool and re-injected into the AV1 stream; the extracted JSON is checked against the source frame count and both the encode and the delivered file are verified to carry the metadata, so a partial or dropped track fails the file instead of shipping silently. Re-encoding HDR10+ needs an HEVC source (the extraction path demuxes HEVC); copied/remuxed video is unaffected
 - **Auto deinterlace** — nnedi (neural network); HD interlaced content is always deinterlaced, SD is confirmed with idet before committing
 - **Smart crop** — black bars detected automatically across the timeline
 - **Target-quality encoding** — always on, no flag: before each encode Furnace probes short windows at several quality settings and interpolation-searches the one that hits a perceptual target — QVBR against CVVDP (HDR) or SSIMULACRA2 (SDR) on the NVEnc path, CRF against worst-case SSIMULACRA2 on the SVT-AV1 grain path — then encodes at it, full speed, with no metrics slowing the final pass. The chosen setting is cached to the plan so re-runs skip the search
@@ -57,6 +58,7 @@ The metric reference is deinterlaced/cropped/scaled through the encode's own ffm
 Optional:
 
 - [dovi_tool](https://github.com/quietvoid/dovi_tool) — Dolby Vision RPU handling; only needed for Dolby Vision sources
+- [hdr10plus_tool](https://github.com/quietvoid/hdr10plus_tool) — HDR10+ dynamic metadata handling; only needed for HDR10+ sources
 
 ## Install
 

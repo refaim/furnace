@@ -7,17 +7,18 @@
 #   3. %APPDATA%\furnace\furnace.toml
 
 [tools]
-ffmpeg      = "C:\\Tools\\ffmpeg\\ffmpeg.exe"
-ffprobe     = "C:\\Tools\\ffmpeg\\ffprobe.exe"
-mkvmerge    = "C:\\Tools\\MKVToolNix\\mkvmerge.exe"
-mkvpropedit = "C:\\Tools\\MKVToolNix\\mkvpropedit.exe"
-mkclean     = "C:\\Tools\\mkclean\\mkclean.exe"
-eac3to      = "C:\\Tools\\eac3to\\eac3to.exe"
-qaac64      = "C:\\Tools\\qaac\\qaac64.exe"
-mpv         = "C:\\Tools\\mpv\\mpv.exe"
-makemkvcon  = "C:\\Program Files (x86)\\MakeMKV\\makemkvcon64.exe"
-nvencc      = "C:\\Tools\\NVEncC\\NVEncC64.exe"
-dovi_tool   = "C:\\Tools\\dovi_tool.exe"  # optional, needed for Dolby Vision content
+ffmpeg         = "C:\\Tools\\ffmpeg\\ffmpeg.exe"
+ffprobe        = "C:\\Tools\\ffmpeg\\ffprobe.exe"
+mkvmerge       = "C:\\Tools\\MKVToolNix\\mkvmerge.exe"
+mkvpropedit    = "C:\\Tools\\MKVToolNix\\mkvpropedit.exe"
+mkclean        = "C:\\Tools\\mkclean\\mkclean.exe"
+eac3to         = "C:\\Tools\\eac3to\\eac3to.exe"
+qaac64         = "C:\\Tools\\qaac\\qaac64.exe"
+mpv            = "C:\\Tools\\mpv\\mpv.exe"
+makemkvcon     = "C:\\Program Files (x86)\\MakeMKV\\makemkvcon64.exe"
+nvencc         = "C:\\Tools\\NVEncC\\NVEncC64.exe"
+dovi_tool      = "C:\\Tools\\dovi_tool.exe"  # optional, needed for Dolby Vision content
+hdr10plus_tool = "C:\\Tools\\hdr10plus_tool.exe"  # optional, needed for HDR10+ content
 
 # Optional — VapourSynth plugin DLLs for the SVT-AV1 grain path's GPU perceptual
 # metrics (SSIMULACRA2 / Butteraugli / CVVDP). Absent -> grain encodes record no
@@ -26,5 +27,5 @@ dovi_tool   = "C:\\Tools\\dovi_tool.exe"  # optional, needed for Dolby Vision co
 # encode's own ffmpeg geometry (crop/scale/deinterlace), so no deinterlace plugin
 # is needed here -- interlaced grain sources score fine. VapourSynth itself is a
 # furnace dependency.
-# bestsource  = "C:\\Tools\\vapoursynth-plugins\\BestSource.dll"
-# vship       = "C:\\Tools\\vapoursynth-plugins\\libvship_NVIDIA.dll"
+# bestsource     = "C:\\Tools\\vapoursynth-plugins\\BestSource.dll"
+# vship          = "C:\\Tools\\vapoursynth-plugins\\libvship_NVIDIA.dll"

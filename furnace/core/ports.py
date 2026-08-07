@@ -52,6 +52,8 @@ class Prober(Protocol):
 
     def probe_hdr_side_data(self, path: Path) -> list[dict[str, Any]]: ...
 
+    def probe_hdr_side_data_strict(self, path: Path) -> list[dict[str, Any]]: ...
+
     def sample_repeat_pict(self, path: Path, duration_s: float) -> list[int]: ...
 
     def sample_field_pairing(self, path: Path) -> tuple[int, int]: ...
@@ -86,6 +88,7 @@ class Encoder(Protocol):
         *,
         on_progress: Callable[[ProgressSample], None] | None = None,
         rpu_path: Path | None = None,
+        dhdr10_json: Path | None = None,
         cq_override: int | None = None,
     ) -> EncodeResult: ...
 
@@ -156,6 +159,15 @@ class DoviProcessor(Protocol):
         input_path: Path,
         output_rpu: Path,
         mode: DvMode,
+    ) -> int: ...
+
+
+@runtime_checkable
+class Hdr10PlusProcessor(Protocol):
+    def extract(
+        self,
+        input_path: Path,
+        output_json: Path,
     ) -> int: ...
 
 

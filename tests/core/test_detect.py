@@ -14,7 +14,11 @@ from furnace.core.detect import (
     detect_forced_subtitles,
     detect_hdr,
     hdr_tonemap_transfer,
+    is_content_light_side_data,
+    is_dolby_vision_side_data,
     is_dvd_resolution,
+    is_hdr10_plus_side_data,
+    is_mastering_display_side_data,
     resolve_color_metadata,
     should_skip_file,
 )
@@ -222,6 +226,38 @@ class TestForcedDetectionExcludeSdh:
         assert not normal.is_forced
 
 
+class TestHdrSideDataMatchers:
+    def test_hdr10_plus_ffprobe_av1_label(self) -> None:
+        assert is_hdr10_plus_side_data("HDR Dynamic Metadata SMPTE2094-40 (HDR10+)")
+
+    def test_hdr10_plus_spaced_st_2094_label(self) -> None:
+        assert is_hdr10_plus_side_data("SMPTE ST 2094-40 metadata")
+
+    def test_hdr10_plus_rejects_static_metadata(self) -> None:
+        assert not is_hdr10_plus_side_data("Mastering display metadata")
+
+    def test_dolby_vision_metadata(self) -> None:
+        assert is_dolby_vision_side_data("Dolby Vision Metadata")
+
+    def test_dolby_vision_rpu_data(self) -> None:
+        assert is_dolby_vision_side_data("Dolby Vision RPU Data")
+
+    def test_dolby_vision_rejects_configuration_record(self) -> None:
+        assert not is_dolby_vision_side_data("DOVI configuration record")
+
+    def test_mastering_display(self) -> None:
+        assert is_mastering_display_side_data("Mastering display metadata")
+
+    def test_mastering_display_rejects_content_light(self) -> None:
+        assert not is_mastering_display_side_data("Content light level metadata")
+
+    def test_content_light(self) -> None:
+        assert is_content_light_side_data("Content light level metadata")
+
+    def test_content_light_rejects_mastering_display(self) -> None:
+        assert not is_content_light_side_data("Mastering display metadata")
+
+
 class TestHdrDetection:
     def test_sdr_no_side_data(self) -> None:
         result = detect_hdr({}, None)
@@ -295,6 +331,11 @@ class TestHdrDetection:
 
     def test_smpte_st2094_hdr10_plus(self) -> None:
         side_data = [{"side_data_type": "SMPTE ST 2094-40 metadata"}]
+        result = detect_hdr({}, side_data)
+        assert result.is_hdr10_plus
+
+    def test_smpte2094_av1_label_hdr10_plus(self) -> None:
+        side_data = [{"side_data_type": "HDR Dynamic Metadata SMPTE2094-40"}]
         result = detect_hdr({}, side_data)
         assert result.is_hdr10_plus
 

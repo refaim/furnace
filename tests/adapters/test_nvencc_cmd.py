@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from furnace.adapters.nvencc import NVEncCAdapter, _parse_content_light
+from furnace.adapters.nvencc import NVEncCAdapter
 from furnace.core.models import CropRect, DvMode, HdrMetadata, VideoParams
 from furnace.core.progress import ProgressSample
 
@@ -58,12 +58,18 @@ def _adapter() -> NVEncCAdapter:
     return NVEncCAdapter(Path("NVEncC64.exe"))
 
 
-def _cmd(vp: VideoParams, *, rpu_path: Path | None = None) -> list[str]:
+def _cmd(
+    vp: VideoParams,
+    *,
+    rpu_path: Path | None = None,
+    dhdr10_json: Path | None = None,
+) -> list[str]:
     raw = _adapter()._build_encode_cmd(
         Path("input.mkv"),
         Path("output.obu"),
         vp,
         rpu_path=rpu_path,
+        dhdr10_json=dhdr10_json,
     )
     return [str(x) for x in raw]
 
@@ -321,6 +327,48 @@ class TestNVEncCDolbyVision:
         assert "--dolby-vision-rpu-prm" not in cmd
 
 
+class TestNVEncCHdr10Plus:
+    def test_dhdr10_info_present(self) -> None:
+        hdr = HdrMetadata(is_hdr10_plus=True)
+        cmd = _cmd(_make_vp(hdr=hdr), dhdr10_json=Path("hdr10plus.json"))
+        idx = cmd.index("--dhdr10-info")
+        assert cmd[idx + 1] == "hdr10plus.json"
+
+    def test_no_dhdr10_info_without_json(self) -> None:
+        hdr = HdrMetadata(is_hdr10_plus=True)
+        cmd = _cmd(_make_vp(hdr=hdr), dhdr10_json=None)
+        assert "--dhdr10-info" not in cmd
+
+    def test_encode_without_json_raises(self) -> None:
+        adapter = _adapter()
+        vp = _make_vp(hdr=HdrMetadata(is_hdr10_plus=True))
+        with patch("furnace.adapters.nvencc.subprocess.run") as mock_sub:
+            mock_sub.return_value.stdout = "NVEncC (x64) 9.30 (r3800)"
+            with patch("furnace.adapters.nvencc.run_tool", side_effect=_ok_run_tool):
+                with pytest.raises(RuntimeError, match="HDR10\\+"):
+                    adapter.encode(Path("in.mkv"), Path("out.obu"), vp)
+
+    def test_encode_with_json_does_not_raise(self) -> None:
+        adapter = _adapter()
+        vp = _make_vp(hdr=HdrMetadata(is_hdr10_plus=True))
+        with patch("furnace.adapters.nvencc.subprocess.run") as mock_sub:
+            mock_sub.return_value.stdout = "NVEncC (x64) 9.30 (r3800)"
+            with patch("furnace.adapters.nvencc.run_tool", side_effect=_ok_run_tool):
+                result = adapter.encode(
+                    Path("in.mkv"),
+                    Path("out.obu"),
+                    vp,
+                    dhdr10_json=Path("hdr10plus.json"),
+                )
+        assert result.return_code == 0
+
+    def test_dhdr10_info_coexists_with_dv_rpu(self) -> None:
+        vp = _make_vp(dv_mode=DvMode.COPY, hdr=HdrMetadata(is_hdr10_plus=True))
+        cmd = _cmd(vp, rpu_path=Path("rpu.bin"), dhdr10_json=Path("hdr10plus.json"))
+        assert "--dolby-vision-rpu" in cmd
+        assert "--dhdr10-info" in cmd
+
+
 class TestNVEncCSar:
     def test_sar_correction_applied(self) -> None:
         vp = _make_vp(sar_num=4, sar_den=3)
@@ -509,6 +557,23 @@ class TestNVEncCEncoderSettings:
         settings = adapter._build_encoder_settings(vp)
         assert "dolby-vision=10.1" in settings
 
+    def test_settings_with_hdr10_plus(self) -> None:
+        adapter = _adapter()
+        vp = _make_vp(hdr=HdrMetadata(is_hdr10_plus=True))
+        settings = adapter._build_encoder_settings(vp)
+        assert "dhdr10=json" in settings
+
+    def test_settings_without_hdr10_plus(self) -> None:
+        adapter = _adapter()
+        vp = _make_vp(hdr=HdrMetadata(content_light="MaxCLL=1000,MaxFALL=400"))
+        settings = adapter._build_encoder_settings(vp)
+        assert "dhdr10" not in settings
+
+    def test_settings_without_hdr_metadata(self) -> None:
+        adapter = _adapter()
+        settings = adapter._build_encoder_settings(_make_vp())
+        assert "dhdr10" not in settings
+
     def test_settings_slash_separated(self) -> None:
         adapter = _adapter()
         vp = _make_vp()
@@ -593,20 +658,6 @@ class TestNVEncCContentLightParseFailure:
         vp = _make_vp(hdr=hdr)
         cmd = _cmd(vp)
         assert "--max-cll" not in cmd
-
-
-class TestParseContentLight:
-    def test_valid_input(self) -> None:
-        result = _parse_content_light("MaxCLL=1000,MaxFALL=400")
-        assert result == ("1000", "400")
-
-    def test_valid_with_spaces(self) -> None:
-        result = _parse_content_light("MaxCLL=1000, MaxFALL=400")
-        assert result == ("1000", "400")
-
-    def test_invalid_input(self) -> None:
-        result = _parse_content_light("not valid")
-        assert result is None
 
 
 class TestNVEncCGetVersion:
@@ -750,6 +801,33 @@ class TestNVEncCEncode:
         assert result.return_code == 0
         assert "encode started" in output_lines
         assert "encode finished" in output_lines
+
+    def test_encode_passes_dhdr10_json_to_cmd(self) -> None:
+        adapter = _adapter()
+        vp = _make_vp(hdr=HdrMetadata(is_hdr10_plus=True))
+        captured: dict[str, Any] = {}
+
+        def fake_run_tool(
+            cmd: Any,
+            on_output: Any = None,
+            on_progress_line: Any = None,
+            log_path: Any = None,
+            cwd: Any = None,
+        ) -> tuple[int, str]:
+            captured["cmd"] = [str(c) for c in cmd]
+            return 0, ""
+
+        with patch("furnace.adapters.nvencc.subprocess.run") as mock_sub:
+            mock_sub.return_value.stdout = ""
+            with patch("furnace.adapters.nvencc.run_tool", side_effect=fake_run_tool):
+                adapter.encode(
+                    Path("in.mkv"),
+                    Path("out.obu"),
+                    vp,
+                    dhdr10_json=Path("hdr10plus.json"),
+                )
+        idx = captured["cmd"].index("--dhdr10-info")
+        assert captured["cmd"][idx + 1] == "hdr10plus.json"
 
     def test_encode_non_progress_line_not_consumed(self) -> None:
         adapter = _adapter()

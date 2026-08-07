@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import json
 import logging
 import os
 import shutil
@@ -17,6 +18,14 @@ import psutil
 from furnace import VERSION as FURNACE_VERSION
 from furnace.core.audio_integrity import audio_is_truncated, probe_audio_duration
 from furnace.core.chapters import chapters_have_mojibake, write_ogm_chapters
+from furnace.core.color import parse_content_light
+from furnace.core.detect import (
+    is_content_light_side_data,
+    is_dolby_vision_side_data,
+    is_hdr10_plus_side_data,
+    is_hdr_transfer,
+    is_mastering_display_side_data,
+)
 from furnace.core.models import (
     STEREO_CHANNELS,
     AudioAction,
@@ -27,6 +36,7 @@ from furnace.core.models import (
     Plan,
     SubtitleAction,
     SubtitleInstruction,
+    VideoParams,
 )
 from furnace.core.ports import (
     AacEncoder,
@@ -34,6 +44,7 @@ from furnace.core.ports import (
     Cleaner,
     DoviProcessor,
     Encoder,
+    Hdr10PlusProcessor,
     MediaExtractor,
     Muxer,
     Prober,
@@ -105,6 +116,62 @@ def _video_intermediate_name(*, passthrough: bool) -> str:
     return "video.mkv" if passthrough else "video.obu"
 
 
+_HDR10PLUS_FRAME_TOLERANCE_RATIO = 0.001
+_HDR10PLUS_FRAME_TOLERANCE_FLOOR = 5
+
+_UNVERIFIED_SUFFIX = ".unverified"
+
+_HDR_SIDE_DATA_CHECKS: tuple[tuple[str, Callable[[VideoParams], bool], Callable[[str], bool]], ...] = (
+    (
+        "mastering display",
+        lambda vp: vp.hdr is not None and bool(vp.hdr.mastering_display),
+        is_mastering_display_side_data,
+    ),
+    (
+        "content light level",
+        lambda vp: vp.hdr is not None
+        and vp.hdr.content_light is not None
+        and parse_content_light(vp.hdr.content_light) is not None,
+        is_content_light_side_data,
+    ),
+    (
+        "Dolby Vision",
+        lambda vp: vp.dv_mode is not None,
+        is_dolby_vision_side_data,
+    ),
+    (
+        "HDR10+",
+        lambda vp: vp.hdr is not None and vp.hdr.is_hdr10_plus,
+        is_hdr10_plus_side_data,
+    ),
+)
+
+
+def _carries_hdr10_plus(vp: VideoParams) -> bool:
+    return vp.hdr is not None and vp.hdr.is_hdr10_plus
+
+
+def _needs_hdr10plus_extraction(vp: VideoParams) -> bool:
+    return _carries_hdr10_plus(vp) and not vp.passthrough
+
+
+def _carries_unmappable_hdr(vp: VideoParams) -> bool:
+    return is_hdr_transfer(vp.color_transfer) or vp.dv_mode is not None or _carries_hdr10_plus(vp)
+
+
+class HdrMetadataLostError(RuntimeError):
+    pass
+
+
+def _hdr10plus_scenes(data: object) -> list[Any]:
+    if not isinstance(data, dict):
+        raise TypeError("root is not a JSON object")
+    scenes = data.get("SceneInfo", [])
+    if not isinstance(scenes, list):
+        raise TypeError("SceneInfo is not a list")
+    return scenes
+
+
 class Executor:
     def __init__(
         self,
@@ -117,6 +184,7 @@ class Executor:
         cleaner: Cleaner,
         prober: Prober,
         dovi_processor: DoviProcessor | None = None,
+        hdr10plus_processor: Hdr10PlusProcessor | None = None,
         video_copier: VideoCopier | None = None,
         grain_encoder: Encoder | None = None,
         target_quality: TargetQualityService | None = None,
@@ -134,6 +202,7 @@ class Executor:
         self._cleaner = cleaner
         self._prober = prober
         self._dovi_processor = dovi_processor
+        self._hdr10plus_processor = hdr10plus_processor
         self._video_copier = video_copier
         self._progress = progress
         self._log_dir = log_dir
@@ -141,6 +210,8 @@ class Executor:
         self._adapters: list[Any] = [encoder, audio_extractor, audio_decoder, aac_encoder, muxer, tagger, cleaner]
         if dovi_processor is not None:
             self._adapters.append(dovi_processor)
+        if hdr10plus_processor is not None:
+            self._adapters.append(hdr10plus_processor)
         if video_copier is not None:
             self._adapters.append(video_copier)
         if grain_encoder is not None:
@@ -243,6 +314,11 @@ class Executor:
         main_source = Path(job.source_files[0])
         self._cumulative_audio_size = 0
 
+        self._check_encoder_carries_hdr(job.video_params, main_source)
+
+        if _needs_hdr10plus_extraction(job.video_params):
+            self._require_hdr10plus_processor()
+
         if self._shutdown_event.is_set():
             return
 
@@ -314,6 +390,25 @@ class Executor:
             if rc != 0:
                 raise RuntimeError(f"DV RPU extraction failed with return code {rc}")
 
+        dhdr10_json: Path | None = None
+        if _needs_hdr10plus_extraction(job.video_params):
+            if self._shutdown_event.is_set():
+                return
+            hdr10plus_processor = self._require_hdr10plus_processor()
+            dhdr10_json = temp_dir / "hdr10plus.json"
+            status_msg = "Extracting HDR10+ metadata"
+            logger.info(status_msg)
+            if self._progress is not None:
+                self._progress.update_status(status_msg)
+                self._progress.add_tool_line(f"[furnace] {status_msg}")
+            rc = hdr10plus_processor.extract(
+                input_path=main_source,
+                output_json=dhdr10_json,
+            )
+            if rc != 0:
+                raise RuntimeError(f"HDR10+ metadata extraction failed with return code {rc}")
+            self._verify_hdr10plus_json(dhdr10_json, job)
+
         if self._shutdown_event.is_set():
             return
 
@@ -351,11 +446,7 @@ class Executor:
                 raise RuntimeError(f"Video passthrough copy failed with return code {rc}")
             encoder_settings = "video stream copied (passthrough)"
         else:
-            enc = (
-                self._grain_encoder
-                if (grain_uses_svt(job.video_params) and self._grain_encoder is not None)
-                else self._encoder
-            )
+            enc = self._select_encoder(job.video_params)
 
             if self._progress is not None:
                 self._progress.update_status("Searching quality...")
@@ -379,10 +470,14 @@ class Executor:
                 video_params=job.video_params,
                 on_progress=video_on_progress,
                 rpu_path=rpu_path,
+                dhdr10_json=dhdr10_json,
                 cq_override=cq_override,
             )
             if rc_result.return_code != 0:
                 raise RuntimeError(f"Video encoding failed with return code {rc_result.return_code}")
+
+            if self._verifies_hdr_metadata(job.video_params):
+                self._verify_encoded_hdr_metadata(video_output, job.video_params)
 
             encoder_settings = rc_result.encoder_settings
 
@@ -486,6 +581,104 @@ class Executor:
 
         shutil.move(str(cleaned_path), str(output_path))
         logger.debug("Job output written to %s", output_path)
+
+        if self._verifies_hdr_metadata(job.video_params):
+            self._verify_delivered_hdr_metadata(output_path, job.video_params)
+
+    def _select_encoder(self, vp: VideoParams) -> Encoder:
+        if grain_uses_svt(vp) and self._grain_encoder is not None:
+            return self._grain_encoder
+        return self._encoder
+
+    def _verifies_hdr_metadata(self, vp: VideoParams) -> bool:
+        return not vp.passthrough and self._select_encoder(vp) is self._encoder
+
+    def _check_encoder_carries_hdr(self, vp: VideoParams, source: Path) -> None:
+        if vp.passthrough or self._select_encoder(vp) is self._encoder or not _carries_unmappable_hdr(vp):
+            return
+        msg = (
+            "HDR content cannot be encoded on the SVT-AV1 grain path, which carries no HDR metadata: "
+            f"{source.name}"
+        )
+        raise RuntimeError(msg)
+
+    def _require_hdr10plus_processor(self) -> Hdr10PlusProcessor:
+        if self._hdr10plus_processor is None:
+            msg = "HDR10+ content requires hdr10plus_tool but it is not configured"
+            raise RuntimeError(msg)
+        return self._hdr10plus_processor
+
+    def _verify_hdr10plus_json(self, json_path: Path, job: Job) -> None:
+        try:
+            data = json.loads(json_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            raise RuntimeError(f"HDR10+ metadata JSON is unreadable at {json_path}: {exc}") from exc
+
+        try:
+            scenes = _hdr10plus_scenes(data)
+        except TypeError as exc:
+            raise RuntimeError(f"HDR10+ metadata JSON is malformed at {json_path}: {exc}") from exc
+
+        if not scenes:
+            raise RuntimeError(f"HDR10+ metadata JSON carries no per-frame HDR10+ metadata: {json_path}")
+
+        vp = job.video_params
+        fps = vp.fps_num / vp.fps_den if vp.fps_den else 0.0
+        if job.duration_s <= 0 or fps <= 0:
+            raise RuntimeError(
+                f"HDR10+ metadata cannot be verified for {job.source_files[0]}: "
+                f"source runs {job.duration_s}s at {vp.fps_num}/{vp.fps_den} fps"
+            )
+
+        expected = round(job.duration_s * fps)
+        tolerance = max(_HDR10PLUS_FRAME_TOLERANCE_FLOOR, expected * _HDR10PLUS_FRAME_TOLERANCE_RATIO)
+        if abs(len(scenes) - expected) > tolerance:
+            raise RuntimeError(
+                f"HDR10+ metadata covers {len(scenes)} frames but the source runs {expected} "
+                f"({job.duration_s}s at {fps:.3f} fps): {json_path}"
+            )
+
+        logger.info("HDR10+ metadata covers %d frames (source ~%d)", len(scenes), expected)
+
+    def _verify_encoded_hdr_metadata(self, video_path: Path, vp: VideoParams) -> None:
+        expected = [(label, matches) for label, is_expected, matches in _HDR_SIDE_DATA_CHECKS if is_expected(vp)]
+        if not expected:
+            return
+
+        side_data = self._prober.probe_hdr_side_data_strict(video_path)
+        side_types = [entry.get("side_data_type", "") for entry in side_data]
+        missing = [label for label, matches in expected if not any(matches(side_type) for side_type in side_types)]
+        if missing:
+            raise HdrMetadataLostError(
+                f"Encoded video lost HDR metadata ({', '.join(missing)} expected but absent from {video_path.name})"
+            )
+
+        logger.info("Encoded video carries %s metadata", ", ".join(label for label, _ in expected))
+
+    def _quarantine_unverified_output(self, output_path: Path) -> Path | None:
+        quarantined = output_path.with_name(output_path.name + _UNVERIFIED_SUFFIX)
+        try:
+            output_path.rename(quarantined)
+        except OSError:
+            logger.warning("Could not move the unverified output aside from %s", output_path)
+            return None
+        logger.warning("Moved the unverified output %s aside to %s", output_path, quarantined)
+        return quarantined
+
+    def _verify_delivered_hdr_metadata(self, output_path: Path, vp: VideoParams) -> None:
+        try:
+            self._verify_encoded_hdr_metadata(output_path, vp)
+        except HdrMetadataLostError:
+            try:
+                output_path.unlink(missing_ok=True)
+            except OSError:
+                logger.warning("Could not remove the unverifiable output at %s", output_path)
+            raise
+        except RuntimeError as exc:
+            quarantined = self._quarantine_unverified_output(output_path)
+            if quarantined is None:
+                raise
+            raise RuntimeError(f"{exc}; the unverified output was moved to {quarantined}") from exc
 
     def _maybe_search_target_quality(self, job: Job, source: Path, temp_dir: Path) -> int | None:
         if self._target_quality is None or not self._target_quality.can_search(job.video_params):

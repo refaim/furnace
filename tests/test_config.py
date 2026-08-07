@@ -117,6 +117,26 @@ class TestDoviTool:
             load_config(config)
 
 
+class TestHdr10PlusTool:
+    def test_present(self, tmp_path: Path) -> None:
+        hdr10plus = tmp_path / "tools" / "hdr10plus_tool.exe"
+        config = _write_config(tmp_path, tools_override={"hdr10plus_tool": str(hdr10plus)})
+        hdr10plus.touch()
+        tp = load_config(config)
+        assert tp.hdr10plus_tool == hdr10plus
+
+    def test_absent(self, tmp_path: Path) -> None:
+        config = _write_config(tmp_path)
+        tp = load_config(config)
+        assert tp.hdr10plus_tool is None
+
+    def test_hdr10plus_tool_path_missing_raises(self, tmp_path: Path) -> None:
+        bogus = str(tmp_path / "tools" / "no_hdr10plus.exe")
+        config = _write_config(tmp_path, tools_override={"hdr10plus_tool": bogus})
+        with pytest.raises(FileNotFoundError, match="hdr10plus_tool"):
+            load_config(config)
+
+
 class TestVapourSynthPlugins:
     def test_bestsource_and_vship_present(self, tmp_path: Path) -> None:
         bs = tmp_path / "tools" / "BestSource.dll"

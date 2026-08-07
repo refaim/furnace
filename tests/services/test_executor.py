@@ -1213,6 +1213,7 @@ class TestRunPipelineWithDvRpu:
         mocks.encoder.encode.return_value = EncodeResult(return_code=0, encoder_settings="test")
         mocks.muxer.mux.return_value = 0
         mocks.tagger.set_encoder_tag.return_value = 0
+        mocks.prober.probe_hdr_side_data_strict.return_value = [{"side_data_type": "Dolby Vision Metadata"}]
 
         def fake_clean(input_path: Any, output_path: Any, on_progress: Any = None) -> int:
             Path(output_path).write_bytes(b"CLEAN")
@@ -1410,6 +1411,7 @@ class TestRunPipelineShutdown:
             video_params: Any,
             on_progress: Any = None,
             rpu_path: Any = None,
+            dhdr10_json: Any = None,
             cq_override: Any = None,
         ) -> EncodeResult:
             executor._shutdown_event.set()
@@ -2059,6 +2061,10 @@ class TestRunPipelineVideoMeta:
         mocks.encoder.encode.return_value = EncodeResult(return_code=0, encoder_settings="test")
         mocks.muxer.mux.return_value = 0
         mocks.tagger.set_encoder_tag.return_value = 0
+        mocks.prober.probe_hdr_side_data_strict.return_value = [
+            {"side_data_type": "Mastering display metadata"},
+            {"side_data_type": "Content light level metadata"},
+        ]
 
         def fake_clean(input_path: Any, output_path: Any, on_progress: Any = None) -> int:
             Path(output_path).write_bytes(b"CLEAN")
@@ -2832,6 +2838,7 @@ class TestEncodeOnProgressOutputSize:
             video_params: Any,
             on_progress: Any = None,
             rpu_path: Any = None,
+            dhdr10_json: Any = None,
             cq_override: Any = None,
         ) -> EncodeResult:
             assert on_progress is not None
@@ -2890,6 +2897,7 @@ class TestEncodeOnProgressOSError:
             video_params: Any,
             on_progress: Any = None,
             rpu_path: Any = None,
+            dhdr10_json: Any = None,
             cq_override: Any = None,
         ) -> EncodeResult:
             assert on_progress is not None
@@ -3418,6 +3426,7 @@ class TestDvProgressInPipeline:
         mocks.encoder.encode.return_value = EncodeResult(return_code=0, encoder_settings="test")
         mocks.muxer.mux.return_value = 0
         mocks.tagger.set_encoder_tag.return_value = 0
+        mocks.prober.probe_hdr_side_data_strict.return_value = [{"side_data_type": "Dolby Vision Metadata"}]
 
         def fake_clean(input_path: Any, output_path: Any, on_progress: Any = None) -> int:
             Path(output_path).write_bytes(b"CLEAN")
@@ -3559,6 +3568,7 @@ class TestEncodeOnProgressStatOSError:
             video_params: Any,
             on_progress: Any = None,
             rpu_path: Any = None,
+            dhdr10_json: Any = None,
             cq_override: Any = None,
         ) -> EncodeResult:
             assert on_progress is not None
@@ -3614,6 +3624,7 @@ class TestEncodeOnProgressNoProgress:
             video_params: Any,
             on_progress: Any = None,
             rpu_path: Any = None,
+            dhdr10_json: Any = None,
             cq_override: Any = None,
         ) -> EncodeResult:
             assert on_progress is not None
@@ -3648,6 +3659,7 @@ class TestVideoMetaUnknownContentLightPart:
             return 0
 
         mocks.cleaner.clean.side_effect = fake_clean
+        mocks.prober.probe_hdr_side_data_strict.return_value = [{"side_data_type": "Content light level metadata"}]
         hdr = HdrMetadata(content_light="MaxCLL=1000,MaxFALL=400,Unknown=999")
         vp = make_video_params(
             color_range="tv",

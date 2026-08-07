@@ -18,7 +18,7 @@ def test_records_method_name_and_args(tmp_path: Path) -> None:
     r.scan_file("Inception.mkv")
     r.scan_skipped("weird.mkv", "no video stream")
     r.analyze_batch_start(1)
-    r.analyze_batch_item("broken.mkv", "HDR10+ not supported", status=AnalyzeStatus.FAILED)
+    r.analyze_batch_item("broken.mkv", "probe failed: fixture detail", status=AnalyzeStatus.FAILED)
     r.analyze_batch_finish()
     r.plan_saved(plan_path, 7)
     r.interrupted()
@@ -38,7 +38,7 @@ def test_records_method_name_and_args(tmp_path: Path) -> None:
         Event("analyze_batch_start", (1,)),
         Event(
             "analyze_batch_item",
-            ("broken.mkv", "HDR10+ not supported"),
+            ("broken.mkv", "probe failed: fixture detail"),
             (("status", AnalyzeStatus.FAILED),),
         ),
         Event("analyze_batch_finish", ()),

@@ -75,6 +75,7 @@ def _run(
     tmp_path: Path,
     *,
     rpu_path: Path | None = None,
+    dhdr10_json: Path | None = None,
     on_progress: Any = None,
 ) -> Any:
     with patch("furnace.adapters.svtav1.run_tool", side_effect=fake):
@@ -83,6 +84,7 @@ def _run(
             tmp_path / "output.obu",
             _make_vp(),
             rpu_path=rpu_path,
+            dhdr10_json=dhdr10_json,
             on_progress=on_progress,
         )
 
@@ -168,3 +170,18 @@ class TestRpuIgnored:
         _run(adapter, fake, tmp_path, rpu_path=Path("rpu.bin"))
         for call in fake.calls:
             assert "rpu.bin" not in " ".join(call["cmd"])
+
+
+class TestDhdr10JsonIgnored:
+    def test_dhdr10_json_ignored_no_crash(self, tmp_path: Path) -> None:
+        adapter = SvtAv1Adapter(Path("ffmpeg"))
+        fake = _FakeRunTool()
+        result = _run(adapter, fake, tmp_path, dhdr10_json=Path("hdr10plus.json"))
+        assert result.return_code == 0
+
+    def test_dhdr10_json_not_in_encode_command(self, tmp_path: Path) -> None:
+        adapter = SvtAv1Adapter(Path("ffmpeg"))
+        fake = _FakeRunTool()
+        _run(adapter, fake, tmp_path, dhdr10_json=Path("hdr10plus.json"))
+        for call in fake.calls:
+            assert "hdr10plus.json" not in " ".join(call["cmd"])

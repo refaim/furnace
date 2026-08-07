@@ -90,7 +90,7 @@ def test_full_reporter_sequence_mixed_statuses(tmp_path: Path) -> None:
     outcomes = {
         good.main_file: _done(good.main_file, detail="hevc 1920x1080 24fps SDR, 2 audio (eng), 1 subs"),
         old.main_file: AnalysisOutcome(None, AnalyzeStatus.SKIPPED, "output file already exists"),
-        bad.main_file: AnalysisOutcome(None, AnalyzeStatus.FAILED, "HDR10+ not supported"),
+        bad.main_file: AnalysisOutcome(None, AnalyzeStatus.FAILED, "probe failed: fixture detail"),
     }
     reporter = RecordingPlanReporter()
     pipeline = _build_pipeline(_FakeAnalyzer(outcomes), _FakeProber(), reporter)
@@ -105,7 +105,7 @@ def test_full_reporter_sequence_mixed_statuses(tmp_path: Path) -> None:
             (("status", AnalyzeStatus.DONE),),
         ),
         Event("analyze_batch_item", ("old.mkv", "output file already exists"), (("status", AnalyzeStatus.SKIPPED),)),
-        Event("analyze_batch_item", ("bad.mkv", "HDR10+ not supported"), (("status", AnalyzeStatus.FAILED),)),
+        Event("analyze_batch_item", ("bad.mkv", "probe failed: fixture detail"), (("status", AnalyzeStatus.FAILED),)),
         Event("analyze_batch_finish", (), ()),
     ]
     progress = [e for e in reporter.events if e.method == "analyze_batch_progress"]

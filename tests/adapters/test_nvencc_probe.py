@@ -241,6 +241,13 @@ class TestNVEncCProbeMisc:
         assert any("CVVDP" in line for line in seen)
 
 
+class TestProbeIgnoresHdr10PlusJson:
+    def test_hdr10_plus_probe_without_json_does_not_raise(self) -> None:
+        vp = _make_vp(hdr=HdrMetadata(is_hdr10_plus=True))
+        cmd = _capture_probe_cmd(vp, qvbr=30, metric="cvvdp")
+        assert "--dhdr10-info" not in cmd
+
+
 class TestInlineQualityProbeProtocol:
     def test_nvencc_adapter_is_inline_quality_probe(self) -> None:
         from furnace.core.ports import InlineQualityProbe

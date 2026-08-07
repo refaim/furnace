@@ -36,6 +36,9 @@ class _MinimalProber:
     def probe_hdr_side_data(self, path: Path) -> list[dict[str, Any]]:  # noqa: ARG002
         return []
 
+    def probe_hdr_side_data_strict(self, path: Path) -> list[dict[str, Any]]:  # noqa: ARG002
+        return []
+
     def sample_repeat_pict(self, path: Path, duration_s: float) -> list[int]:  # noqa: ARG002
         return []
 
@@ -184,6 +187,7 @@ def test_minimal_prober_method_surface() -> None:
     assert stub.get_encoder_tag(Path("/dev/null")) is None
     assert stub.run_idet(Path("/dev/null"), 60.0) == 0.0
     assert stub.probe_hdr_side_data(Path("/dev/null")) == []
+    assert stub.probe_hdr_side_data_strict(Path("/dev/null")) == []
     assert stub.sample_repeat_pict(Path("/dev/null"), 60.0) == []
     assert stub.sample_grain(Path("/dev/null"), 60.0) == []
     assert stub.sample_field_pairing(Path("/dev/null")) == (0, 0)

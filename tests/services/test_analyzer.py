@@ -264,18 +264,170 @@ class TestAnalyzerHdrSideDataMerge:
         prober.probe_hdr_side_data.assert_not_called()
 
 
-class TestAnalyzerHDR10PlusError:
-    def test_analyzer_hdr10plus_returns_failed(self, tmp_path: Path) -> None:
+class TestAnalyzerHDR10Plus:
+    def test_analyzer_hdr10plus_is_analyzed(self, tmp_path: Path) -> None:
         scan_result = make_scan_result(tmp_path)
         prober = make_prober(probe_data=_dv_probe_data())
 
         with patch("furnace.services.analyzer.should_skip_file", return_value=(False, "")):
             with patch("furnace.services.analyzer.detect_hdr") as mock_detect_hdr:
                 mock_detect_hdr.return_value = HdrMetadata(is_hdr10_plus=True)
+                with patch("furnace.services.analyzer.check_unsupported_codecs", return_value=None):
+                    analyzer = Analyzer(prober=prober)
+                    outcome = analyzer.analyze(scan_result)
+
+        assert outcome.status is AnalyzeStatus.DONE
+        movie = outcome.movie
+        assert movie is not None
+        assert movie.video.hdr.is_hdr10_plus
+
+    def test_hdr10plus_summarised_as_hdr10_plus(self, tmp_path: Path) -> None:
+        scan_result = make_scan_result(tmp_path)
+        data = _h264_probe_data()
+        data["streams"][0]["codec_name"] = "hevc"
+        data["streams"][0]["color_transfer"] = "smpte2084"
+        prober = make_prober(
+            probe_data=data,
+            hdr_side_data=[{"side_data_type": "HDR Dynamic Metadata SMPTE2094-40 (HDR10+)"}],
+        )
+
+        with patch("furnace.services.analyzer.should_skip_file", return_value=(False, "")):
+            analyzer = Analyzer(prober=prober)
+            outcome = analyzer.analyze(scan_result)
+
+        assert outcome.status is AnalyzeStatus.DONE
+        assert "HDR10+" in outcome.detail
+
+    def test_dolby_vision_label_wins_over_hdr10_plus(self, tmp_path: Path) -> None:
+        scan_result = make_scan_result(tmp_path)
+        prober = make_prober(
+            probe_data=_dv_probe_data(),
+            hdr_side_data=[{"side_data_type": "HDR Dynamic Metadata SMPTE2094-40 (HDR10+)"}],
+        )
+
+        with patch("furnace.services.analyzer.should_skip_file", return_value=(False, "")):
+            with patch("furnace.services.analyzer.check_unsupported_codecs", return_value=None):
                 analyzer = Analyzer(prober=prober)
                 outcome = analyzer.analyze(scan_result)
 
-        assert outcome == AnalysisOutcome(None, AnalyzeStatus.FAILED, "HDR10+ not supported")
+        assert outcome.status is AnalyzeStatus.DONE
+        assert "DV P" in outcome.detail
+        assert "HDR10+" not in outcome.detail
+
+
+class TestAnalyzerHdr10PlusSourceCodec:
+    def test_hdr10_plus_in_av1_fails_the_file(self, tmp_path: Path) -> None:
+        scan_result = make_scan_result(tmp_path)
+        data = _h264_probe_data()
+        data["streams"][0]["codec_name"] = "av1"
+        data["streams"][0]["color_transfer"] = "smpte2084"
+        prober = make_prober(
+            probe_data=data,
+            hdr_side_data=[{"side_data_type": "HDR Dynamic Metadata SMPTE2094-40 (HDR10+)"}],
+        )
+
+        with patch("furnace.services.analyzer.should_skip_file", return_value=(False, "")):
+            analyzer = Analyzer(prober=prober)
+            outcome = analyzer.analyze(scan_result)
+
+        assert outcome.status is AnalyzeStatus.FAILED
+        assert outcome.detail == (
+            "re-encoding HDR10+ requires an HEVC source; use --copy-video to remux instead (codec: av1)"
+        )
+        assert outcome.movie is None
+
+    def test_hdr10_plus_in_av1_passes_through_with_copy_video(self, tmp_path: Path) -> None:
+        scan_result = make_scan_result(tmp_path)
+        data = _h264_probe_data()
+        data["streams"][0]["codec_name"] = "av1"
+        data["streams"][0]["color_transfer"] = "smpte2084"
+        prober = make_prober(
+            probe_data=data,
+            hdr_side_data=[{"side_data_type": "HDR Dynamic Metadata SMPTE2094-40 (HDR10+)"}],
+        )
+
+        with patch("furnace.services.analyzer.should_skip_file", return_value=(False, "")):
+            analyzer = Analyzer(prober=prober)
+            outcome = analyzer.analyze(scan_result, copy_video=True)
+
+        assert outcome.status is AnalyzeStatus.DONE
+        movie = outcome.movie
+        assert movie is not None
+        assert movie.video.hdr.is_hdr10_plus
+
+    def test_hdr10_plus_in_hevc_is_analyzed(self, tmp_path: Path) -> None:
+        scan_result = make_scan_result(tmp_path)
+        data = _h264_probe_data()
+        data["streams"][0]["codec_name"] = "hevc"
+        data["streams"][0]["color_transfer"] = "smpte2084"
+        prober = make_prober(
+            probe_data=data,
+            hdr_side_data=[{"side_data_type": "HDR Dynamic Metadata SMPTE2094-40 (HDR10+)"}],
+        )
+
+        with patch("furnace.services.analyzer.should_skip_file", return_value=(False, "")):
+            analyzer = Analyzer(prober=prober)
+            outcome = analyzer.analyze(scan_result)
+
+        assert outcome.status is AnalyzeStatus.DONE
+
+    def test_hdr10_plus_in_dolby_vision_hevc_is_analyzed(self, tmp_path: Path) -> None:
+        scan_result = make_scan_result(tmp_path)
+        prober = make_prober(
+            probe_data=_dv_probe_data(),
+            hdr_side_data=[{"side_data_type": "HDR Dynamic Metadata SMPTE2094-40 (HDR10+)"}],
+        )
+
+        with patch("furnace.services.analyzer.should_skip_file", return_value=(False, "")):
+            with patch("furnace.services.analyzer.check_unsupported_codecs", return_value=None):
+                analyzer = Analyzer(prober=prober)
+                outcome = analyzer.analyze(scan_result)
+
+        assert outcome.status is AnalyzeStatus.DONE
+
+
+class TestAnalyzerFrameProbeCondition:
+    def test_untagged_transfer_is_frame_probed(self, tmp_path: Path) -> None:
+        scan_result = make_scan_result(tmp_path)
+        data = _h264_probe_data()
+        del data["streams"][0]["color_transfer"]
+        prober = make_prober(probe_data=data)
+
+        with patch("furnace.services.analyzer.should_skip_file", return_value=(False, "")):
+            analyzer = Analyzer(prober=prober)
+            analyzer.analyze(scan_result)
+
+        prober.probe_hdr_side_data.assert_called_once()
+
+    def test_unknown_transfer_is_frame_probed(self, tmp_path: Path) -> None:
+        scan_result = make_scan_result(tmp_path)
+        data = _h264_probe_data()
+        data["streams"][0]["color_transfer"] = "unknown"
+        prober = make_prober(probe_data=data)
+
+        with patch("furnace.services.analyzer.should_skip_file", return_value=(False, "")):
+            analyzer = Analyzer(prober=prober)
+            analyzer.analyze(scan_result)
+
+        prober.probe_hdr_side_data.assert_called_once()
+
+    def test_untagged_hdr10_plus_is_detected(self, tmp_path: Path) -> None:
+        scan_result = make_scan_result(tmp_path)
+        data = _h264_probe_data()
+        data["streams"][0]["codec_name"] = "hevc"
+        del data["streams"][0]["color_transfer"]
+        prober = make_prober(
+            probe_data=data,
+            hdr_side_data=[{"side_data_type": "HDR Dynamic Metadata SMPTE2094-40 (HDR10+)"}],
+        )
+
+        with patch("furnace.services.analyzer.should_skip_file", return_value=(False, "")):
+            analyzer = Analyzer(prober=prober)
+            outcome = analyzer.analyze(scan_result)
+
+        movie = outcome.movie
+        assert movie is not None
+        assert movie.video.hdr.is_hdr10_plus
 
 
 class TestAnalyzerHdrSummary:

@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .detect import detect_hdr
+from .detect import detect_hdr, is_mastering_display_side_data
 from .outdated import Defect, EncoderFamily
 from .quality import ALIGNMENT
 
@@ -180,7 +180,7 @@ def summarize_streams(
             color_matrix=vs.get("color_space"),
             color_transfer=vs.get("color_transfer"),
             container_mastering_display=any(
-                "Mastering display metadata" in entry.get("side_data_type", "")
+                is_mastering_display_side_data(entry.get("side_data_type", ""))
                 for entry in side_data
             ),
         )

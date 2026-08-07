@@ -312,6 +312,33 @@ class TestProbeHdrSideData:
             side_data = adapter.probe_hdr_side_data(Path("v.mkv"))
         assert side_data == []
 
+    def test_strict_hdr_side_data_returns_entries(self) -> None:
+        adapter = _adapter()
+        frame_data = {"frames": [{"side_data_list": [{"side_data_type": "Dolby Vision Metadata"}]}]}
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = json.dumps(frame_data)
+        with patch("furnace.adapters.ffmpeg.subprocess.run", return_value=mock_result):
+            side_data = adapter.probe_hdr_side_data_strict(Path("v.obu"))
+        assert side_data[0]["side_data_type"] == "Dolby Vision Metadata"
+
+    def test_strict_hdr_side_data_failure_raises(self) -> None:
+        adapter = _adapter()
+        mock_result = MagicMock()
+        mock_result.returncode = 1
+        mock_result.stderr = "error"
+        with patch("furnace.adapters.ffmpeg.subprocess.run", return_value=mock_result):
+            with pytest.raises(RuntimeError, match="HDR side-data probe failed"):
+                adapter.probe_hdr_side_data_strict(Path("v.obu"))
+
+    def test_strict_hdr_side_data_without_frames_returns_empty(self) -> None:
+        adapter = _adapter()
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = json.dumps({"frames": []})
+        with patch("furnace.adapters.ffmpeg.subprocess.run", return_value=mock_result):
+            assert adapter.probe_hdr_side_data_strict(Path("v.obu")) == []
+
 
 class TestExtractTrack:
     def test_extract_track_cmd(self) -> None:

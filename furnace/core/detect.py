@@ -345,6 +345,28 @@ def classify_grain(flicker_samples: Sequence[float]) -> bool:
     return median >= _GRAIN_FLICKER_THRESHOLD
 
 
+_HDR10_PLUS_SIDE_DATA_MARKERS = ("HDR10+", "SMPTE ST 2094", "SMPTE2094")
+_DOLBY_VISION_SIDE_DATA_TYPES = ("Dolby Vision RPU Data", "Dolby Vision Metadata")
+_MASTERING_DISPLAY_SIDE_DATA_MARKER = "Mastering display metadata"
+_CONTENT_LIGHT_SIDE_DATA_MARKER = "Content light level metadata"
+
+
+def is_hdr10_plus_side_data(side_data_type: str) -> bool:
+    return any(marker in side_data_type for marker in _HDR10_PLUS_SIDE_DATA_MARKERS)
+
+
+def is_dolby_vision_side_data(side_data_type: str) -> bool:
+    return side_data_type in _DOLBY_VISION_SIDE_DATA_TYPES
+
+
+def is_mastering_display_side_data(side_data_type: str) -> bool:
+    return _MASTERING_DISPLAY_SIDE_DATA_MARKER in side_data_type
+
+
+def is_content_light_side_data(side_data_type: str) -> bool:
+    return _CONTENT_LIGHT_SIDE_DATA_MARKER in side_data_type
+
+
 def _fraction_numerator(val: str) -> str:
     s = str(val)
     if "/" in s:
@@ -365,7 +387,7 @@ def detect_hdr(stream_data: dict[str, Any], side_data: list[dict[str, Any]] | No
     for entry in sd:
         side_type = entry.get("side_data_type", "")
 
-        if "Mastering display metadata" in side_type:
+        if is_mastering_display_side_data(side_type):
             mastering_display = (
                 f"G({_fraction_numerator(entry.get('green_x', ''))},"
                 f"{_fraction_numerator(entry.get('green_y', ''))})"
@@ -379,7 +401,7 @@ def detect_hdr(stream_data: dict[str, Any], side_data: list[dict[str, Any]] | No
                 f"{_fraction_numerator(entry.get('min_luminance', ''))})"
             )
 
-        elif "Content light level metadata" in side_type:
+        elif is_content_light_side_data(side_type):
             max_cll = entry.get("max_content", "")
             max_fall = entry.get("max_average", "")
             content_light = f"MaxCLL={max_cll},MaxFALL={max_fall}"
@@ -394,10 +416,10 @@ def detect_hdr(stream_data: dict[str, Any], side_data: list[dict[str, Any]] | No
                 with contextlib.suppress(ValueError):
                     dv_bl_compatibility = DvBlCompatibility(int(raw_compat))
 
-        elif side_type in ("Dolby Vision RPU Data", "Dolby Vision Metadata"):
+        elif is_dolby_vision_side_data(side_type):
             is_dolby_vision = True
 
-        elif "HDR10+" in side_type or "SMPTE ST 2094" in side_type:
+        elif is_hdr10_plus_side_data(side_type):
             is_hdr10_plus = True
 
     codec_name = stream_data.get("codec_name", "")
