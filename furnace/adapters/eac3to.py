@@ -85,7 +85,7 @@ def _demux_track_numbers(files: list[Path]) -> dict[Path, int] | None:
         m = _DEMUX_TRACK_NUM_RE.search(f.name)
         if m is not None:
             numbers[f] = int(m.group(1))
-    if len(set(numbers.values())) != len(numbers):
+    if not numbers or len(set(numbers.values())) != len(numbers):
         return None
     return numbers
 

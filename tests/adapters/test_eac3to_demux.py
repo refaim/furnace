@@ -171,6 +171,19 @@ class TestDemuxTitleOrdering:
 
         assert [p.name for p in result] == sorted(names)
 
+    def test_warns_when_nothing_carries_a_track_number(
+        self,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+
+        with caplog.at_level(logging.WARNING, logger="furnace.adapters.eac3to"):
+            _demux_into(output_dir, ["b.ac3", "a.mkv"])
+
+        assert any("track number" in r.message for r in caplog.records)
+
     def test_warns_when_numbers_are_ambiguous(self, tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
         output_dir = tmp_path / "out"
         output_dir.mkdir()

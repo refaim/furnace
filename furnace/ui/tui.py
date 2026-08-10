@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import cast
 
+from textual import events
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Container
@@ -35,6 +36,10 @@ _FULL_DB_THRESHOLD = -25.0
 _LOUD_DB_THRESHOLD = -40.0
 _QUIET_DB_THRESHOLD = -50.0
 _VERY_QUIET_DB_THRESHOLD = -60.0
+
+
+def _escape_markup(text: str) -> str:
+    return text.replace("[", "\\[")
 
 
 def _bar_and_word(rms_db: float) -> tuple[str, str]:
@@ -232,7 +237,7 @@ def _fmt_audio_track(
     bitrate = ""
     if track.bitrate:
         bitrate = f"{track.bitrate // 1000} kbps"
-    title = f"'{track.title}'" if track.title else ""
+    title = f"'{_escape_markup(track.title)}'" if track.title else ""
 
     downmix_tag = ""
     if downmix == DownmixMode.STEREO:
@@ -268,7 +273,7 @@ def _fmt_subtitle_track(
         lang = base_lang.ljust(4)
     codec = track.codec_name.upper()
     forced = "\\[FORCED]" if track.is_forced else ""
-    title = f"'{track.title}'" if track.title else ""
+    title = f"'{_escape_markup(track.title)}'" if track.title else ""
     parts = [p for p in [lang, codec, forced, title] if p]
     return f"\\[{mark}]  {'  '.join(parts)}"
 
@@ -289,7 +294,9 @@ class TrackSelectorScreen(Screen[TrackSelection]):
         Binding("s", "set_downmix('stereo')", "Stereo", show=False),
         Binding("m", "set_downmix('mono')", "Mono", show=False),
         Binding("6", "set_downmix('down6')", "5.1", show=False),
-        Binding("c", "clear_downmix", "Clear downmix"),
+        Binding("x", "clear_downmix", "Clear downmix"),
+        Binding("c", "edit_comment", "Comment"),
+        Binding("escape", "cancel_comment", "Cancel comment", show=False),
         Binding("l", "set_language", "Language"),
         Binding("d", "done", "Done"),
     ]
@@ -314,6 +321,9 @@ class TrackSelectorScreen(Screen[TrackSelection]):
         self._selected: list[bool] = [t.is_default for t in tracks]
         self._downmix: list[DownmixMode | None] = [None] * len(tracks)
         self._lang_override: list[str | None] = [None] * len(tracks)
+        self._comments: list[str] = [""] * len(tracks)
+        self._comment_index: int = 0
+        self._comment_open: bool = False
 
         if track_type == TrackType.AUDIO:
             for i, t in enumerate(tracks):
@@ -339,17 +349,20 @@ class TrackSelectorScreen(Screen[TrackSelection]):
         codec = v.codec_name.upper()
         resolution = f"{v.width}x{v.height}"
         kind = "Audio" if self._track_type == TrackType.AUDIO else "Subtitles"
-        filename = self._movie.main_file.name
+        filename = _escape_markup(self._movie.main_file.name)
 
         yield Header()
         yield Static(
             f"{filename}  |  {resolution}  {codec}  {duration}  {size}",
             id="track-header",
         )
-        yield Static(f"Select {kind} tracks  (Space=toggle  P=preview  D=done)", id="track-hint")
+        yield Static(
+            f"Select {kind} tracks  (Space=toggle  P=preview  C=comment  D=done)",
+            id="track-hint",
+        )
         if self._track_type == TrackType.AUDIO:
             yield Static(
-                "Downmix: S=2.0  M=1.0  6=5.1  C=clear",
+                "Downmix: S=2.0  M=1.0  6=5.1  X=clear",
                 id="track-downmix-hint",
             )
 
@@ -359,6 +372,7 @@ class TrackSelectorScreen(Screen[TrackSelection]):
             items.append(ListItem(Static(label, id=f"track-label-{i}"), id=f"track-item-{i}"))
 
         yield ListView(*items, id="track-list")
+        yield Input(placeholder="comment for this track (Enter=save  Esc=cancel)", id="track-comment-input")
 
         if self._track_type == TrackType.AUDIO:
             initial_track = self._tracks[0] if self._tracks else None
@@ -370,8 +384,13 @@ class TrackSelectorScreen(Screen[TrackSelection]):
 
         yield Footer()
 
+    def on_mount(self) -> None:
+        self._hide_comment_input()
+
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
         del parameters
+        if self._comment_open:
+            return action == "cancel_comment"
         return action != "set_language" or self._allow_relabel
 
     def _relabel_target(self, index: int) -> str | None:
@@ -384,13 +403,18 @@ class TrackSelectorScreen(Screen[TrackSelection]):
         track = self._tracks[index]
         selected = self._selected[index]
         if self._track_type == TrackType.AUDIO:
-            return _fmt_audio_track(
+            line = _fmt_audio_track(
                 track,
                 selected=selected,
                 downmix=self._downmix[index],
                 relabel_to=self._relabel_target(index),
             )
-        return _fmt_subtitle_track(track, selected=selected, relabel_to=self._relabel_target(index))
+        else:
+            line = _fmt_subtitle_track(track, selected=selected, relabel_to=self._relabel_target(index))
+        comment = self._comments[index]
+        if comment:
+            line += f"  [dim]# {_escape_markup(comment)} [/dim]"
+        return line
 
     def _refresh_item(self, index: int) -> None:
         label_widget = self.query_one(f"#track-label-{index}", Static)
@@ -458,6 +482,42 @@ class TrackSelectorScreen(Screen[TrackSelection]):
         self._refresh_item(self._cursor)
         self._refresh_detector_panel()
 
+    def _hide_comment_input(self) -> None:
+        self._comment_open = False
+        inp = self.query_one("#track-comment-input", Input)
+        inp.display = False
+        inp.can_focus = False
+        self.query_one("#track-list", ListView).focus()
+
+    def _commit_comment(self, value: str) -> None:
+        index = self._comment_index
+        self._comments[index] = value.strip()
+        self._hide_comment_input()
+        self._refresh_item(index)
+
+    def on_descendant_blur(self, event: events.DescendantBlur) -> None:
+        if self._comment_open and event.widget.id == "track-comment-input":
+            self._commit_comment(self.query_one("#track-comment-input", Input).value)
+
+    def action_edit_comment(self) -> None:
+        if not self._tracks:
+            return
+        self._comment_index = self._cursor
+        self._comment_open = True
+        inp = self.query_one("#track-comment-input", Input)
+        inp.value = self._comments[self._cursor]
+        inp.display = True
+        inp.can_focus = True
+        inp.focus()
+
+    def action_cancel_comment(self) -> None:
+        self._hide_comment_input()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        if event.input.id != "track-comment-input":
+            return
+        self._commit_comment(event.value)
+
     def action_set_language(self) -> None:
         if not self._allow_relabel or not self._lang_list or not self._tracks:
             return
@@ -516,7 +576,7 @@ class PlaylistSelectorScreen(Screen[list[DiscTitle]]):
     def compose(self) -> ComposeResult:
         yield Header()
         yield Static(
-            f"Disc: {self._disc_label}  |  Select playlists to demux  (Space=toggle  D=done)",
+            f"Disc: {_escape_markup(self._disc_label)}  |  Select playlists to demux  (Space=toggle  D=done)",
             id="playlist-hint",
         )
 
@@ -532,9 +592,9 @@ class PlaylistSelectorScreen(Screen[list[DiscTitle]]):
         pl = self._playlists[index]
         mark = "x" if self._selected[index] else " "
         duration = _fmt_duration(pl.duration_s)
-        line = f"\\[{mark}]  {pl.raw_label}  ({duration})"
+        line = f"\\[{mark}]  {_escape_markup(pl.raw_label)}  ({duration})"
         if pl.video is not None:
-            line += f"  {pl.video}"
+            line += f"  {_escape_markup(pl.video)}"
         return line
 
     def _refresh_item(self, index: int) -> None:
@@ -633,7 +693,7 @@ class FileSelectorScreen(Screen[FileSelection]):
         size = fmt_size(size_bytes)
         sar_tag = "  SAR" if self._sar_override[index] else ""
         grain_tag = "  GRAIN" if self._grain[index] else ""
-        return f"\\[{mark}]  {path.name}  |  {duration}  {size}{sar_tag}{grain_tag}"
+        return f"\\[{mark}]  {_escape_markup(path.name)}  |  {duration}  {size}{sar_tag}{grain_tag}"
 
     def _refresh_item(self, index: int) -> None:
         label_widget = self.query_one(f"#file-label-{index}", Static)
@@ -823,7 +883,7 @@ class LanguageSelectorScreen(Screen[str]):
 
         if self._movie is not None:
             v = self._movie.video
-            filename = self._movie.main_file.name
+            filename = _escape_markup(self._movie.main_file.name)
             resolution = f"{v.width}x{v.height}"
             codec = v.codec_name.upper()
             yield Static(f"{filename}  |  {resolution}  {codec}", id="lang-header")

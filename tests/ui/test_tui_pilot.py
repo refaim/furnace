@@ -5,7 +5,7 @@ from typing import Any
 
 import pytest
 from textual.app import App, ComposeResult
-from textual.widgets import Input, Static
+from textual.widgets import Input, ListView, Static
 
 from furnace.core.audio_profile import AudioMetrics, AudioProfile, Verdict
 from furnace.core.models import (
@@ -197,6 +197,7 @@ async def test_track_selector_empty_tracks_guards() -> None:
         await pilot.press("s")
         await pilot.press("6")
         await pilot.press("c")
+        await pilot.press("x")
         await pilot.press("d")
         await pilot.pause()
     assert not previewed
@@ -243,7 +244,7 @@ async def test_track_selector_set_downmix_ignored_for_subtitle() -> None:
         await pilot.pause()
         await pilot.press("s")
         await pilot.press("6")
-        await pilot.press("c")
+        await pilot.press("x")
         await pilot.press("d")
         await pilot.pause()
     assert isinstance(app.result, TrackSelection)
@@ -263,7 +264,7 @@ async def test_track_selector_clear_downmix_removes_auto_applied() -> None:
         before = str(panel.render())
         assert "downmix applied" in before
         assert "no downmix" not in before
-        await pilot.press("c")
+        await pilot.press("x")
         assert screen._downmix[0] is None
         assert "no downmix applied" in str(panel.render())
         await pilot.press("d")
@@ -288,7 +289,7 @@ async def test_track_selector_downmix_hint_mentions_clear() -> None:
         screen = app.screen
         assert isinstance(screen, TrackSelectorScreen)
         hint = screen.query_one("#track-downmix-hint", Static)
-        assert "C=clear" in str(hint.render())
+        assert "X=clear" in str(hint.render())
         await pilot.press("d")
         await pilot.pause()
 
@@ -1197,3 +1198,241 @@ async def test_language_selector_omits_tagged_for_und() -> None:
 
 
 _ = pytest
+
+
+async def test_track_selector_comment_is_stored_and_shown() -> None:
+    mv = _movie_with_audio_and_subs()
+    t = _audio_track(index=1, is_default=True)
+    app = _HostApp(lambda: TrackSelectorScreen(movie=mv, tracks=[t], track_type=TrackType.AUDIO, preview_cb=None))
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, TrackSelectorScreen)
+        inp = screen.query_one("#track-comment-input", Input)
+        assert inp.display is False
+
+        await pilot.press("c")
+        await pilot.pause()
+        assert inp.display is True
+        assert screen.focused is inp
+
+        inp.value = "Гаврилов"
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert screen._comments[0] == "Гаврилов"
+        assert "Гаврилов" in screen._render_line(0)
+        assert inp.display is False
+        await pilot.press("d")
+        await pilot.pause()
+    assert isinstance(app.result, TrackSelection)
+
+
+async def test_track_selector_comment_escape_discards() -> None:
+    mv = _movie_with_audio_and_subs()
+    t = _audio_track(index=1, is_default=True)
+    app = _HostApp(lambda: TrackSelectorScreen(movie=mv, tracks=[t], track_type=TrackType.AUDIO, preview_cb=None))
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, TrackSelectorScreen)
+        await pilot.press("c")
+        inp = screen.query_one("#track-comment-input", Input)
+        inp.value = "не сохранять"
+        await pilot.press("escape")
+        await pilot.pause()
+
+        assert screen._comments[0] == ""
+        assert inp.display is False
+        await pilot.press("d")
+        await pilot.pause()
+    assert isinstance(app.result, TrackSelection)
+
+
+async def test_track_selector_comment_reopens_with_previous_text() -> None:
+    mv = _movie_with_audio_and_subs()
+    t = _audio_track(index=1, is_default=True)
+    app = _HostApp(lambda: TrackSelectorScreen(movie=mv, tracks=[t], track_type=TrackType.AUDIO, preview_cb=None))
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, TrackSelectorScreen)
+        inp = screen.query_one("#track-comment-input", Input)
+        await pilot.press("c")
+        inp.value = "Михалёв"
+        await pilot.press("enter")
+        await pilot.pause()
+        await pilot.press("c")
+        await pilot.pause()
+
+        assert inp.value == "Михалёв"
+        await pilot.press("escape")
+        await pilot.press("d")
+        await pilot.pause()
+    assert isinstance(app.result, TrackSelection)
+
+
+async def test_track_selector_comment_is_per_track() -> None:
+    mv = _movie_with_audio_and_subs()
+    tracks = [_audio_track(index=1, is_default=True), _audio_track(index=2, is_default=True)]
+    app = _HostApp(lambda: TrackSelectorScreen(movie=mv, tracks=tracks, track_type=TrackType.AUDIO, preview_cb=None))
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, TrackSelectorScreen)
+        inp = screen.query_one("#track-comment-input", Input)
+
+        await pilot.press("c")
+        inp.value = "дубляж"
+        await pilot.press("enter")
+        await pilot.pause()
+
+        screen.action_move_down()
+        await pilot.press("c")
+        inp.value = "закадр"
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert screen._comments == ["дубляж", "закадр"]
+        assert "дубляж" in screen._render_line(0)
+        assert "закадр" in screen._render_line(1)
+        await pilot.press("d")
+        await pilot.pause()
+    assert isinstance(app.result, TrackSelection)
+
+
+async def test_track_selector_comment_on_subtitles() -> None:
+    mv = _movie_with_audio_and_subs()
+    tracks = [_sub_track()]
+    app = _HostApp(lambda: TrackSelectorScreen(movie=mv, tracks=tracks, track_type=TrackType.SUBTITLE, preview_cb=None))
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, TrackSelectorScreen)
+        inp = screen.query_one("#track-comment-input", Input)
+        await pilot.press("c")
+        inp.value = "форсированные"
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert "форсированные" in screen._render_line(0)
+        await pilot.press("d")
+        await pilot.pause()
+    assert isinstance(app.result, TrackSelection)
+
+
+async def test_track_selector_comment_is_dropped_on_done() -> None:
+    mv = _movie_with_audio_and_subs()
+    t = _audio_track(index=1, is_default=True)
+    app = _HostApp(lambda: TrackSelectorScreen(movie=mv, tracks=[t], track_type=TrackType.AUDIO, preview_cb=None))
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, TrackSelectorScreen)
+        inp = screen.query_one("#track-comment-input", Input)
+        await pilot.press("c")
+        inp.value = "Гаврилов"
+        await pilot.press("enter")
+        await pilot.pause()
+        await pilot.press("d")
+        await pilot.pause()
+    assert isinstance(app.result, TrackSelection)
+    assert not any("Гаврилов" in str(v) for v in vars(app.result).values())
+
+
+async def test_track_selector_comment_hint_is_shown() -> None:
+    mv = _movie_with_audio_and_subs()
+    t = _audio_track(index=1, is_default=True)
+    app = _HostApp(lambda: TrackSelectorScreen(movie=mv, tracks=[t], track_type=TrackType.AUDIO, preview_cb=None))
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, TrackSelectorScreen)
+        hint = screen.query_one("#track-hint", Static)
+        assert "C=comment" in str(hint.render())
+        await pilot.press("d")
+        await pilot.pause()
+
+
+async def test_track_selector_comment_sticks_to_the_track_it_was_opened_on() -> None:
+    mv = _movie_with_audio_and_subs()
+    tracks = [_audio_track(index=1, is_default=True), _audio_track(index=2, is_default=True)]
+    app = _HostApp(lambda: TrackSelectorScreen(movie=mv, tracks=tracks, track_type=TrackType.AUDIO, preview_cb=None))
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, TrackSelectorScreen)
+        inp = screen.query_one("#track-comment-input", Input)
+
+        await pilot.press("c")
+        inp.value = "дубляж"
+        await pilot.press("down")
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert screen._comments == ["дубляж", ""]
+        await pilot.press("d")
+        await pilot.pause()
+    assert isinstance(app.result, TrackSelection)
+
+
+async def test_track_selector_arrows_are_inert_while_commenting() -> None:
+    mv = _movie_with_audio_and_subs()
+    tracks = [_audio_track(index=1, is_default=True), _audio_track(index=2, is_default=True)]
+    app = _HostApp(lambda: TrackSelectorScreen(movie=mv, tracks=tracks, track_type=TrackType.AUDIO, preview_cb=None))
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, TrackSelectorScreen)
+        await pilot.press("c")
+        await pilot.press("down")
+        await pilot.pause()
+
+        assert screen._cursor == 0
+        await pilot.press("escape")
+        await pilot.press("d")
+        await pilot.pause()
+    assert isinstance(app.result, TrackSelection)
+
+
+async def test_track_selector_comment_is_saved_when_focus_leaves() -> None:
+    mv = _movie_with_audio_and_subs()
+    t = _audio_track(index=1, is_default=True)
+    app = _HostApp(lambda: TrackSelectorScreen(movie=mv, tracks=[t], track_type=TrackType.AUDIO, preview_cb=None))
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, TrackSelectorScreen)
+        inp = screen.query_one("#track-comment-input", Input)
+        await pilot.press("c")
+        inp.value = "набранный мышью"
+        screen.query_one("#track-list", ListView).focus()
+        await pilot.pause()
+
+        assert inp.display is False
+        assert screen._comments[0] == "набранный мышью"
+        await pilot.press("d")
+        await pilot.pause()
+    assert isinstance(app.result, TrackSelection)
+
+
+async def test_track_selector_arrows_work_again_after_commenting() -> None:
+    mv = _movie_with_audio_and_subs()
+    tracks = [_audio_track(index=1, is_default=True), _audio_track(index=2, is_default=True)]
+    app = _HostApp(lambda: TrackSelectorScreen(movie=mv, tracks=tracks, track_type=TrackType.AUDIO, preview_cb=None))
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, TrackSelectorScreen)
+        inp = screen.query_one("#track-comment-input", Input)
+        await pilot.press("c")
+        inp.value = "дубляж"
+        await pilot.press("enter")
+        await pilot.pause()
+        await pilot.press("down")
+        await pilot.pause()
+
+        assert screen._cursor == 1
+        await pilot.press("d")
+        await pilot.pause()
+    assert isinstance(app.result, TrackSelection)
