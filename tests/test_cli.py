@@ -1339,37 +1339,111 @@ class TestMakePreviewTrackCb:
     def test_audio_track_calls_preview_audio(self, tmp_path: Path) -> None:
         from furnace.cli import _make_preview_track_cb
 
-        movie = make_movie(main_file=tmp_path / "m.mkv")
+        main = tmp_path / "m.mkv"
+        track = make_track(index=1, track_type=TrackType.AUDIO, source_file=main)
+        movie = make_movie(main_file=main, audio_tracks=[track])
         mpv = MagicMock()
-        track = make_track(
-            index=1,
-            track_type=TrackType.AUDIO,
-            source_file=tmp_path / "audio.mka",
-        )
 
         cb = _make_preview_track_cb(movie, mpv)
         cb(track)
 
-        mpv.preview_audio.assert_called_once_with(movie.main_file, track.source_file, track.index)
+        mpv.preview_audio.assert_called_once_with(main, None, 1)
         mpv.preview_subtitle.assert_not_called()
 
     def test_subtitle_track_calls_preview_subtitle(self, tmp_path: Path) -> None:
         from furnace.cli import _make_preview_track_cb
 
-        movie = make_movie(main_file=tmp_path / "m.mkv")
-        mpv = MagicMock()
+        main = tmp_path / "m.mkv"
         track = make_track(
-            index=2,
+            index=4,
             track_type=TrackType.SUBTITLE,
             codec_name="subrip",
-            source_file=tmp_path / "subs.srt",
+            source_file=main,
         )
+        movie = make_movie(main_file=main, subtitle_tracks=[track])
+        mpv = MagicMock()
 
         cb = _make_preview_track_cb(movie, mpv)
         cb(track)
 
-        mpv.preview_subtitle.assert_called_once_with(movie.main_file, track.source_file, track.index)
+        mpv.preview_subtitle.assert_called_once_with(main, None, 1)
         mpv.preview_audio.assert_not_called()
+
+    def test_audio_track_id_counts_from_one_inside_the_file(self, tmp_path: Path) -> None:
+        from furnace.cli import _make_preview_track_cb
+
+        main = tmp_path / "m.mkv"
+        tracks = [make_track(index=i, track_type=TrackType.AUDIO, source_file=main) for i in (1, 2, 3)]
+        movie = make_movie(main_file=main, audio_tracks=tracks)
+        mpv = MagicMock()
+
+        cb = _make_preview_track_cb(movie, mpv)
+        cb(tracks[2])
+
+        mpv.preview_audio.assert_called_once_with(main, None, 3)
+
+    def test_subtitle_track_id_ignores_the_global_stream_index(self, tmp_path: Path) -> None:
+        from furnace.cli import _make_preview_track_cb
+
+        main = tmp_path / "m.mkv"
+        subs = [
+            make_track(index=i, track_type=TrackType.SUBTITLE, codec_name="subrip", source_file=main)
+            for i in (4, 5, 6)
+        ]
+        movie = make_movie(main_file=main, subtitle_tracks=subs)
+        mpv = MagicMock()
+
+        cb = _make_preview_track_cb(movie, mpv)
+        cb(subs[1])
+
+        mpv.preview_subtitle.assert_called_once_with(main, None, 2)
+
+    def test_external_audio_track_id_follows_the_internal_ones(self, tmp_path: Path) -> None:
+        from furnace.cli import _make_preview_track_cb
+
+        main = tmp_path / "m.mkv"
+        external = tmp_path / "audio.mka"
+        internal = [make_track(index=i, track_type=TrackType.AUDIO, source_file=main) for i in (1, 2)]
+        outside = make_track(index=100, track_type=TrackType.AUDIO, source_file=external)
+        movie = make_movie(main_file=main, audio_tracks=[*internal, outside])
+        mpv = MagicMock()
+
+        cb = _make_preview_track_cb(movie, mpv)
+        cb(outside)
+
+        mpv.preview_audio.assert_called_once_with(main, external, 3)
+
+    def test_external_subtitle_track_id_follows_the_internal_ones(self, tmp_path: Path) -> None:
+        from furnace.cli import _make_preview_track_cb
+
+        main = tmp_path / "m.mkv"
+        external = tmp_path / "subs.srt"
+        internal = [
+            make_track(index=i, track_type=TrackType.SUBTITLE, codec_name="subrip", source_file=main) for i in (4, 5)
+        ]
+        outside = make_track(index=100, track_type=TrackType.SUBTITLE, codec_name="subrip", source_file=external)
+        movie = make_movie(main_file=main, subtitle_tracks=[*internal, outside])
+        mpv = MagicMock()
+
+        cb = _make_preview_track_cb(movie, mpv)
+        cb(outside)
+
+        mpv.preview_subtitle.assert_called_once_with(main, external, 3)
+
+    def test_second_track_of_the_same_external_file(self, tmp_path: Path) -> None:
+        from furnace.cli import _make_preview_track_cb
+
+        main = tmp_path / "m.mkv"
+        external = tmp_path / "audio.mka"
+        internal = [make_track(index=1, track_type=TrackType.AUDIO, source_file=main)]
+        outside = [make_track(index=i, track_type=TrackType.AUDIO, source_file=external) for i in (100, 101)]
+        movie = make_movie(main_file=main, audio_tracks=[*internal, *outside])
+        mpv = MagicMock()
+
+        cb = _make_preview_track_cb(movie, mpv)
+        cb(outside[1])
+
+        mpv.preview_audio.assert_called_once_with(main, external, 3)
 
 
 class TestSelectTracksTui:

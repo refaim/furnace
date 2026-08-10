@@ -24,6 +24,56 @@ class TestPreviewAudio:
         assert mock_run.call_args[1]["check"] is False
 
 
+class TestPreviewSingleTrackSet:
+    def test_no_audio_file_when_track_lives_in_the_video(self) -> None:
+        adapter = MpvAdapter(Path("mpv.exe"))
+        with patch("furnace.adapters.mpv.subprocess.run") as mock_run:
+            adapter.preview_audio(Path("video.mkv"), None, 2)
+        cmd = mock_run.call_args[0][0]
+        assert not any(c.startswith("--audio-file=") for c in cmd)
+        assert "--aid=2" in cmd
+        assert cmd.count("video.mkv") == 1
+
+    def test_no_audio_file_when_paths_are_the_same(self) -> None:
+        adapter = MpvAdapter(Path("mpv.exe"))
+        with patch("furnace.adapters.mpv.subprocess.run") as mock_run:
+            adapter.preview_audio(Path("video.mkv"), Path("video.mkv"), 1)
+        cmd = mock_run.call_args[0][0]
+        assert not any(c.startswith("--audio-file=") for c in cmd)
+
+    def test_no_sub_file_when_track_lives_in_the_video(self) -> None:
+        adapter = MpvAdapter(Path("mpv.exe"))
+        with patch("furnace.adapters.mpv.subprocess.run") as mock_run:
+            adapter.preview_subtitle(Path("video.mkv"), None, 3)
+        cmd = mock_run.call_args[0][0]
+        assert not any(c.startswith("--sub-file=") for c in cmd)
+        assert "--sid=3" in cmd
+        assert cmd.count("video.mkv") == 1
+
+    def test_no_sub_file_when_paths_are_the_same(self) -> None:
+        adapter = MpvAdapter(Path("mpv.exe"))
+        with patch("furnace.adapters.mpv.subprocess.run") as mock_run:
+            adapter.preview_subtitle(Path("video.mkv"), Path("video.mkv"), 1)
+        cmd = mock_run.call_args[0][0]
+        assert not any(c.startswith("--sub-file=") for c in cmd)
+
+    def test_audio_preview_does_not_autoload_sidecars(self) -> None:
+        adapter = MpvAdapter(Path("mpv.exe"))
+        with patch("furnace.adapters.mpv.subprocess.run") as mock_run:
+            adapter.preview_audio(Path("video.mkv"), None, 1)
+        cmd = mock_run.call_args[0][0]
+        assert "--audio-file-auto=no" in cmd
+        assert "--sub-auto=no" in cmd
+
+    def test_subtitle_preview_does_not_autoload_sidecars(self) -> None:
+        adapter = MpvAdapter(Path("mpv.exe"))
+        with patch("furnace.adapters.mpv.subprocess.run") as mock_run:
+            adapter.preview_subtitle(Path("video.mkv"), None, 1)
+        cmd = mock_run.call_args[0][0]
+        assert "--audio-file-auto=no" in cmd
+        assert "--sub-auto=no" in cmd
+
+
 class TestPreviewSubtitle:
     def test_sub_file_and_sid_in_cmd(self) -> None:
         adapter = MpvAdapter(Path("mpv.exe"))

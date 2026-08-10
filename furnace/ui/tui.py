@@ -532,7 +532,10 @@ class PlaylistSelectorScreen(Screen[list[DiscTitle]]):
         pl = self._playlists[index]
         mark = "x" if self._selected[index] else " "
         duration = _fmt_duration(pl.duration_s)
-        return f"\\[{mark}]  {pl.raw_label}  ({duration})"
+        line = f"\\[{mark}]  {pl.raw_label}  ({duration})"
+        if pl.video is not None:
+            line += f"  {pl.video}"
+        return line
 
     def _refresh_item(self, index: int) -> None:
         label_widget = self.query_one(f"#pl-label-{index}", Static)

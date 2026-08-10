@@ -189,6 +189,7 @@ class DiscTitle:
     number: int
     duration_s: float
     raw_label: str
+    video: str | None = None
 
 
 @dataclass

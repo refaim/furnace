@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import re
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from furnace.core.models import DiscTitle, DownmixMode
@@ -16,6 +16,9 @@ logger = logging.getLogger(__name__)
 _PLAYLIST_RE = re.compile(r"^(\d+)\)\s+(.+),\s+(\d+:\d{2}(?::\d{2})?)$")
 _TRACK_RE = re.compile(r"^(\d+):\s+(.+)$")
 _LANG_RE = re.compile(r"\[(\w{3})\]")
+_DEMUX_TRACK_NUM_RE = re.compile(r" - (\d+) - ")
+_LISTED_TRACK_RE = re.compile(r"^-\s+(.+)$")
+_VIDEO_FORMAT_RE = re.compile(r"\b(?:\d{3,4}[pi]\d*|\d{3,4}x\d{3,4})\b")
 _EAC3TO_PROGRESS_RE = re.compile(r"^process:\s*(\d+)%\s*$")
 _EAC3TO_ANY_PROGRESS_RE = re.compile(r"^(?:process|analyze):\s*\d+%\s*$")
 
@@ -74,6 +77,29 @@ def _ext_for_track(description: str) -> str:
     if "chapters" in desc_lower:
         return ".txt"
     return ".bin"
+
+
+def _demux_track_numbers(files: list[Path]) -> dict[Path, int] | None:
+    numbers: dict[Path, int] = {}
+    for f in files:
+        m = _DEMUX_TRACK_NUM_RE.search(f.name)
+        if m is not None:
+            numbers[f] = int(m.group(1))
+    if len(set(numbers.values())) != len(numbers):
+        return None
+    return numbers
+
+
+def _order_demuxed_files(files: list[Path]) -> list[Path]:
+    by_name = sorted(files)
+    numbers = _demux_track_numbers(by_name)
+    if numbers is None:
+        logger.warning(
+            "eac3to demux output carries no unambiguous track number; keeping name order: %s",
+            [f.name for f in by_name],
+        )
+        return by_name
+    return sorted(by_name, key=lambda p: (0, numbers[p], "") if p in numbers else (1, 0, p.name))
 
 
 def _parse_duration(s: str) -> float:
@@ -201,7 +227,7 @@ class Eac3toAdapter:
         )
         if rc != 0:
             raise RuntimeError(f"eac3to demux failed for {disc_path} title {title_num} (rc={rc})")
-        return sorted(p for p in output_dir.iterdir() if p.is_file())
+        return _order_demuxed_files([p for p in output_dir.iterdir() if p.is_file()])
 
     @staticmethod
     def _parse_track_listing(output: str) -> list[Eac3toTrack]:
@@ -232,17 +258,27 @@ class Eac3toAdapter:
         for raw_line in output.splitlines():
             line = raw_line.strip()
             m = _PLAYLIST_RE.match(line)
-            if not m:
-                continue
-            number = int(m.group(1))
-            label = m.group(2).strip()
-            duration_str = m.group(3)
-            duration_s = _parse_duration(duration_str)
-            results.append(
-                DiscTitle(
-                    number=number,
-                    duration_s=duration_s,
-                    raw_label=f"{number}) {label}, {duration_str}",
+            if m:
+                number = int(m.group(1))
+                label = m.group(2).strip()
+                duration_str = m.group(3)
+                duration_s = _parse_duration(duration_str)
+                results.append(
+                    DiscTitle(
+                        number=number,
+                        duration_s=duration_s,
+                        raw_label=f"{number}) {label}, {duration_str}",
+                    )
                 )
-            )
+                continue
+
+            if not results or results[-1].video is not None:
+                continue
+            track = _LISTED_TRACK_RE.match(line)
+            if track is None:
+                continue
+            description = track.group(1).strip()
+            if _VIDEO_FORMAT_RE.search(description) is None:
+                continue
+            results[-1] = replace(results[-1], video=description)
         return results

@@ -4,8 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from furnace.core.models import CropRect, DownmixMode
-from furnace.ui.tui import build_downmix_map, parse_crop_value
+from furnace.core.models import CropRect, DiscTitle, DownmixMode
+from furnace.ui.tui import PlaylistSelectorScreen, build_downmix_map, parse_crop_value
 from tests.conftest import make_track
 
 
@@ -81,3 +81,26 @@ class TestBuildDownmixMap:
         ]
         result = build_downmix_map(tracks, selected, downmix_list)
         assert result == {(Path("/src/a.mkv"), 1): DownmixMode.STEREO}
+
+
+class TestPlaylistLine:
+    def test_shows_video_format(self) -> None:
+        playlists = [
+            DiscTitle(
+                number=3,
+                duration_s=6062.0,
+                raw_label="3) 00025.mpls, 00076.m2ts, 1:41:02",
+                video="h264/AVC, 1080p24/1.001 (16:9)",
+            )
+        ]
+        screen = PlaylistSelectorScreen(disc_label="Disc", playlists=playlists)
+        line = screen._render_line(0)
+        assert "h264/AVC, 1080p24/1.001 (16:9)" in line
+        assert "00025.mpls" in line
+
+    def test_line_without_video_has_no_trailing_separator(self) -> None:
+        playlists = [DiscTitle(number=1, duration_s=600.0, raw_label="1) 00800.mpls, 0:10:00")]
+        screen = PlaylistSelectorScreen(disc_label="Disc", playlists=playlists)
+        line = screen._render_line(0)
+        assert line == line.rstrip()
+        assert line.endswith("(10:00)")

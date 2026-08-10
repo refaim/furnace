@@ -11,23 +11,27 @@ class MpvAdapter:
     def __init__(self, mpv_path: Path) -> None:
         self._mpv = mpv_path
 
-    def preview_audio(self, video_path: Path, audio_path: Path, stream_index: int) -> None:
-        cmd = [
+    def _base_cmd(self, video_path: Path) -> list[str]:
+        return [
             str(self._mpv),
             str(video_path),
-            f"--audio-file={audio_path}",
-            f"--aid={stream_index}",
+            "--audio-file-auto=no",
+            "--sub-auto=no",
         ]
+
+    def preview_audio(self, video_path: Path, audio_path: Path | None, track_id: int) -> None:
+        cmd = self._base_cmd(video_path)
+        if audio_path is not None and audio_path != video_path:
+            cmd.append(f"--audio-file={audio_path}")
+        cmd.append(f"--aid={track_id}")
         logger.info("mpv preview_audio cmd: %s", " ".join(cmd))
         subprocess.run(cmd, check=False)
 
-    def preview_subtitle(self, video_path: Path, sub_path: Path, stream_index: int) -> None:
-        cmd = [
-            str(self._mpv),
-            str(video_path),
-            f"--sub-file={sub_path}",
-            f"--sid={stream_index}",
-        ]
+    def preview_subtitle(self, video_path: Path, sub_path: Path | None, track_id: int) -> None:
+        cmd = self._base_cmd(video_path)
+        if sub_path is not None and sub_path != video_path:
+            cmd.append(f"--sub-file={sub_path}")
+        cmd.append(f"--sid={track_id}")
         logger.info("mpv preview_subtitle cmd: %s", " ".join(cmd))
         subprocess.run(cmd, check=False)
 

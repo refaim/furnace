@@ -91,13 +91,24 @@ def _run_screen_app[T](screen_factory: Callable[[], Screen[T]]) -> T | None:
     return result_holder[0]
 
 
+def _preview_track_id(movie: Movie, track: Track) -> tuple[Path | None, int]:
+    siblings = movie.audio_tracks if track.track_type == TrackType.AUDIO else movie.subtitle_tracks
+    same_file = [t for t in siblings if t.source_file == track.source_file]
+    ordinal = 1 + sum(1 for t in same_file if t.index < track.index)
+    if track.source_file == movie.main_file:
+        return None, ordinal
+    inside_main = sum(1 for t in siblings if t.source_file == movie.main_file)
+    return track.source_file, inside_main + ordinal
+
+
 def _make_preview_track_cb(movie: Movie, mpv_adapter: MpvAdapter) -> Callable[[Track], None]:
 
     def _preview_track(track: Track) -> None:
+        external, track_id = _preview_track_id(movie, track)
         if track.track_type == TrackType.AUDIO:
-            mpv_adapter.preview_audio(movie.main_file, track.source_file, track.index)
+            mpv_adapter.preview_audio(movie.main_file, external, track_id)
         else:
-            mpv_adapter.preview_subtitle(movie.main_file, track.source_file, track.index)
+            mpv_adapter.preview_subtitle(movie.main_file, external, track_id)
 
     return _preview_track
 
