@@ -451,18 +451,25 @@ def should_skip_file(
     return False, ""
 
 
+def _describe_unsupported(track: Track, kind: str) -> str:
+    # The profile is what separates a DTS variant we cannot classify from plain
+    # DTS, so name it -- otherwise the message is unactionable.
+    profile = f" profile {track.profile!r}" if track.profile is not None else ""
+    return f"{kind} stream #{track.index} ({track.codec_name!r}{profile}, lang={track.language})"
+
+
 def check_unsupported_codecs(
     audio_tracks: list[Track],
     subtitle_tracks: list[Track],
 ) -> str | None:
     unknown: list[str] = [
-        f"audio stream #{track.index} ({track.codec_name!r}, lang={track.language})"
+        _describe_unsupported(track, "audio")
         for track in audio_tracks
         if track.codec_id is AudioCodecId.UNKNOWN
     ]
 
     unknown.extend(
-        f"subtitle stream #{track.index} ({track.codec_name!r}, lang={track.language})"
+        _describe_unsupported(track, "subtitle")
         for track in subtitle_tracks
         if track.codec_id is SubtitleCodecId.UNKNOWN
     )

@@ -37,6 +37,19 @@ _SUBTITLE_CODEC_MAP: dict[str, SubtitleCodecId] = {
     codec.value: codec for codec in SubtitleCodecId if codec is not SubtitleCodecId.UNKNOWN
 }
 
+# ffmpeg names the object-audio profiles by appending to the base one, e.g.
+# "DTS-HD MA + DTS:X" -- so these are matched as prefixes. No entry below is a
+# prefix of another, so the order does not matter; a test pins that invariant.
+# A bare "DTS" is matched exactly instead: as a prefix it would swallow every
+# other name here, routing lossless audio straight to a verbatim copy.
+_DTS_PROFILE_PREFIXES: tuple[tuple[str, AudioCodecId], ...] = (
+    ("DTS-HD HRA", AudioCodecId.DTS_HRA),
+    ("DTS-HD MA", AudioCodecId.DTS_MA),
+    ("DTS Express", AudioCodecId.DTS),
+    ("DTS 96/24", AudioCodecId.DTS),
+    ("DTS-ES", AudioCodecId.DTS_ES),
+)
+
 
 def get_audio_action(codec_id: AudioCodecId) -> AudioAction | None:
     return AUDIO_CODEC_ACTIONS.get(codec_id)
@@ -56,17 +69,12 @@ def is_known_subtitle_codec(codec_id: SubtitleCodecId) -> bool:
 
 def parse_audio_codec(codec_name: str, profile: str | None) -> AudioCodecId:
     if codec_name == "dts":
-        match profile:
-            case "DTS-HD MA":
-                return AudioCodecId.DTS_MA
-            case "DTS-HD HRA":
-                return AudioCodecId.DTS_HRA
-            case "DTS-ES":
-                return AudioCodecId.DTS_ES
-            case "DTS" | None:
-                return AudioCodecId.DTS
-            case _:
-                return AudioCodecId.DTS
+        if profile is None or profile == "DTS":
+            return AudioCodecId.DTS
+        for prefix, codec_id in _DTS_PROFILE_PREFIXES:
+            if profile.startswith(prefix):
+                return codec_id
+        return AudioCodecId.UNKNOWN
 
     if codec_name == "aac":
         match profile:

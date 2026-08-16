@@ -4,6 +4,7 @@ import pytest
 
 from furnace.core.models import AudioAction, AudioCodecId, SubtitleAction, SubtitleCodecId
 from furnace.core.rules import (
+    _DTS_PROFILE_PREFIXES,
     get_audio_action,
     get_subtitle_action,
     is_known_audio_codec,
@@ -17,20 +18,51 @@ class TestParseAudioCodec:
     def test_dts_core_no_profile(self) -> None:
         assert parse_audio_codec("dts", None) == AudioCodecId.DTS
 
-    def test_dts_core_explicit_profile(self) -> None:
-        assert parse_audio_codec("dts", "DTS") == AudioCodecId.DTS
+    # Every name ffmpeg can emit for a DCA stream (libavcodec ff_dca_profiles).
+    # The "+ DTS:X" rows are the ones that used to be misread as lossy core and
+    # copied verbatim, which is how a 4.7 GB lossless track survived an encode.
+    @pytest.mark.parametrize(
+        ("profile", "expected"),
+        [
+            ("DTS", AudioCodecId.DTS),
+            ("DTS-ES", AudioCodecId.DTS_ES),
+            ("DTS 96/24", AudioCodecId.DTS),
+            ("DTS-HD HRA", AudioCodecId.DTS_HRA),
+            ("DTS-HD MA", AudioCodecId.DTS_MA),
+            ("DTS Express", AudioCodecId.DTS),
+            ("DTS-HD MA + DTS:X", AudioCodecId.DTS_MA),
+            ("DTS-HD MA + DTS:X IMAX", AudioCodecId.DTS_MA),
+        ],
+    )
+    def test_every_ffmpeg_dts_profile_is_classified(
+        self,
+        profile: str,
+        expected: AudioCodecId,
+    ) -> None:
+        assert parse_audio_codec("dts", profile) == expected
 
-    def test_dts_es(self) -> None:
-        assert parse_audio_codec("dts", "DTS-ES") == AudioCodecId.DTS_ES
+    @pytest.mark.parametrize(
+        "profile",
+        [
+            "DTS-X",
+            # Shares the bare-core prefix, so it must not fall through to DTS.
+            "DTS-HD Ultra",
+            # ffprobe prints the raw profile integer when libavcodec has no
+            # ff_dca_profiles entry for it -- the realistic way a DTS variant
+            # newer than the linked ffmpeg build shows up here. 63 is unused;
+            # 62 would arrive named, as "DTS-HD MA + DTS:X IMAX".
+            "63",
+            "unknown",
+        ],
+    )
+    def test_unrecognised_dts_profile_is_unknown(self, profile: str) -> None:
+        assert parse_audio_codec("dts", profile) == AudioCodecId.UNKNOWN
 
-    def test_dts_hd_hra(self) -> None:
-        assert parse_audio_codec("dts", "DTS-HD HRA") == AudioCodecId.DTS_HRA
-
-    def test_dts_hd_ma(self) -> None:
-        assert parse_audio_codec("dts", "DTS-HD MA") == AudioCodecId.DTS_MA
-
-    def test_dts_unknown_profile_falls_back_to_dts(self) -> None:
-        assert parse_audio_codec("dts", "DTS-X") == AudioCodecId.DTS
+    def test_dts_prefixes_do_not_shadow_each_other(self) -> None:
+        prefixes = [prefix for prefix, _ in _DTS_PROFILE_PREFIXES]
+        for outer in prefixes:
+            shadowed = [inner for inner in prefixes if inner != outer and inner.startswith(outer)]
+            assert not shadowed, f"{outer!r} shadows {shadowed!r}; matching order would matter"
 
     def test_aac_lc_no_profile(self) -> None:
         assert parse_audio_codec("aac", None) == AudioCodecId.AAC_LC

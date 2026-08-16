@@ -65,6 +65,7 @@ def make_audio_track(
     codec_id: AudioCodecId = AudioCodecId.AAC_LC,
     codec_name: str = "aac",
     language: str = "eng",
+    profile: str | None = None,
 ) -> Track:
     return make_track(
         index=index,
@@ -73,6 +74,7 @@ def make_audio_track(
         codec_id=codec_id,
         language=language,
         source_file=Path("movie.mkv"),
+        profile=profile,
     )
 
 
@@ -413,6 +415,24 @@ class TestUnknownCodecCheck:
         assert result is not None
         assert "audio stream #2" in result
         assert "somecodec" in result
+
+    def test_unknown_audio_warning_names_the_profile(self) -> None:
+        # A raw profile integer is what ffprobe prints when libavcodec has no
+        # name for the constant, and parse_audio_codec really does reject it --
+        # unlike a made-up "DTS-HD MA + ..." string, which would prefix-match
+        # its way to DTS_MA and never reach here.
+        audio = [
+            make_audio_track(
+                index=7,
+                codec_id=AudioCodecId.UNKNOWN,
+                codec_name="dts",
+                language="eng",
+                profile="63",
+            )
+        ]
+        result = check_unsupported_codecs(audio, [])
+        assert result is not None
+        assert "audio stream #7 ('dts' profile '63', lang=eng)" in result
 
     def test_unknown_subtitle_returns_warning(self) -> None:
         subs = [make_sub_track(index=3, codec_id=SubtitleCodecId.UNKNOWN, language="fra")]
