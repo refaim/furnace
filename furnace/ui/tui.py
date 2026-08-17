@@ -391,13 +391,21 @@ class TrackSelectorScreen(Screen[TrackSelection]):
         del parameters
         if self._comment_open:
             return action == "cancel_comment"
-        return action != "set_language" or self._allow_relabel
+        return action != "set_language" or bool(self._lang_list)
 
     def _relabel_target(self, index: int) -> str | None:
-        if not self._allow_relabel or not self._lang_list:
-            return None
         override = self._lang_override[index]
-        return override if override is not None else self._lang_list[0]
+        if override is not None:
+            return override
+        if self._allow_relabel and self._lang_list:
+            return self._lang_list[0]
+        return None
+
+    def _lang_cycle(self, index: int) -> list[str | None]:
+        if self._allow_relabel:
+            return list(self._lang_list)
+        base = self._tracks[index].language or "und"
+        return [None, *(lang for lang in self._lang_list if lang != base)]
 
     def _render_line(self, index: int) -> str:
         track = self._tracks[index]
@@ -519,25 +527,14 @@ class TrackSelectorScreen(Screen[TrackSelection]):
         self._commit_comment(event.value)
 
     def action_set_language(self) -> None:
-        if not self._allow_relabel or not self._lang_list or not self._tracks:
+        if not self._lang_list or not self._tracks:
             return
         idx = self._cursor
-        track = self._tracks[idx]
-
-        def _cb(chosen: str | None) -> None:
-            if chosen is not None:
-                self._lang_override[idx] = chosen
-                self._refresh_item(idx)
-
-        self.app.push_screen(
-            LanguageSelectorScreen(
-                track=track,
-                lang_list=self._lang_list,
-                preview_cb=self._preview_cb,
-                movie=self._movie,
-            ),
-            _cb,
-        )
+        cycle = self._lang_cycle(idx)
+        current = self._lang_override[idx]
+        pos = cycle.index(current) if current in cycle else 0
+        self._lang_override[idx] = cycle[(pos + 1) % len(cycle)]
+        self._refresh_item(idx)
 
     def action_done(self) -> None:
         selected_tracks = [t for t, sel in zip(self._tracks, self._selected, strict=True) if sel]

@@ -121,6 +121,7 @@ def _load_audio(raw: dict[str, Any]) -> AudioInstruction:
         channels=raw.get("channels"),
         bitrate=raw.get("bitrate"),
         downmix=downmix,
+        source_stream_index=raw.get("source_stream_index"),
     )
 
 

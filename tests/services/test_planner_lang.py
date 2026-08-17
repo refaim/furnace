@@ -304,6 +304,154 @@ class TestUndResolverIntegration:
         assert len(plan.jobs) == 1
         assert plan.jobs[0].subtitles[0].language == "eng"
 
+    def test_lang_override_wins_over_und_resolution(self, tmp_path: Path) -> None:
+        main = tmp_path / "movie.mkv"
+        main.write_bytes(b"")
+        flac = tmp_path / "movie.flac"
+        flac.write_bytes(b"")
+        audio = [
+            make_track(
+                index=1,
+                track_type=TrackType.AUDIO,
+                codec_name="aac",
+                codec_id=AudioCodecId.AAC_LC,
+                language="rus",
+                source_file=main,
+                channels=2,
+                bitrate=192_000,
+            ),
+            make_track(
+                index=2,
+                track_type=TrackType.AUDIO,
+                codec_name="flac",
+                codec_id=AudioCodecId.FLAC,
+                language="und",
+                source_file=flac,
+                source_index=0,
+                channels=8,
+                bitrate=4_000_000,
+            ),
+        ]
+        movie = _make_movie_with_subs(tmp_path, audio=audio)
+        und_resolver = MagicMock(return_value="rus")
+        planner = PlannerService(previewer=None, und_resolver=und_resolver)
+
+        plan = planner.create_plan(
+            [(movie, tmp_path / "out.mkv")],
+            audio_lang_filter=["rus", "eng"],
+            sub_lang_filter=["rus"],
+            lang_overrides={(flac, 2): "eng"},
+        )
+
+        und_resolver.assert_not_called()
+        assert [(a.source_file, a.language) for a in plan.jobs[0].audio] == [
+            (str(main), "rus"),
+            (str(flac), "eng"),
+        ]
+
+    def test_lang_override_reorders_and_moves_default(self, tmp_path: Path) -> None:
+        main = tmp_path / "movie.mkv"
+        main.write_bytes(b"")
+        flac = tmp_path / "movie.flac"
+        flac.write_bytes(b"")
+        audio = [
+            make_track(
+                index=1,
+                track_type=TrackType.AUDIO,
+                codec_name="aac",
+                codec_id=AudioCodecId.AAC_LC,
+                language="rus",
+                source_file=main,
+                channels=2,
+                bitrate=192_000,
+            ),
+            make_track(
+                index=2,
+                track_type=TrackType.AUDIO,
+                codec_name="flac",
+                codec_id=AudioCodecId.FLAC,
+                language="und",
+                source_file=flac,
+                source_index=0,
+                channels=8,
+                bitrate=4_000_000,
+            ),
+        ]
+        movie = _make_movie_with_subs(tmp_path, audio=audio)
+        planner = PlannerService(previewer=None, und_resolver=MagicMock(return_value="rus"))
+
+        plan = planner.create_plan(
+            [(movie, tmp_path / "out.mkv")],
+            audio_lang_filter=["eng", "rus"],
+            sub_lang_filter=["rus"],
+            lang_overrides={(flac, 2): "eng"},
+        )
+
+        assert [(a.source_file, a.language, a.is_default) for a in plan.jobs[0].audio] == [
+            (str(flac), "eng", True),
+            (str(main), "rus", False),
+        ]
+
+    def test_lang_override_applies_to_subtitles(self, tmp_path: Path) -> None:
+        main = tmp_path / "movie.mkv"
+        main.write_bytes(b"")
+        subs = [_sub_track("und", index=3)]
+        subs[0].source_file = main
+        movie = _make_movie_with_subs(tmp_path, subs=subs)
+        planner = PlannerService(previewer=None, und_resolver=MagicMock(return_value="rus"))
+
+        plan = planner.create_plan(
+            [(movie, tmp_path / "out.mkv")],
+            audio_lang_filter=["eng"],
+            sub_lang_filter=["rus", "eng"],
+            lang_overrides={(main, 3): "eng"},
+        )
+
+        assert plan.jobs[0].subtitles[0].language == "eng"
+
+    def test_external_audio_instruction_carries_its_own_stream_index(self, tmp_path: Path) -> None:
+        main = tmp_path / "movie.mkv"
+        main.write_bytes(b"")
+        flac = tmp_path / "movie.flac"
+        flac.write_bytes(b"")
+        audio = [
+            make_track(
+                index=1,
+                track_type=TrackType.AUDIO,
+                codec_name="flac",
+                codec_id=AudioCodecId.FLAC,
+                language="eng",
+                source_file=flac,
+                source_index=0,
+                channels=8,
+                bitrate=4_000_000,
+            ),
+        ]
+        movie = _make_movie_with_subs(tmp_path, audio=audio)
+        planner = PlannerService(previewer=None)
+
+        plan = planner.create_plan(
+            [(movie, tmp_path / "out.mkv")],
+            audio_lang_filter=["eng"],
+            sub_lang_filter=["eng"],
+        )
+
+        instr = plan.jobs[0].audio[0]
+        assert instr.stream_index == 1
+        assert instr.source_stream_index == 0
+
+    def test_main_file_audio_instruction_has_no_source_stream_index(self, tmp_path: Path) -> None:
+        movie = _make_movie_with_subs(tmp_path)
+        planner = PlannerService(previewer=None)
+
+        plan = planner.create_plan(
+            [(movie, tmp_path / "out.mkv")],
+            audio_lang_filter=["eng"],
+            sub_lang_filter=["eng"],
+        )
+
+        assert plan.jobs[0].audio[0].source_stream_index is None
+
     def test_und_resolver_single_lang_auto_assigns_in_build_job(self, tmp_path: Path) -> None:
         main = tmp_path / "movie.mkv"
         main.write_bytes(b"")

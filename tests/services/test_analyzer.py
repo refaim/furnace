@@ -1397,6 +1397,46 @@ class TestGrainPath:
 
 
 class TestExternalSubtitle:
+    def test_external_subtitle_never_reuses_a_main_file_track_index(self, tmp_path: Path) -> None:
+        srt_path = tmp_path / "movie.eng.srt"
+        srt_path.write_text("1\n00:00:00,000 --> 00:00:01,000\nHello\n", encoding="utf-8")
+
+        scan_result = make_scan_result(tmp_path)
+        scan_result = ScanResult(
+            main_file=scan_result.main_file,
+            satellite_files=[srt_path],
+            output_path=scan_result.output_path,
+        )
+        probe_data = _h264_probe_data()
+        probe_data["streams"] = [
+            probe_data["streams"][0],
+            {
+                "index": 1,
+                "codec_type": "subtitle",
+                "codec_name": "subrip",
+                "tags": {"language": "rus", "title": ""},
+                "disposition": {"default": 0, "forced": 0},
+            },
+        ]
+        prober = make_prober(probe_data=probe_data)
+
+        with (
+            patch("furnace.services.analyzer.should_skip_file", return_value=(False, "")),
+            patch("furnace.services.analyzer._from_path") as mock_from_path,
+        ):
+            mock_result = MagicMock()
+            mock_best = MagicMock()
+            mock_best.encoding = "utf-8"
+            mock_result.best.return_value = mock_best
+            mock_from_path.return_value = mock_result
+
+            outcome = Analyzer(prober=prober).analyze(scan_result)
+
+        movie = outcome.movie
+        assert movie is not None
+        indexes = [t.index for t in movie.subtitle_tracks]
+        assert indexes == [1, 2]
+
     def test_srt_satellite_language_from_filename(self, tmp_path: Path) -> None:
         srt_path = tmp_path / "movie.eng.srt"
         srt_path.write_text("1\n00:00:00,000 --> 00:00:01,000\nHello\n", encoding="utf-8")
@@ -1569,7 +1609,106 @@ class TestExternalAudio:
         track = sat_audio[0]
         assert track.codec_name == "flac"
         assert track.channels == 6
-        assert track.index == 2
+        assert track.index == 3
+
+    def test_external_audio_keeps_its_own_stream_index(self, tmp_path: Path) -> None:
+        flac_path = tmp_path / "movie.eng.flac"
+        flac_path.write_bytes(b"\x00" * 256)
+
+        main_scan = make_scan_result(tmp_path)
+        scan_result = ScanResult(
+            main_file=main_scan.main_file,
+            satellite_files=[flac_path],
+            output_path=main_scan.output_path,
+        )
+        prober = make_prober(probe_data=_h264_probe_data())
+        sat_probe = self._audio_probe_data()
+
+        def probe_side_effect(path: Path) -> dict[str, Any]:
+            if path == flac_path:
+                return sat_probe
+            return _h264_probe_data()
+
+        prober.probe.side_effect = probe_side_effect
+
+        with patch("furnace.services.analyzer.should_skip_file", return_value=(False, "")):
+            outcome = Analyzer(prober=prober).analyze(scan_result)
+
+        movie = outcome.movie
+        assert movie is not None
+        track = next(t for t in movie.audio_tracks if t.source_file == flac_path)
+        assert track.source_index == 0
+        assert track.stream_index == 0
+
+    def test_external_audio_never_reuses_a_main_file_track_index(self, tmp_path: Path) -> None:
+        flac_path = tmp_path / "movie.eng.flac"
+        flac_path.write_bytes(b"\x00" * 256)
+        ac3_path = tmp_path / "movie.rus.ac3"
+        ac3_path.write_bytes(b"\x00" * 256)
+
+        main_scan = make_scan_result(tmp_path)
+        scan_result = ScanResult(
+            main_file=main_scan.main_file,
+            satellite_files=[flac_path, ac3_path],
+            output_path=main_scan.output_path,
+        )
+        prober = make_prober(probe_data=_h264_probe_data())
+        sat_probe = self._audio_probe_data()
+
+        def probe_side_effect(path: Path) -> dict[str, Any]:
+            if path in (flac_path, ac3_path):
+                return sat_probe
+            return _h264_probe_data()
+
+        prober.probe.side_effect = probe_side_effect
+
+        with patch("furnace.services.analyzer.should_skip_file", return_value=(False, "")):
+            outcome = Analyzer(prober=prober).analyze(scan_result)
+
+        movie = outcome.movie
+        assert movie is not None
+        indexes = [t.index for t in movie.audio_tracks]
+        assert indexes == [1, 2, 3, 4]
+        assert len(set(indexes)) == len(indexes)
+
+    def test_external_audio_is_profiled_against_its_own_file(self, tmp_path: Path) -> None:
+        flac_path = tmp_path / "movie.eng.flac"
+        flac_path.write_bytes(b"\x00" * 256)
+
+        main_scan = make_scan_result(tmp_path)
+        scan_result = ScanResult(
+            main_file=main_scan.main_file,
+            satellite_files=[flac_path],
+            output_path=main_scan.output_path,
+        )
+        prober = make_prober(probe_data=_h264_probe_data())
+        sat_probe = self._audio_probe_data()
+        prober.profile_audio_track.return_value = _real_5_1_metrics()
+
+        def probe_side_effect(path: Path) -> dict[str, Any]:
+            if path == flac_path:
+                return sat_probe
+            return _h264_probe_data()
+
+        prober.probe.side_effect = probe_side_effect
+
+        with (
+            patch("furnace.services.analyzer.should_skip_file", return_value=(False, "")),
+            patch("furnace.services.analyzer.detect_hdr", return_value=HdrMetadata()),
+            patch("furnace.services.analyzer.check_unsupported_codecs", return_value=None),
+        ):
+            outcome = Analyzer(prober=prober).analyze(scan_result)
+
+        movie = outcome.movie
+        assert movie is not None
+        calls = [
+            (call.kwargs["path"], call.kwargs["stream_index"]) for call in prober.profile_audio_track.call_args_list
+        ]
+        assert calls == [
+            (main_scan.main_file, 1),
+            (main_scan.main_file, 2),
+            (flac_path, 0),
+        ]
 
     def test_external_audio_probe_fails(self, tmp_path: Path) -> None:
         ac3_path = tmp_path / "movie.eng.ac3"

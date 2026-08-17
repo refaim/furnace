@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from furnace.core.models import DownmixMode, DvBlCompatibility, DvMode, EncodeResult
-from tests.conftest import make_video_params
+from tests.conftest import make_track, make_video_params
 
 
 class TestDvBlCompatibility:
@@ -47,6 +47,19 @@ class TestVideoParamsPassthrough:
     def test_can_be_set_true(self) -> None:
         vp = make_video_params(passthrough=True)
         assert vp.passthrough is True
+
+
+class TestTrackStreamIndex:
+    def test_falls_back_to_index(self) -> None:
+        assert make_track(index=3).stream_index == 3
+
+    def test_prefers_source_index(self) -> None:
+        assert make_track(index=3, source_index=0).stream_index == 0
+
+    def test_source_index_zero_is_not_treated_as_missing(self) -> None:
+        track = make_track(index=7, source_index=0)
+        assert track.source_index == 0
+        assert track.stream_index == 0
 
 
 class TestDownmixMode:

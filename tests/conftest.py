@@ -140,6 +140,7 @@ def make_track(
     num_frames: int | None = None,
     num_captions: int | None = None,
     encoding: str | None = None,
+    source_index: int | None = None,
 ) -> Track:
     return Track(
         index=index,
@@ -160,6 +161,7 @@ def make_track(
         num_frames=num_frames,
         num_captions=num_captions,
         encoding=encoding,
+        source_index=source_index,
     )
 
 
@@ -175,6 +177,7 @@ def make_audio_instruction(
     channels: int | None = 2,
     bitrate: int | None = 192000,
     downmix: DownmixMode | None = None,
+    source_stream_index: int | None = None,
 ) -> AudioInstruction:
     return AudioInstruction(
         source_file=source_file,
@@ -187,6 +190,7 @@ def make_audio_instruction(
         channels=channels,
         bitrate=bitrate,
         downmix=downmix,
+        source_stream_index=source_stream_index,
     )
 
 

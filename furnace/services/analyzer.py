@@ -49,6 +49,10 @@ _FRAME_PROBE_TRANSFERS: frozenset[str | None] = frozenset({"smpte2084", "arib-st
 _HDR10PLUS_SOURCE_CODECS: frozenset[str] = frozenset({"hevc", "dvhe", "dvh1"})
 
 
+def _next_track_index(tracks: list[Track]) -> int:
+    return max((t.index for t in tracks), default=-1) + 1
+
+
 def _hdr_class(video: VideoInfo) -> str:
     if video.hdr.is_dolby_vision:
         bl_map = {1: "HDR10", 2: "SDR", 4: "HLG"}
@@ -159,11 +163,11 @@ class Analyzer:
         for sat_path in scan_result.satellite_files:
             ext = sat_path.suffix.lower()
             if ext in {".srt", ".ass", ".ssa", ".sup"}:
-                sat_track = self._parse_external_subtitle(sat_path, len(subtitle_tracks))
+                sat_track = self._parse_external_subtitle(sat_path, _next_track_index(subtitle_tracks))
                 if sat_track is not None:
                     subtitle_tracks.append(sat_track)
             elif ext in {".ac3", ".dts", ".eac3", ".flac", ".m4a", ".mp3", ".wav"}:
-                sat_track = self._parse_external_audio(sat_path, len(audio_tracks))
+                sat_track = self._parse_external_audio(sat_path, _next_track_index(audio_tracks))
                 if sat_track is not None:
                     audio_tracks.append(sat_track)
 
@@ -309,8 +313,8 @@ class Analyzer:
             )
             try:
                 metrics = self._prober.profile_audio_track(
-                    path=main_file,
-                    stream_index=track.index,
+                    path=track.source_file,
+                    stream_index=track.stream_index,
                     channels=track.channels,
                     duration_s=video_info.duration_s,
                     channel_layout=track.channel_layout,
@@ -585,6 +589,7 @@ class Analyzer:
             return None
 
         track = tracks[0]
+        track.source_index = track.index
         track.index = base_index
         return track
 

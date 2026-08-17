@@ -401,6 +401,123 @@ class TestRepairMonoWav:
             executor._repair_mono_wav(instr, tmp_path / "audio_1_healed.wav", tmp_path)
 
 
+class TestExternalAudioStreamIndex:
+    def _external(self, action: AudioAction, codec_name: str, **kwargs: Any) -> Any:
+        return make_audio_instruction(
+            action=action,
+            codec_name=codec_name,
+            source_file="/src/movie.eng.flac",
+            stream_index=4,
+            source_stream_index=0,
+            **kwargs,
+        )
+
+    def test_copy_extracts_the_stream_the_file_actually_has(
+        self,
+        executor_with_mocks: tuple[Executor, SimpleNamespace],
+        tmp_path: Path,
+    ) -> None:
+        executor, mocks = executor_with_mocks
+        instr = self._external(AudioAction.COPY, "flac")
+        result = executor._process_audio_track(instr, tmp_path, _minimal_job())
+        assert result == tmp_path / "audio_4.flac"
+        assert mocks.audio_extractor.extract_track.call_args[0][1] == 0
+
+    def test_denorm_extracts_the_stream_the_file_actually_has(
+        self,
+        executor_with_mocks: tuple[Executor, SimpleNamespace],
+        tmp_path: Path,
+    ) -> None:
+        executor, mocks = executor_with_mocks
+        instr = self._external(AudioAction.DENORM, "ac3")
+        executor._process_audio_track(instr, tmp_path, _minimal_job())
+        assert mocks.audio_extractor.extract_track.call_args[0][1] == 0
+
+    def test_decode_encode_extracts_the_stream_the_file_actually_has(
+        self,
+        executor_with_mocks: tuple[Executor, SimpleNamespace],
+        tmp_path: Path,
+    ) -> None:
+        executor, mocks = executor_with_mocks
+        instr = self._external(AudioAction.DECODE_ENCODE, "flac")
+        result = executor._process_audio_track(instr, tmp_path, _minimal_job())
+        assert result == tmp_path / "audio_4.m4a"
+        assert mocks.audio_extractor.extract_track.call_args[0][1] == 0
+
+    def test_decode_encode_predecode_maps_the_stream_the_file_actually_has(
+        self,
+        executor_with_mocks: tuple[Executor, SimpleNamespace],
+        tmp_path: Path,
+    ) -> None:
+        executor, mocks = executor_with_mocks
+        instr = self._external(AudioAction.DECODE_ENCODE, "wmapro")
+        executor._process_audio_track(instr, tmp_path, _minimal_job())
+        assert mocks.audio_extractor.ffmpeg_to_wav.call_args[0][1] == 0
+
+    def test_ffmpeg_encode_maps_the_stream_the_file_actually_has(
+        self,
+        executor_with_mocks: tuple[Executor, SimpleNamespace],
+        tmp_path: Path,
+    ) -> None:
+        executor, mocks = executor_with_mocks
+        instr = self._external(AudioAction.FFMPEG_ENCODE, "wmav2")
+        executor._process_audio_track(instr, tmp_path, _minimal_job())
+        assert mocks.audio_extractor.ffmpeg_to_wav.call_args[0][1] == 0
+
+    def test_stereo_mono_downmix_maps_the_stream_the_file_actually_has(
+        self,
+        executor_with_mocks: tuple[Executor, SimpleNamespace],
+        tmp_path: Path,
+    ) -> None:
+        executor, mocks = executor_with_mocks
+        instr = self._external(AudioAction.DECODE_ENCODE, "flac", downmix=DownmixMode.MONO, channels=2)
+        executor._process_audio_track(instr, tmp_path, _minimal_job())
+        assert mocks.audio_extractor.stereo_to_mono_wav.call_args.kwargs["stream_index"] == 0
+
+    def test_multichannel_mono_downmix_extracts_the_stream_the_file_actually_has(
+        self,
+        executor_with_mocks: tuple[Executor, SimpleNamespace],
+        tmp_path: Path,
+    ) -> None:
+        executor, mocks = executor_with_mocks
+        instr = self._external(AudioAction.DECODE_ENCODE, "flac", downmix=DownmixMode.MONO, channels=8)
+        executor._process_audio_track(instr, tmp_path, _minimal_job())
+        assert mocks.audio_extractor.extract_track.call_args[0][1] == 0
+
+    def test_multichannel_mono_predecode_maps_the_stream_the_file_actually_has(
+        self,
+        executor_with_mocks: tuple[Executor, SimpleNamespace],
+        tmp_path: Path,
+    ) -> None:
+        executor, mocks = executor_with_mocks
+        instr = self._external(AudioAction.DECODE_ENCODE, "wmapro", downmix=DownmixMode.MONO, channels=8)
+        executor._process_audio_track(instr, tmp_path, _minimal_job())
+        assert mocks.audio_extractor.ffmpeg_to_wav.call_args[0][1] == 0
+
+    def test_truncation_check_reads_the_stream_the_file_actually_has(
+        self,
+        executor_with_mocks: tuple[Executor, SimpleNamespace],
+        tmp_path: Path,
+    ) -> None:
+        executor, mocks = executor_with_mocks
+        produced = tmp_path / "audio_4.m4a"
+
+        def probe(path: Any) -> dict[str, Any]:
+            p = str(path)
+            if p.endswith(".flac"):
+                return _source_probe(7345.0, 0)
+            if "_healed" in p:
+                return _stream0_probe(1800.0)
+            return _stream0_probe(1794.0)
+
+        mocks.prober.probe.side_effect = probe
+        instr = self._external(AudioAction.DECODE_ENCODE, "flac")
+        result, repaired = executor._verify_and_repair_audio(instr, produced, tmp_path, _minimal_job())
+        assert result == produced
+        assert repaired is False
+        assert mocks.audio_extractor.decode_full_wav.call_args[0][1] == 0
+
+
 class TestProcessAudioTrackCopy:
     def test_copy_success_returns_path(
         self,

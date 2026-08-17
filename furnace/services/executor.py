@@ -109,6 +109,10 @@ def _codec_supported_by_eac3to(codec_name: str) -> bool:
     return codec_name.lower() in _EAC3TO_SUPPORTED_SRC
 
 
+def _source_stream_index(instr: AudioInstruction) -> int:
+    return instr.stream_index if instr.source_stream_index is None else instr.source_stream_index
+
+
 _FFMPEG_DRC_CODECS: frozenset[str] = frozenset({"ac3", "eac3"})
 
 
@@ -751,7 +755,7 @@ class Executor:
     ) -> tuple[Path, bool]:
         declared_s = probe_audio_duration(
             self._prober.probe(Path(instr.source_file)),
-            instr.stream_index,
+            _source_stream_index(instr),
             allow_container_fallback=False,
         )
         produced_s = probe_audio_duration(self._prober.probe(produced), _PRODUCED_AUDIO_STREAM_INDEX)
@@ -781,7 +785,7 @@ class Executor:
         _, on_progress = self._make_progress_callback(total_s=job.duration_s or None)
         rc = self._audio_extractor.decode_full_wav(
             Path(instr.source_file),
-            instr.stream_index,
+            _source_stream_index(instr),
             healed,
             disable_drc=instr.codec_name.lower() in _FFMPEG_DRC_CODECS,
             on_progress=on_progress,
@@ -893,6 +897,7 @@ class Executor:
     def _process_audio_track(self, instr: AudioInstruction, temp_dir: Path, job: Job) -> Path:
         source_path = Path(instr.source_file)
         track_idx = instr.stream_index
+        source_idx = _source_stream_index(instr)
 
         ext = _AUDIO_CODEC_EXT.get(instr.codec_name, ".audio")
 
@@ -904,7 +909,7 @@ class Executor:
             _, on_progress = self._make_progress_callback(total_s=job.duration_s or None)
             rc = self._audio_extractor.extract_track(
                 source_path,
-                track_idx,
+                source_idx,
                 out_path,
                 on_progress=on_progress,
             )
@@ -920,7 +925,7 @@ class Executor:
             _, on_progress = self._make_progress_callback(total_s=job.duration_s or None)
             rc = self._audio_extractor.extract_track(
                 source_path,
-                track_idx,
+                source_idx,
                 extracted,
                 on_progress=on_progress,
             )
@@ -961,7 +966,7 @@ class Executor:
                     )
                     rc = self._audio_extractor.stereo_to_mono_wav(
                         input_path=source_path,
-                        stream_index=track_idx,
+                        stream_index=source_idx,
                         output_wav=mono_wav,
                         delay_ms=instr.delay_ms,
                         on_progress=on_progress,
@@ -995,7 +1000,7 @@ class Executor:
                     )
                     rc = self._audio_extractor.extract_track(
                         source_path,
-                        track_idx,
+                        source_idx,
                         extracted,
                         on_progress=on_progress,
                     )
@@ -1015,7 +1020,7 @@ class Executor:
                     )
                     rc = self._audio_extractor.ffmpeg_to_wav(
                         source_path,
-                        track_idx,
+                        source_idx,
                         extracted,
                         on_progress=on_progress,
                     )
@@ -1085,7 +1090,7 @@ class Executor:
                 )
                 rc = self._audio_extractor.extract_track(
                     source_path,
-                    track_idx,
+                    source_idx,
                     extracted,
                     on_progress=on_progress,
                 )
@@ -1107,7 +1112,7 @@ class Executor:
                 )
                 rc = self._audio_extractor.ffmpeg_to_wav(
                     source_path,
-                    track_idx,
+                    source_idx,
                     extracted,
                     on_progress=on_progress,
                 )
@@ -1151,7 +1156,7 @@ class Executor:
             _, on_progress = self._make_progress_callback(total_s=job.duration_s or None)
             rc = self._audio_extractor.ffmpeg_to_wav(
                 source_path,
-                track_idx,
+                source_idx,
                 wav_path,
                 on_progress=on_progress,
             )

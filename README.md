@@ -91,7 +91,11 @@ furnace plan D:\Movies -o E:\Encoded --audio-lang eng --sub-lang eng --copy-vide
 ```
 Eligible streams are copied as-is (crop/deinterlace skipped); interlaced and Dolby Vision P7 FEL sources fall back to a normal encode, and the plan report shows `passthrough (copy video)` or `encode (<reason>)` per file.
 
-Relabel mistagged track languages (treats every track as unspecified so you reassign each one in the TUI with `l`):
+Audio kept in a separate file next to the movie (`movie.flac` beside `movie.mkv`) is muxed in as a normal track. Plans created before Furnace 2.40.0 should be regenerated for such movies: earlier versions numbered those tracks with a slot that collided with a real track of the main file, so the stored stream index points at the wrong stream.
+
+In the track selector, `l` cycles the highlighted track's language through the languages you passed on the command line — `--audio-lang` for audio tracks, `--sub-lang` for subtitles — wrapping back to the track's own tag. Use it for `und` tracks (a separate audio file next to the movie usually carries no language at all) or for a single mistagged track.
+
+Relabel mistagged track languages wholesale (treats every track as unspecified, so `l` cycles the given languages with no original tag to fall back to):
 ```bash
 furnace plan D:\Movies -o E:\Encoded --audio-lang rus,eng --sub-lang rus,eng --ignore-langs
 ```

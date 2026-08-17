@@ -217,6 +217,12 @@ class Track:
 
     audio_profile: AudioProfile | None = None
 
+    source_index: int | None = None
+
+    @property
+    def stream_index(self) -> int:
+        return self.index if self.source_index is None else self.source_index
+
 
 @dataclass
 class VideoInfo:
@@ -281,6 +287,7 @@ class AudioInstruction:
     channels: int | None
     bitrate: int | None
     downmix: DownmixMode | None = None
+    source_stream_index: int | None = None
 
 
 @dataclass

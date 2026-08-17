@@ -199,12 +199,7 @@ class PlannerService:
                 )
                 selected_subs = sub_candidates
 
-        if self._ignore_langs:
-            selected_audio = self._assign_languages_relabel(selected_audio, audio_lang_filter, lang_overrides)
-            selected_audio = self._sort_and_set_default(selected_audio, audio_lang_filter, ignore_langs=False)
-        elif self._und_resolver is not None:
-            selected_audio = self._resolve_und_languages(movie, selected_audio, audio_lang_filter, self._und_resolver)
-            selected_audio = self._sort_and_set_default(selected_audio, audio_lang_filter, ignore_langs=False)
+        selected_audio = self._settle_languages(movie, selected_audio, audio_lang_filter, lang_overrides)
 
         audio_instructions: list[AudioInstruction] = []
         for i, track in enumerate(selected_audio):
@@ -214,12 +209,7 @@ class PlannerService:
             audio_instr = self._build_audio_instruction(track, is_default=is_default, downmix=track_downmix)
             audio_instructions.append(audio_instr)
 
-        if self._ignore_langs:
-            selected_subs = self._assign_languages_relabel(selected_subs, sub_lang_filter, lang_overrides)
-            selected_subs = self._sort_and_set_default(selected_subs, sub_lang_filter, ignore_langs=False)
-        elif self._und_resolver is not None:
-            selected_subs = self._resolve_und_languages(movie, selected_subs, sub_lang_filter, self._und_resolver)
-            selected_subs = self._sort_and_set_default(selected_subs, sub_lang_filter, ignore_langs=False)
+        selected_subs = self._settle_languages(movie, selected_subs, sub_lang_filter, lang_overrides)
 
         sub_instructions: list[SubtitleInstruction] = []
         for i, track in enumerate(selected_subs):
@@ -319,6 +309,32 @@ class PlannerService:
             tracks.sort(key=lambda t: lang_order.get(t.language, len(lang_filter)))
         for i, t in enumerate(tracks):
             t.is_default = i == 0
+        return tracks
+
+    def _settle_languages(
+        self,
+        movie: Movie,
+        tracks: list[Track],
+        lang_filter: list[str],
+        lang_overrides: dict[tuple[Path, int], str],
+    ) -> list[Track]:
+        if self._ignore_langs:
+            tracks = self._assign_languages_relabel(tracks, lang_filter, lang_overrides)
+        else:
+            tracks = self._apply_lang_overrides(tracks, lang_overrides)
+            if self._und_resolver is not None:
+                tracks = self._resolve_und_languages(movie, tracks, lang_filter, self._und_resolver)
+        return self._sort_and_set_default(tracks, lang_filter, ignore_langs=False)
+
+    def _apply_lang_overrides(
+        self,
+        tracks: list[Track],
+        lang_overrides: dict[tuple[Path, int], str],
+    ) -> list[Track]:
+        for t in tracks:
+            override = lang_overrides.get((Path(t.source_file), t.index))
+            if override is not None:
+                t.language = override
         return tracks
 
     def _assign_languages_relabel(
@@ -516,6 +532,7 @@ class PlannerService:
             channels=track.channels,
             bitrate=track.bitrate,
             downmix=downmix,
+            source_stream_index=track.source_index,
         )
 
     def _build_subtitle_instruction(self, track: Track, *, is_default: bool) -> SubtitleInstruction:
