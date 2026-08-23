@@ -747,6 +747,7 @@ def _vi(
     interlaced: bool = False,
     dv: bool = False,
     dv_profile: int | None = None,
+    divx_packed: bool = False,
 ) -> VideoInfo:
     return VideoInfo(
         index=0,
@@ -765,6 +766,7 @@ def _vi(
         pix_fmt="yuv420p10le",
         hdr=HdrMetadata(is_dolby_vision=dv, dv_profile=dv_profile),
         source_file=Path("x.mkv"),
+        divx_packed=divx_packed,
     )
 
 
@@ -774,6 +776,10 @@ def test_classify_passthrough_disabled_returns_encode() -> None:
 
 def test_classify_passthrough_interlaced_falls_back() -> None:
     assert classify_passthrough(_vi(interlaced=True), copy_video=True) == (False, "interlaced")
+
+
+def test_classify_passthrough_packed_bitstream_falls_back() -> None:
+    assert classify_passthrough(_vi(divx_packed=True), copy_video=True) == (False, "packed bitstream")
 
 
 def test_classify_passthrough_dv_p7_fel_falls_back() -> None:

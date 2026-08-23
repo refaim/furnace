@@ -358,6 +358,7 @@ class TestExtractTrack:
         with patch("furnace.adapters.ffmpeg.run_tool", side_effect=fake_run_tool):
             rc = adapter.extract_track(Path("video.mkv"), 2, Path("out.thd"))
         assert rc == 0
+        assert captured[captured.index("-loglevel") + 1] == "error"
         assert "-map" in captured
         assert "0:2" in captured
         assert "-c" in captured
@@ -386,7 +387,11 @@ class TestExtractTrack:
         assert len(samples) == 1
         assert abs(samples[0].processed_s - 60.0) < 0.01  # type: ignore[operator]
 
-    def test_extract_track_non_progress_line(self) -> None:
+    @pytest.mark.parametrize(
+        "line",
+        ["no equals sign here", "[matroska @ 0x1] Option threads=4 not found"],
+    )
+    def test_extract_track_non_progress_line(self, line: str) -> None:
         results: list[bool] = []
 
         def fake_run_tool(
@@ -396,7 +401,7 @@ class TestExtractTrack:
             log_path: Any = None,
             cwd: Any = None,
         ) -> tuple[int, str]:
-            results.append(on_progress_line("no equals sign here"))
+            results.append(on_progress_line(line))
             return 0, ""
 
         adapter = _adapter()

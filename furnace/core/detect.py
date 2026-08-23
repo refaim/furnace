@@ -18,6 +18,8 @@ def classify_passthrough(video: VideoInfo, *, copy_video: bool) -> tuple[bool, s
         return False, None
     if video.interlaced:
         return False, "interlaced"
+    if video.divx_packed:
+        return False, "packed bitstream"
     if video.hdr.is_dolby_vision and video.hdr.dv_profile == DV_PROFILE_FEL:
         return False, "DV P7 FEL"
     return True, None

@@ -56,6 +56,8 @@ _CROP_LEVEL_POINTS: tuple[float, ...] = tuple((i + 0.5) / 9 for i in range(9))
 _CROP_LEVEL_FRAMES = 10
 _CROP_BORDER_RING = 8
 
+_FFMPEG_PROGRESS_LINE_RE = re.compile(r"^[a-z][a-z0-9_]*=")
+
 _Y4M_HEADER_RE = re.compile(rb"YUV4MPEG2 W([1-9][0-9]*) H([1-9][0-9]*)([^\n]*)\n")
 _Y4M_FRAME = b"FRAME\n"
 _Y4M_CHROMA_LAYOUT: dict[bytes, tuple[int, int, int]] = {
@@ -187,7 +189,7 @@ def _make_ffmpeg_progress_handler(
     kv_buf: dict[str, str] = {}
 
     def _on_progress_line(line: str) -> bool:
-        if "=" not in line:
+        if _FFMPEG_PROGRESS_LINE_RE.match(line) is None:
             return False
         key, _, val = line.partition("=")
         key = key.strip()
@@ -679,7 +681,9 @@ class FFmpegAdapter:
             str(self._ffmpeg),
             "-hide_banner",
             "-loglevel",
-            "fatal",
+            "error",
+            "-fflags",
+            "+genpts",
             "-i",
             str(input_path),
             "-map",
@@ -714,6 +718,8 @@ class FFmpegAdapter:
             "-hide_banner",
             "-loglevel",
             "error",
+            "-fflags",
+            "+genpts",
             "-ss",
             f"{start_s:.3f}",
             "-i",
@@ -776,6 +782,8 @@ class FFmpegAdapter:
             str(self._ffprobe),
             "-v",
             "error",
+            "-fflags",
+            "+genpts",
             "-select_streams",
             "v:0",
             "-show_entries",
@@ -849,7 +857,7 @@ class FFmpegAdapter:
             str(self._ffmpeg),
             "-hide_banner",
             "-loglevel",
-            "fatal",
+            "error",
             "-i",
             str(input_path),
             "-map",

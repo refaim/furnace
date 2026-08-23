@@ -246,6 +246,7 @@ class VideoInfo:
     sar_num: int = 1
     sar_den: int = 1
     grainy: bool = False
+    divx_packed: bool = False
 
 
 @dataclass

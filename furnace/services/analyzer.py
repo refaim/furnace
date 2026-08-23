@@ -435,6 +435,7 @@ class Analyzer:
             bitrate=bitrate,
             sar_num=sar_num,
             sar_den=sar_den,
+            divx_packed=stream.get("divx_packed") == "true",
         )
 
     def _parse_audio_tracks(self, streams: list[dict[str, Any]], path: Path) -> list[Track]:

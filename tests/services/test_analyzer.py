@@ -927,6 +927,27 @@ class TestParseVideoInfoFallbacks:
 
         assert vi.bitrate == 8000000
 
+    def test_divx_packed_bitstream_is_detected(self, tmp_path: Path) -> None:
+        stream = self._make_base_stream()
+        stream["divx_packed"] = "true"
+        prober = MagicMock()
+        prober.probe_hdr_side_data.return_value = []
+
+        analyzer = Analyzer(prober=prober)
+        vi = analyzer._parse_video_info(stream, {}, tmp_path / "movie.mkv")
+
+        assert vi.divx_packed is True
+
+    def test_divx_packed_absent_defaults_to_false(self, tmp_path: Path) -> None:
+        stream = self._make_base_stream()
+        prober = MagicMock()
+        prober.probe_hdr_side_data.return_value = []
+
+        analyzer = Analyzer(prober=prober)
+        vi = analyzer._parse_video_info(stream, {}, tmp_path / "movie.mkv")
+
+        assert vi.divx_packed is False
+
     def test_sar_parse_failure_defaults_to_1_1(self, tmp_path: Path) -> None:
         stream = self._make_base_stream()
         stream["sample_aspect_ratio"] = "bad:data"

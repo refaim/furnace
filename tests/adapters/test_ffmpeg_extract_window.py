@@ -55,6 +55,8 @@ class TestExtractWindow:
         with patch("furnace.adapters.ffmpeg.run_tool", side_effect=fake_run_tool):
             rc = adapter.extract_window(Path("movie.mkv"), Path("window.mkv"), start_s=612.5, frames=480)
         assert rc == 0
+        assert captured[captured.index("-fflags") + 1] == "+genpts"
+        assert captured.index("-fflags") < captured.index("-i")
         assert captured.index("-ss") < captured.index("-i")
         assert captured[captured.index("-ss") + 1] == "612.500"
         assert captured[captured.index("-i") + 1] == "movie.mkv"
@@ -224,6 +226,14 @@ class TestWindowBitrates:
         with patch("furnace.adapters.ffmpeg.subprocess.run", return_value=self._run(0, stdout)):
             result = adapter.window_bitrates(Path("m.mkv"), 10.0)
         assert result == [(0.0, 2.0)]
+
+    def test_passes_genpts_to_ffprobe(self) -> None:
+        adapter = _adapter()
+        with patch("furnace.adapters.ffmpeg.subprocess.run", return_value=self._run(0, "")) as run:
+            adapter.window_bitrates(Path("m.mkv"), 10.0)
+        cmd = [str(c) for c in run.call_args.args[0]]
+        assert cmd[cmd.index("-fflags") + 1] == "+genpts"
+        assert cmd.index("-fflags") < cmd.index("m.mkv")
 
     def test_nonzero_returncode_returns_empty(self) -> None:
         adapter = _adapter()

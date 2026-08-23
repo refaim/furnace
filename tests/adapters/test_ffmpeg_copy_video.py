@@ -30,7 +30,9 @@ class TestCopyVideo:
         with patch("furnace.adapters.ffmpeg.run_tool", side_effect=fake_run_tool):
             rc = adapter.copy_video(Path("video.mkv"), Path("video_out.mkv"))
         assert rc == 0
-        assert captured[captured.index("-loglevel") + 1] == "fatal"
+        assert captured[captured.index("-loglevel") + 1] == "error"
+        assert captured[captured.index("-fflags") + 1] == "+genpts"
+        assert captured.index("-fflags") < captured.index("-i")
         assert captured[captured.index("-i") + 1] == "video.mkv"
         assert captured[captured.index("-map") + 1] == "0:v:0"
         assert captured[captured.index("-c:v") + 1] == "copy"
