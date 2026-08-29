@@ -5,10 +5,12 @@ import math
 
 import pytest
 
+from furnace.core import target_quality
 from furnace.core.models import CropRect
 from furnace.core.target_quality import (
     GRAIN_POOL_PERCENTILE,
     KnobSearchResult,
+    ProbeWindowOutcome,
     SeedKey,
     SeedMemory,
     TargetSpec,
@@ -19,6 +21,7 @@ from furnace.core.target_quality import (
     natural_cubic_spline,
     pchip_interpolate,
     pool_grain_windows,
+    pooled_standard_error,
     predict_knob,
     probe_windows,
     resolve_target,
@@ -433,6 +436,9 @@ class TestResolveTarget:
     def test_grain_samples_ten_windows(self) -> None:
         spec = resolve_target(make_video_params(grain=True, source_width=720, source_height=576))
         assert spec.window_count == 10
+        assert spec.window_batch == 6
+        assert spec.max_window_count == 34
+        assert spec.sampling_tolerance == pytest.approx(0.70)
 
     def test_nvenc_samples_ten_windows(self) -> None:
         for vp in (
@@ -440,7 +446,20 @@ class TestResolveTarget:
             make_video_params(source_width=720, source_height=576),
             make_video_params(color_transfer="smpte2084", color_matrix="bt2020nc"),
         ):
-            assert resolve_target(vp).window_count == 10
+            spec = resolve_target(vp)
+            assert spec.window_count == 10
+            assert spec.window_batch == 6
+            assert spec.max_window_count == 34
+
+    def test_sampling_tolerance_matches_the_target_band(self) -> None:
+        specs = (
+            resolve_target(make_video_params(source_width=1920, source_height=1080)),
+            resolve_target(make_video_params(source_width=720, source_height=576)),
+            resolve_target(make_video_params(color_transfer="smpte2084", color_matrix="bt2020nc")),
+            resolve_target(make_video_params(grain=True, source_width=720, source_height=576)),
+        )
+        for spec in specs:
+            assert spec.sampling_tolerance == pytest.approx((spec.target_hi - spec.target_lo) / 2.0)
 
     def test_grain_hd_is_not_resolvable_here(self) -> None:
         with pytest.raises(ValueError, match="SD-only"):
@@ -495,27 +514,76 @@ class TestGrainRouting:
 
 
 class TestProbeWindows:
-    def test_even_spacing_exact(self) -> None:
-        offsets = probe_windows(100.0, count=3, window_s=20.0)
-        assert offsets == [10.0, 40.0, 70.0]
+    def test_golden_ratio_sequence_exact(self) -> None:
+        selection = probe_windows(100.0, count=3, window_s=20.0)
+        lo = 100.0 * 0.06
+        span = 100.0 * (1.0 - 2.0 * 0.06) - 20.0
+        assert selection.outcome is ProbeWindowOutcome.READY
+        assert selection.offsets == pytest.approx(
+            [
+                lo + 0.6180339887498949 * span,
+                lo + (2 * 0.6180339887498949 % 1.0) * span,
+                lo + (8 * 0.6180339887498949 % 1.0) * span,
+            ]
+        )
+
+    def test_every_prefix_is_stable(self) -> None:
+        longest = probe_windows(7200.0, count=34, window_s=5.0)
+        assert longest.outcome is ProbeWindowOutcome.READY
+        for count in range(1, 35):
+            current = probe_windows(7200.0, count=count, window_s=5.0)
+            assert current.outcome is ProbeWindowOutcome.READY
+            assert current.offsets == longest.offsets[:count]
 
     def test_windows_stay_within_duration(self) -> None:
-        offsets = probe_windows(6000.0, count=3, window_s=18.0)
-        assert offsets is not None
-        assert offsets[0] >= 0.0
-        assert offsets[-1] + 18.0 <= 6000.0
-        for a, b in itertools.pairwise(offsets):
-            assert b - a >= 18.0
+        selection = probe_windows(6000.0, count=3, window_s=18.0)
+        assert selection.outcome is ProbeWindowOutcome.READY
+        assert all(offset >= 6000.0 * 0.06 for offset in selection.offsets)
+        assert all(offset <= 6000.0 * 0.94 - 18.0 for offset in selection.offsets)
+        assert all(abs(a - b) >= 18.0 for a, b in itertools.combinations(selection.offsets, 2))
+
+    def test_short_gop_windows_keep_eighteen_second_start_gaps(self) -> None:
+        selection = probe_windows(300.0, count=34, window_s=5.0)
+        assert selection.outcome is ProbeWindowOutcome.PACKING_LIMIT
+        assert all(abs(a - b) >= 18.0 for a, b in itertools.combinations(selection.offsets, 2))
+
+    def test_padding_candidates_extend_the_requested_prefix(self) -> None:
+        selection = probe_windows(7200.0, count=10, window_s=5.0, candidate_count=34)
+        assert selection.outcome is ProbeWindowOutcome.READY
+        assert len(selection.offsets) == 10
+        assert len(selection.candidates) == 34
+        assert selection.offsets == selection.candidates[:10]
+
+    def test_rejection_search_is_bounded(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(target_quality, "_PROBE_SEQUENCE_ATTEMPT_FACTOR", 1)
+        selection = probe_windows(100.0, count=3, window_s=20.0)
+        assert selection.outcome is ProbeWindowOutcome.PACKING_LIMIT
+        assert len(selection.offsets) < 3
 
     def test_full_pass_fallback_short_source(self) -> None:
-        assert probe_windows(50.0, count=3, window_s=18.0) is None
+        selection = probe_windows(20.0, count=3, window_s=18.0)
+        assert selection.outcome is ProbeWindowOutcome.COVERAGE_LIMIT
+        assert selection.offsets == ()
 
     def test_long_source_gets_windows(self) -> None:
-        assert probe_windows(7200.0, count=3, window_s=18.0) is not None
+        assert probe_windows(7200.0, count=3, window_s=18.0).outcome is ProbeWindowOutcome.READY
 
     def test_full_pass_boundary(self) -> None:
-        assert probe_windows(63.5, count=3, window_s=18.0) is None
-        assert probe_windows(64.0, count=3, window_s=18.0) is not None
+        assert probe_windows(21.0, count=3, window_s=18.0).outcome is ProbeWindowOutcome.COVERAGE_LIMIT
+        assert probe_windows(22.0, count=3, window_s=18.0).outcome is ProbeWindowOutcome.PACKING_LIMIT
+        assert probe_windows(100.0, count=3, window_s=18.0).outcome is ProbeWindowOutcome.READY
+
+    def test_packing_limit_is_distinct_below_full_pass_coverage(self) -> None:
+        selection = probe_windows(100.0, count=16, window_s=5.0)
+        assert selection.outcome is ProbeWindowOutcome.PACKING_LIMIT
+        assert 0 < len(selection.offsets) < 16
+        assert len(selection.offsets) * 5.0 < 100.0 * 0.85
+
+    def test_requested_coverage_does_not_override_packing_shortfall(self) -> None:
+        selection = probe_windows(80.0, count=16, window_s=5.0)
+        assert 16 * 5.0 >= 80.0 * 0.85
+        assert selection.outcome is ProbeWindowOutcome.PACKING_LIMIT
+        assert len(selection.offsets) * 5.0 < 80.0 * 0.85
 
     def test_invalid_count_raises(self) -> None:
         with pytest.raises(ValueError, match="count"):
@@ -528,6 +596,10 @@ class TestProbeWindows:
     def test_invalid_duration_raises(self) -> None:
         with pytest.raises(ValueError, match="duration"):
             probe_windows(0.0, count=3, window_s=18.0)
+
+    def test_candidate_count_below_count_raises(self) -> None:
+        with pytest.raises(ValueError, match="candidate"):
+            probe_windows(1000.0, count=3, window_s=18.0, candidate_count=2)
 
 
 class TestSourceIsVariableBitrate:
@@ -634,6 +706,53 @@ class TestPoolGrainWindows:
 
     def test_percentile_is_low(self) -> None:
         assert 0.0 < GRAIN_POOL_PERCENTILE <= 25.0
+
+
+class TestPooledStandardError:
+    def test_single_window_has_no_sampling_error(self) -> None:
+        assert pooled_standard_error([72.0], pool_scores=pool_grain_windows) == 0.0
+
+    def test_mean_matches_the_standard_error_of_the_mean(self) -> None:
+        scores = [float(index * 17 % 31) for index in range(30)]
+        expected = math.sqrt(
+            sum((score - sum(scores) / len(scores)) ** 2 for score in scores) / (len(scores) - 1)
+        )
+        expected /= math.sqrt(len(scores))
+        actual = pooled_standard_error(scores, pool_scores=lambda values: sum(values) / len(values))
+        assert actual == pooled_standard_error(scores, pool_scores=lambda values: sum(values) / len(values))
+        assert actual == pytest.approx(expected, rel=0.05)
+
+    def test_two_windows_have_measurable_sampling_error(self) -> None:
+        assert pooled_standard_error([0.0, 2.0], pool_scores=pool_grain_windows) > 0.0
+
+    def test_percentile_bootstrap_does_not_collapse_on_an_order_statistic_tie(self) -> None:
+        scores = [
+            84.7,
+            66.0,
+            57.6,
+            79.5,
+            84.4,
+            80.1,
+            84.5,
+            66.5,
+            65.6,
+            55.5,
+            82.4,
+            70.1,
+            83.3,
+            84.7,
+            59.5,
+            55.2,
+            82.7,
+            67.9,
+            55.3,
+            84.6,
+            62.0,
+            59.5,
+        ]
+        actual = pooled_standard_error(scores, pool_scores=pool_grain_windows)
+        assert actual == pooled_standard_error(scores, pool_scores=pool_grain_windows)
+        assert actual > 0.70
 
 
 class TestSeedKey:

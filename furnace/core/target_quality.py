@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import math
+import random
+import statistics
 from collections.abc import Callable
 from dataclasses import dataclass
+from enum import Enum
 
 from .detect import is_hdr_transfer
 from .models import VideoParams
@@ -253,20 +256,20 @@ _GRAIN_HD_QVBR = 32
 
 _FULL_PASS_FRACTION = 0.85
 
-PROBE_WINDOW_SECONDS = 18.0
+_MIN_WINDOW_COUNT = 10
+_WINDOW_BATCH = 6
+_MAX_WINDOW_COUNT = 34
+_GOLDEN_RATIO_CONJUGATE = 0.6180339887498949
+_PROBE_SEQUENCE_ATTEMPT_FACTOR = 10_000
+_MIN_STANDARD_ERROR_SAMPLES = 2
+_BOOTSTRAP_RESAMPLES = 2_000
+_BOOTSTRAP_SEED = 0xF043
 
-_GRAIN_WINDOW_COUNT = 10
-# Three windows sampled the runtime too thinly: the knob tracked whichever
-# stretches the grid happened to land on rather than the file, so sibling
-# episodes of one series landed anywhere from QVBR 23 to 32.
-_NVENC_WINDOW_COUNT = 10
+PROBE_WINDOW_MIN_GAP_SECONDS = 18.0
 
 GRAIN_POOL_PERCENTILE = 20.0
 _PERCENTILE_MAX = 100.0
 
-# How far the next source's bitrate may sit from an already-solved one and still
-# borrow its answer as a starting point. Dark's first season spans 27.9-30.9 Mbit/s
-# (well inside), while its second season jumps to ~40 and starts over.
 _SEED_BITRATE_TOLERANCE = 0.20
 
 _VBR_COV_THRESHOLD = 0.05
@@ -284,6 +287,22 @@ class TargetSpec:
     knob_hi: int
     max_probes: int
     window_count: int
+    window_batch: int
+    max_window_count: int
+    sampling_tolerance: float
+
+
+class ProbeWindowOutcome(Enum):
+    READY = "ready"
+    COVERAGE_LIMIT = "coverage_limit"
+    PACKING_LIMIT = "packing_limit"
+
+
+@dataclass(frozen=True, slots=True)
+class ProbeWindowSelection:
+    offsets: tuple[float, ...]
+    candidates: tuple[float, ...]
+    outcome: ProbeWindowOutcome
 
 
 def resolve_target(vp: VideoParams) -> TargetSpec:
@@ -305,7 +324,9 @@ def resolve_target(vp: VideoParams) -> TargetSpec:
             _GRAIN_TARGET,
             _GRAIN_SD_CRF_FLOOR,
             _CRF_HI,
-            window_count=_GRAIN_WINDOW_COUNT,
+            window_count=_MIN_WINDOW_COUNT,
+            window_batch=_WINDOW_BATCH,
+            max_window_count=_MAX_WINDOW_COUNT,
         )
 
     _, final_h = final_output_dimensions(vp)
@@ -320,7 +341,9 @@ def resolve_target(vp: VideoParams) -> TargetSpec:
         centre,
         _QVBR_LO,
         _QVBR_HI,
-        window_count=_NVENC_WINDOW_COUNT,
+        window_count=_MIN_WINDOW_COUNT,
+        window_batch=_WINDOW_BATCH,
+        max_window_count=_MAX_WINDOW_COUNT,
     )
 
 
@@ -344,6 +367,8 @@ def _spec(
     knob_hi: int,
     *,
     window_count: int,
+    window_batch: int,
+    max_window_count: int,
 ) -> TargetSpec:
     tol = centre * _TARGET_TOLERANCE
     return TargetSpec(
@@ -354,22 +379,46 @@ def _spec(
         knob_hi=knob_hi,
         max_probes=_MAX_PROBES,
         window_count=window_count,
+        window_batch=window_batch,
+        max_window_count=max_window_count,
+        sampling_tolerance=tol,
     )
 
 
-def probe_windows(duration_s: float, *, count: int, window_s: float) -> list[float] | None:
+def probe_windows(
+    duration_s: float,
+    *,
+    count: int,
+    window_s: float,
+    candidate_count: int | None = None,
+) -> ProbeWindowSelection:
     if count < 1:
         raise ValueError(f"probe window count must be >= 1, got {count}")
     if window_s <= 0.0:
         raise ValueError(f"probe window length must be positive, got {window_s}")
     if duration_s <= 0.0:
         raise ValueError(f"source duration must be positive, got {duration_s}")
+    candidate_limit = count if candidate_count is None else candidate_count
+    if candidate_limit < count:
+        raise ValueError(f"probe candidate count must be >= requested count, got {candidate_limit} < {count}")
 
-    total = window_s * count
-    if total >= _FULL_PASS_FRACTION * duration_s:
-        return None
-    gap = (duration_s - total) / (count + 1)
-    return [gap * (k + 1) + window_s * k for k in range(count)]
+    lo = duration_s * _EDGE_SKIP_FRACTION
+    span = duration_s * (1.0 - 2.0 * _EDGE_SKIP_FRACTION) - window_s
+    if span < 0.0:
+        return ProbeWindowSelection((), (), ProbeWindowOutcome.COVERAGE_LIMIT)
+    min_gap_s = max(window_s, PROBE_WINDOW_MIN_GAP_SECONDS)
+    chosen: list[float] = []
+    for candidate_index in range(candidate_limit * _PROBE_SEQUENCE_ATTEMPT_FACTOR):
+        candidate = lo + ((candidate_index + 1) * _GOLDEN_RATIO_CONJUGATE % 1.0) * span
+        if all(abs(candidate - offset) >= min_gap_s for offset in chosen):
+            chosen.append(candidate)
+            if len(chosen) == candidate_limit:
+                break
+    offsets = tuple(chosen[:count])
+    if window_s * len(offsets) >= _FULL_PASS_FRACTION * duration_s:
+        return ProbeWindowSelection((), (), ProbeWindowOutcome.COVERAGE_LIMIT)
+    outcome = ProbeWindowOutcome.READY if len(offsets) == count else ProbeWindowOutcome.PACKING_LIMIT
+    return ProbeWindowSelection(offsets, tuple(chosen), outcome)
 
 
 def pool_grain_windows(scores: list[float], *, percentile: float = GRAIN_POOL_PERCENTILE) -> float:
@@ -384,6 +433,15 @@ def pool_grain_windows(scores: list[float], *, percentile: float = GRAIN_POOL_PE
     if lo == hi:
         return ordered[lo]
     return ordered[lo] + (rank - lo) * (ordered[hi] - ordered[lo])
+
+
+def pooled_standard_error(scores: list[float], *, pool_scores: Callable[[list[float]], float]) -> float:
+    n = len(scores)
+    if n < _MIN_STANDARD_ERROR_SAMPLES:
+        return 0.0
+    rng = random.Random(_BOOTSTRAP_SEED)  # noqa: S311
+    estimates = [pool_scores(rng.choices(scores, k=n)) for _ in range(_BOOTSTRAP_RESAMPLES)]
+    return statistics.stdev(estimates)
 
 
 def source_is_variable_bitrate(bitrates: list[float], *, threshold: float = _VBR_COV_THRESHOLD) -> bool:
@@ -412,17 +470,23 @@ def interior_windows(
 def select_hard_windows(
     scored: list[tuple[float, float]], *, count: int, min_gap_s: float = _HARD_WINDOW_MIN_GAP_S
 ) -> list[float]:
+    return [scored[index][0] for index in select_hard_window_indices(scored, count=count, min_gap_s=min_gap_s)]
+
+
+def select_hard_window_indices(
+    scored: list[tuple[float, float]], *, count: int, min_gap_s: float = _HARD_WINDOW_MIN_GAP_S
+) -> list[int]:
     if count < 1:
         raise ValueError(f"hard window count must be >= 1, got {count}")
     if min_gap_s < 0.0:
         raise ValueError(f"min gap must be non-negative, got {min_gap_s}")
-    chosen: list[float] = []
-    for start, _value in sorted(scored, key=lambda sv: -sv[1]):
-        if all(abs(start - c) >= min_gap_s for c in chosen):
-            chosen.append(start)
+    chosen: list[int] = []
+    for index, (start, _value) in sorted(enumerate(scored), key=lambda indexed: -indexed[1][1]):
+        if all(abs(start - scored[chosen_index][0]) >= min_gap_s for chosen_index in chosen):
+            chosen.append(index)
             if len(chosen) == count:
                 break
-    return sorted(chosen)
+    return sorted(chosen, key=lambda index: scored[index][0])
 
 
 @dataclass(frozen=True, slots=True)
@@ -448,14 +512,6 @@ def seed_key(vp: VideoParams, spec: TargetSpec) -> SeedKey:
 
 
 class SeedMemory:
-    """Knobs already solved this run, so a comparable source can start near the answer.
-
-    Files only share a starting point when they land on the same rung of the
-    quality curve: same metric and target, same encoder path, same output size,
-    and a source squeezed to a comparable degree. Anything else searches from
-    the bracket midpoint, exactly as before.
-    """
-
     def __init__(self, *, tolerance: float = _SEED_BITRATE_TOLERANCE) -> None:
         if tolerance < 0.0:
             raise ValueError(f"seed bitrate tolerance must be non-negative, got {tolerance}")
