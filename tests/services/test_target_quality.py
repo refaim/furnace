@@ -83,12 +83,20 @@ def _service(
 
 
 class TestTargetQualitySearch:
-    def test_extracts_three_windows(self, tmp_path: Path) -> None:
+    def test_extracts_ten_windows(self, tmp_path: Path) -> None:
         service, extractor, _probe = _service()
         vp = make_video_params(source_width=1920, source_height=1080)
         service.search(Path("movie.mkv"), vp, duration_s=7200.0, work_dir=tmp_path)
-        assert len(extractor.calls) == 3
+        assert len(extractor.calls) == 10
         assert all(c["frames"] == 432 for c in extractor.calls)
+
+    def test_windows_span_the_whole_runtime(self, tmp_path: Path) -> None:
+        service, extractor, _probe = _service()
+        vp = make_video_params(source_width=1920, source_height=1080)
+        service.search(Path("movie.mkv"), vp, duration_s=7200.0, work_dir=tmp_path)
+        starts = sorted(cast("float", c["start_s"]) for c in extractor.calls)
+        assert starts[0] < 7200.0 * 0.1
+        assert starts[-1] > 7200.0 * 0.85
 
     def test_returns_knob_search_result_in_bounds(self, tmp_path: Path) -> None:
         service, _extractor, _probe = _service()
@@ -139,11 +147,7 @@ class TestTargetQualitySearch:
         service.search(Path("m.mkv"), vp, duration_s=7200.0, work_dir=tmp_path)
         first_knob = probe.calls[0]["qvbr"]
         inputs_for_first = {c["input"] for c in probe.calls if c["qvbr"] == first_knob}
-        assert inputs_for_first == {
-            tmp_path / "tq_window_0.mkv",
-            tmp_path / "tq_window_1.mkv",
-            tmp_path / "tq_window_2.mkv",
-        }
+        assert inputs_for_first == {tmp_path / f"tq_window_{i}.mkv" for i in range(10)}
 
     def test_frames_from_fractional_fps(self, tmp_path: Path) -> None:
         service, extractor, _probe = _service()
@@ -390,9 +394,9 @@ class TestSearchNarrationWiring:
             work_dir=tmp_path,
             on_event=events.append,
         )
-        assert "Probing QVBR -> SSIMULACRA2 ~81.0 (3 windows, mean-pooled)" in events
-        assert "QVBR 30: window 1/3 = 90.0" in events
-        assert "QVBR 30: window 3/3 = 90.0" in events
+        assert "Probing QVBR -> SSIMULACRA2 ~81.0 (10 windows, mean-pooled)" in events
+        assert "QVBR 30: window 1/10 = 90.0" in events
+        assert "QVBR 30: window 10/10 = 90.0" in events
         assert "QVBR 30 -> SSIMULACRA2 90.0" in events
 
     def test_grain_search_narrates_worst_case_pooling(self, tmp_path: Path) -> None:
@@ -414,3 +418,63 @@ class TestSearchNarrationWiring:
         vp = make_video_params(source_width=1920, source_height=1080)
         result = service.search(Path("m.mkv"), vp, duration_s=7200.0, work_dir=tmp_path)
         assert isinstance(result, KnobSearchResult)
+
+
+class TestSmartStart:
+    def _vp(self, bitrate: int) -> VideoParams:
+        return make_video_params(source_width=3840, source_height=1920, source_bitrate=bitrate)
+
+    def test_first_search_starts_at_the_bracket_midpoint(self, tmp_path: Path) -> None:
+        service, _extractor, probe = _service(score_fn=lambda q: 111.0 - q)
+        service.search(Path("a.mkv"), self._vp(30_000_000), duration_s=7200.0, work_dir=tmp_path)
+        assert probe.calls[0]["qvbr"] == 30
+
+    def test_comparable_source_starts_at_the_solved_knob(self, tmp_path: Path) -> None:
+        service, _extractor, probe = _service(score_fn=lambda q: 111.0 - q)
+        first = service.search(Path("a.mkv"), self._vp(30_000_000), duration_s=7200.0, work_dir=tmp_path)
+        assert first.hit is True
+        probe.calls.clear()
+        service.search(Path("b.mkv"), self._vp(29_000_000), duration_s=7200.0, work_dir=tmp_path)
+        assert probe.calls[0]["qvbr"] == first.knob
+
+    def test_distant_bitrate_starts_from_scratch(self, tmp_path: Path) -> None:
+        service, _extractor, probe = _service(score_fn=lambda q: 111.0 - q)
+        service.search(Path("a.mkv"), self._vp(30_000_000), duration_s=7200.0, work_dir=tmp_path)
+        probe.calls.clear()
+        service.search(Path("b.mkv"), self._vp(45_000_000), duration_s=7200.0, work_dir=tmp_path)
+        assert probe.calls[0]["qvbr"] == 30
+
+    def test_other_source_class_starts_from_scratch(self, tmp_path: Path) -> None:
+        service, _extractor, probe = _service(score_fn=lambda q: 111.0 - q)
+        service.search(Path("a.mkv"), self._vp(30_000_000), duration_s=7200.0, work_dir=tmp_path)
+        probe.calls.clear()
+        hdr = make_video_params(
+            source_width=3840,
+            source_height=1920,
+            source_bitrate=30_000_000,
+            color_transfer="smpte2084",
+            color_matrix="bt2020nc",
+        )
+        service.search(Path("b.mkv"), hdr, duration_s=7200.0, work_dir=tmp_path)
+        assert probe.calls[0]["qvbr"] == 30
+
+    def test_a_missed_search_is_not_remembered(self, tmp_path: Path) -> None:
+        service, _extractor, probe = _service(score_fn=lambda q: 40.0 - q * 0.01)
+        missed = service.search(Path("a.mkv"), self._vp(30_000_000), duration_s=7200.0, work_dir=tmp_path)
+        assert missed.hit is False
+        probe.calls.clear()
+        service.search(Path("b.mkv"), self._vp(30_000_000), duration_s=7200.0, work_dir=tmp_path)
+        assert probe.calls[0]["qvbr"] == 30
+
+    def test_seed_is_narrated(self, tmp_path: Path) -> None:
+        service, _extractor, _probe = _service(score_fn=lambda q: 111.0 - q)
+        first = service.search(Path("a.mkv"), self._vp(30_000_000), duration_s=7200.0, work_dir=tmp_path)
+        events: list[str] = []
+        service.search(
+            Path("b.mkv"),
+            self._vp(30_000_000),
+            duration_s=7200.0,
+            work_dir=tmp_path,
+            on_event=events.append,
+        )
+        assert f"Starting from QVBR {first.knob} (comparable source already solved)" in events

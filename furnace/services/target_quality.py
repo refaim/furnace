@@ -9,12 +9,14 @@ from furnace.core.ports import Encoder, InlineQualityProbe, PerceptualMetrics, W
 from furnace.core.target_quality import (
     PROBE_WINDOW_SECONDS,
     KnobSearchResult,
+    SeedMemory,
     TargetSpec,
     interior_windows,
     pool_grain_windows,
     probe_windows,
     resolve_target,
     search_knob,
+    seed_key,
     select_hard_windows,
     source_is_variable_bitrate,
 )
@@ -47,6 +49,9 @@ class _SearchNarrator:
     def result(self, knob: int, pooled: float) -> None:
         self.emit(f"{self.label} {knob} -> {self.metric} {pooled:.1f}")
 
+    def seeded(self, knob: int) -> None:
+        self.emit(f"Starting from {self.label} {knob} (comparable source already solved)")
+
 
 class TargetQualityService:
     def __init__(
@@ -61,6 +66,7 @@ class TargetQualityService:
         self._inline_probe = inline_probe
         self._grain_encoder = grain_encoder
         self._metrics = metrics
+        self._seeds = SeedMemory()
 
     def can_search(self, vp: VideoParams) -> bool:
         if not vp.grain:
@@ -90,19 +96,27 @@ class TargetQualityService:
             pool_word="worst-case" if vp.grain else "mean",
         )
         narrator.opening((spec.target_lo + spec.target_hi) / 2.0)
+        key = seed_key(vp, spec)
+        seed = self._seeds.suggest(key, source_bitrate=vp.source_bitrate)
+        if seed is not None:
+            narrator.seeded(seed)
         probe_fn = (
             self._grain_probe_fn(vp, spec.metric, windows, work_dir, narrator)
             if vp.grain
             else self._inline_probe_fn(vp, spec.metric, windows, work_dir, narrator)
         )
-        return search_knob(
+        result = search_knob(
             probe_fn,
             target_lo=spec.target_lo,
             target_hi=spec.target_hi,
             lo=spec.knob_lo,
             hi=spec.knob_hi,
             max_probes=spec.max_probes,
+            seed=seed,
         )
+        if result.hit:
+            self._seeds.remember(key, source_bitrate=vp.source_bitrate, knob=result.knob)
+        return result
 
     def _grain_window_offsets(self, source: Path, spec: TargetSpec, duration_s: float) -> list[float] | None:
         even = probe_windows(duration_s, count=spec.window_count, window_s=PROBE_WINDOW_SECONDS)

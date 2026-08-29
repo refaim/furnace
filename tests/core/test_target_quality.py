@@ -9,6 +9,8 @@ from furnace.core.models import CropRect
 from furnace.core.target_quality import (
     GRAIN_POOL_PERCENTILE,
     KnobSearchResult,
+    SeedKey,
+    SeedMemory,
     TargetSpec,
     fixed_grain_knob,
     grain_uses_svt,
@@ -21,6 +23,7 @@ from furnace.core.target_quality import (
     probe_windows,
     resolve_target,
     search_knob,
+    seed_key,
     select_hard_windows,
     source_is_variable_bitrate,
 )
@@ -431,13 +434,13 @@ class TestResolveTarget:
         spec = resolve_target(make_video_params(grain=True, source_width=720, source_height=576))
         assert spec.window_count == 10
 
-    def test_nvenc_samples_three_windows(self) -> None:
+    def test_nvenc_samples_ten_windows(self) -> None:
         for vp in (
             make_video_params(source_width=1920, source_height=1080),
             make_video_params(source_width=720, source_height=576),
             make_video_params(color_transfer="smpte2084", color_matrix="bt2020nc"),
         ):
-            assert resolve_target(vp).window_count == 3
+            assert resolve_target(vp).window_count == 10
 
     def test_grain_hd_is_not_resolvable_here(self) -> None:
         with pytest.raises(ValueError, match="SD-only"):
@@ -631,3 +634,131 @@ class TestPoolGrainWindows:
 
     def test_percentile_is_low(self) -> None:
         assert 0.0 < GRAIN_POOL_PERCENTILE <= 25.0
+
+
+class TestSeedKey:
+    def test_same_source_class_shares_a_key(self) -> None:
+        a = make_video_params(source_width=3840, source_height=1920)
+        b = make_video_params(source_width=3840, source_height=1920)
+        assert seed_key(a, resolve_target(a)) == seed_key(b, resolve_target(b))
+
+    def test_hdr_and_sdr_do_not_share_a_key(self) -> None:
+        sdr = make_video_params(source_width=3840, source_height=1920)
+        hdr = make_video_params(
+            source_width=3840,
+            source_height=1920,
+            color_transfer="smpte2084",
+            color_matrix="bt2020nc",
+        )
+        assert seed_key(sdr, resolve_target(sdr)) != seed_key(hdr, resolve_target(hdr))
+
+    def test_sd_and_hd_do_not_share_a_key(self) -> None:
+        sd = make_video_params(source_width=720, source_height=576)
+        hd = make_video_params(source_width=1920, source_height=1080)
+        assert seed_key(sd, resolve_target(sd)) != seed_key(hd, resolve_target(hd))
+
+    def test_grain_and_smooth_do_not_share_a_key(self) -> None:
+        smooth = make_video_params(source_width=720, source_height=576)
+        grainy = make_video_params(source_width=720, source_height=576, grain=True)
+        assert seed_key(smooth, resolve_target(smooth)) != seed_key(grainy, resolve_target(grainy))
+
+
+class TestSeedMemory:
+    def _key(self) -> SeedKey:
+        vp = make_video_params(source_width=3840, source_height=1920)
+        return seed_key(vp, resolve_target(vp))
+
+    def test_empty_memory_suggests_nothing(self) -> None:
+        assert SeedMemory().suggest(self._key(), source_bitrate=30_000_000) is None
+
+    def test_remembers_a_solved_knob(self) -> None:
+        memory = SeedMemory()
+        key = self._key()
+        memory.remember(key, source_bitrate=30_000_000, knob=28)
+        assert memory.suggest(key, source_bitrate=30_000_000) == 28
+
+    def test_comparable_bitrate_still_seeds(self) -> None:
+        memory = SeedMemory()
+        key = self._key()
+        memory.remember(key, source_bitrate=30_000_000, knob=28)
+        assert memory.suggest(key, source_bitrate=27_900_000) == 28
+
+    def test_distant_bitrate_does_not_seed(self) -> None:
+        memory = SeedMemory()
+        key = self._key()
+        memory.remember(key, source_bitrate=30_000_000, knob=28)
+        assert memory.suggest(key, source_bitrate=40_000_000) is None
+
+    def test_other_source_class_does_not_seed(self) -> None:
+        memory = SeedMemory()
+        memory.remember(self._key(), source_bitrate=30_000_000, knob=28)
+        sd = make_video_params(source_width=720, source_height=576)
+        assert memory.suggest(seed_key(sd, resolve_target(sd)), source_bitrate=30_000_000) is None
+
+    def test_unknown_bitrate_is_never_remembered(self) -> None:
+        memory = SeedMemory()
+        key = self._key()
+        memory.remember(key, source_bitrate=0, knob=28)
+        assert memory.suggest(key, source_bitrate=30_000_000) is None
+
+    def test_unknown_bitrate_is_never_seeded(self) -> None:
+        memory = SeedMemory()
+        key = self._key()
+        memory.remember(key, source_bitrate=30_000_000, knob=28)
+        assert memory.suggest(key, source_bitrate=0) is None
+
+    def test_latest_solved_knob_wins(self) -> None:
+        memory = SeedMemory()
+        key = self._key()
+        memory.remember(key, source_bitrate=30_000_000, knob=28)
+        memory.remember(key, source_bitrate=30_000_000, knob=31)
+        assert memory.suggest(key, source_bitrate=30_000_000) == 31
+
+    def test_negative_tolerance_raises(self) -> None:
+        with pytest.raises(ValueError, match="tolerance"):
+            SeedMemory(tolerance=-0.1)
+
+
+class TestSearchKnobSeed:
+    def test_seed_is_probed_first(self) -> None:
+        probed: list[int] = []
+
+        def probe(knob: int) -> float:
+            probed.append(knob)
+            return 120.0 - knob
+
+        search_knob(probe, target_lo=80.0, target_hi=82.0, lo=16, hi=44, max_probes=4, seed=27)
+        assert probed[0] == 27
+
+    def test_seed_outside_the_bracket_is_clamped(self) -> None:
+        probed: list[int] = []
+
+        def probe(knob: int) -> float:
+            probed.append(knob)
+            return 120.0 - knob
+
+        search_knob(probe, target_lo=80.0, target_hi=82.0, lo=16, hi=44, max_probes=4, seed=99)
+        assert probed[0] == 44
+
+    def test_without_a_seed_the_bracket_midpoint_is_probed_first(self) -> None:
+        probed: list[int] = []
+
+        def probe(knob: int) -> float:
+            probed.append(knob)
+            return 120.0 - knob
+
+        search_knob(probe, target_lo=80.0, target_hi=82.0, lo=16, hi=44, max_probes=4)
+        assert probed[0] == 30
+
+    def test_a_wrong_seed_still_converges(self) -> None:
+        result = search_knob(
+            lambda knob: 120.0 - knob,
+            target_lo=80.0,
+            target_hi=82.0,
+            lo=16,
+            hi=44,
+            max_probes=4,
+            seed=16,
+        )
+        assert result.hit is True
+        assert 38 <= result.knob <= 40

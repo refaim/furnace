@@ -196,6 +196,7 @@ def search_knob(
     lo: int,
     hi: int,
     max_probes: int,
+    seed: int | None = None,
 ) -> KnobSearchResult:
     if lo < 0:
         raise ValueError(f"knob lower bound {lo} must be non-negative")
@@ -210,7 +211,10 @@ def search_knob(
     probed: set[int] = set()
     lower, upper = lo, hi
     while True:
-        knob = predict_knob(lower, upper, history, target_lo, target_hi)
+        if seed is not None and not history:
+            knob = max(lower, min(upper, seed))
+        else:
+            knob = predict_knob(lower, upper, history, target_lo, target_hi)
         if knob in probed:
             break
         score = probe(knob)
@@ -252,10 +256,18 @@ _FULL_PASS_FRACTION = 0.85
 PROBE_WINDOW_SECONDS = 18.0
 
 _GRAIN_WINDOW_COUNT = 10
-_NVENC_WINDOW_COUNT = 3
+# Three windows sampled the runtime too thinly: the knob tracked whichever
+# stretches the grid happened to land on rather than the file, so sibling
+# episodes of one series landed anywhere from QVBR 23 to 32.
+_NVENC_WINDOW_COUNT = 10
 
 GRAIN_POOL_PERCENTILE = 20.0
 _PERCENTILE_MAX = 100.0
+
+# How far the next source's bitrate may sit from an already-solved one and still
+# borrow its answer as a starting point. Dark's first season spans 27.9-30.9 Mbit/s
+# (well inside), while its second season jumps to ~40 and starts over.
+_SEED_BITRATE_TOLERANCE = 0.20
 
 _VBR_COV_THRESHOLD = 0.05
 _HARD_WINDOW_MIN_GAP_S = 90.0
@@ -411,3 +423,57 @@ def select_hard_windows(
             if len(chosen) == count:
                 break
     return sorted(chosen)
+
+
+@dataclass(frozen=True, slots=True)
+class SeedKey:
+    metric: str
+    knob_lo: int
+    knob_hi: int
+    grain: bool
+    final_width: int
+    final_height: int
+
+
+def seed_key(vp: VideoParams, spec: TargetSpec) -> SeedKey:
+    final_w, final_h = final_output_dimensions(vp)
+    return SeedKey(
+        metric=spec.metric,
+        knob_lo=spec.knob_lo,
+        knob_hi=spec.knob_hi,
+        grain=vp.grain,
+        final_width=final_w,
+        final_height=final_h,
+    )
+
+
+class SeedMemory:
+    """Knobs already solved this run, so a comparable source can start near the answer.
+
+    Files only share a starting point when they land on the same rung of the
+    quality curve: same metric and target, same encoder path, same output size,
+    and a source squeezed to a comparable degree. Anything else searches from
+    the bracket midpoint, exactly as before.
+    """
+
+    def __init__(self, *, tolerance: float = _SEED_BITRATE_TOLERANCE) -> None:
+        if tolerance < 0.0:
+            raise ValueError(f"seed bitrate tolerance must be non-negative, got {tolerance}")
+        self._tolerance = tolerance
+        self._solved: dict[SeedKey, tuple[int, int]] = {}
+
+    def remember(self, key: SeedKey, *, source_bitrate: int, knob: int) -> None:
+        if source_bitrate <= 0:
+            return
+        self._solved[key] = (source_bitrate, knob)
+
+    def suggest(self, key: SeedKey, *, source_bitrate: int) -> int | None:
+        if source_bitrate <= 0:
+            return None
+        solved = self._solved.get(key)
+        if solved is None:
+            return None
+        previous_bitrate, knob = solved
+        if abs(source_bitrate - previous_bitrate) > self._tolerance * previous_bitrate:
+            return None
+        return knob

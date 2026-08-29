@@ -184,3 +184,15 @@ class TestAppdataFallback:
         tp = load_config()
         assert isinstance(tp, ToolPaths)
         assert tp.ffmpeg == data_dir / "tools" / "ffmpeg.exe"
+
+
+class TestVersionSync:
+    def test_package_version_matches_pyproject(self) -> None:
+        import tomllib
+
+        import furnace
+
+        pyproject = Path(__file__).resolve().parents[1] / "pyproject.toml"
+        with pyproject.open("rb") as f:
+            declared = tomllib.load(f)["project"]["version"]
+        assert declared == furnace.VERSION
