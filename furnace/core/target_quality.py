@@ -243,6 +243,8 @@ _HDR_TARGET = 9.5
 _HD_SDR_TARGET = 81.0
 _SD_SDR_TARGET = 72.0
 _TARGET_TOLERANCE = 0.01
+_FLOOR_FRACTION = 70.0 / 81.0
+_DEEP_HOLE_FRACTION = 60.0 / 81.0
 
 _QVBR_LO = 16
 _QVBR_HI = 44
@@ -283,6 +285,9 @@ class TargetSpec:
     metric: str
     target_lo: float
     target_hi: float
+    floor: float
+    deep_hole_threshold: float
+    repairs_holes: bool
     knob_lo: int
     knob_hi: int
     max_probes: int
@@ -324,6 +329,7 @@ def resolve_target(vp: VideoParams) -> TargetSpec:
             _GRAIN_TARGET,
             _GRAIN_SD_CRF_FLOOR,
             _CRF_HI,
+            repairs_holes=True,
             window_count=_MIN_WINDOW_COUNT,
             window_batch=_WINDOW_BATCH,
             max_window_count=_MAX_WINDOW_COUNT,
@@ -331,16 +337,17 @@ def resolve_target(vp: VideoParams) -> TargetSpec:
 
     _, final_h = final_output_dimensions(vp)
     if is_hdr_transfer(vp.color_transfer):
-        metric, centre = "cvvdp", _HDR_TARGET
+        metric, centre, repairs_holes = "cvvdp", _HDR_TARGET, False
     elif final_h < _SD_MAX_HEIGHT:
-        metric, centre = "ssimulacra2", _SD_SDR_TARGET
+        metric, centre, repairs_holes = "ssimulacra2", _SD_SDR_TARGET, True
     else:
-        metric, centre = "ssimulacra2", _HD_SDR_TARGET
+        metric, centre, repairs_holes = "ssimulacra2", _HD_SDR_TARGET, True
     return _spec(
         metric,
         centre,
         _QVBR_LO,
         _QVBR_HI,
+        repairs_holes=repairs_holes,
         window_count=_MIN_WINDOW_COUNT,
         window_batch=_WINDOW_BATCH,
         max_window_count=_MAX_WINDOW_COUNT,
@@ -366,6 +373,7 @@ def _spec(
     knob_lo: int,
     knob_hi: int,
     *,
+    repairs_holes: bool,
     window_count: int,
     window_batch: int,
     max_window_count: int,
@@ -375,6 +383,9 @@ def _spec(
         metric=metric,
         target_lo=centre - tol,
         target_hi=centre + tol,
+        floor=centre * _FLOOR_FRACTION,
+        deep_hole_threshold=centre * _DEEP_HOLE_FRACTION,
+        repairs_holes=repairs_holes,
         knob_lo=knob_lo,
         knob_hi=knob_hi,
         max_probes=_MAX_PROBES,

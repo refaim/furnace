@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -16,9 +17,9 @@ from furnace.core.models import (
     SubtitleAction,
 )
 from furnace.core.progress import ProgressSample
-from furnace.core.target_quality import KnobSearchResult
 from furnace.plan import load_plan, save_plan
 from furnace.services.executor import Executor, _video_intermediate_name
+from furnace.services.target_quality import SaturatedHole, TargetQualitySearchResult, UnverifiedHole
 from tests.conftest import (
     make_audio_instruction,
     make_job,
@@ -1632,8 +1633,29 @@ class TestRunPipelineTaggerWarning:
         assert output_path.exists()
 
 
-def _tq_result(*, knob: int = 27, score: float = 85.0, hit: bool = True) -> KnobSearchResult:
-    return KnobSearchResult(knob=knob, score=score, hit=hit, probes=((knob, score),))
+def _tq_result(
+    *,
+    knob: int = 27,
+    score: float = 85.0,
+    hit: bool = True,
+    initial_knob: int | None = None,
+    saturated: tuple[SaturatedHole, ...] = (),
+    unverified: tuple[UnverifiedHole, ...] = (),
+    repair_adopted: bool | None = None,
+) -> TargetQualitySearchResult:
+    chosen = knob if initial_knob is None else initial_knob
+    return TargetQualitySearchResult(
+        knob=knob,
+        score=score,
+        hit=hit,
+        probes=((chosen, score),),
+        initial_knob=chosen,
+        holes=(),
+        repaired=(),
+        saturated=saturated,
+        unverified=unverified,
+        repair_adopted=(knob < chosen if repair_adopted is None else repair_adopted),
+    )
 
 
 def _fake_clean_writing(input_path: Any, output_path: Any, on_progress: Any = None) -> int:
@@ -1914,6 +1936,271 @@ class TestRunPipelineTargetQuality:
         tool_lines = [c.args[0] for c in progress.add_tool_line.call_args_list]
         assert any("not hit" in line.lower() for line in tool_lines)
 
+    def test_saturated_holes_log_warning_and_reach_progress(
+        self,
+        executor_with_mocks: tuple[Executor, SimpleNamespace],
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        executor, _mocks = executor_with_mocks
+        progress = MagicMock()
+        executor._progress = progress
+        svc = MagicMock()
+        svc.can_search.return_value = True
+        svc.search.return_value = _tq_result(
+            knob=30,
+            saturated=(
+                SaturatedHole(
+                    start_s=125.4,
+                    score_before=45.85,
+                    score_after=46.1,
+                    expected_gain=2.6,
+                ),
+                SaturatedHole(
+                    start_s=3661.0,
+                    score_before=57.71,
+                    score_after=57.9,
+                    expected_gain=2.6,
+                ),
+            ),
+        )
+        executor._target_quality = svc
+        job = _pipeline_job(tmp_path)
+
+        with caplog.at_level(logging.WARNING, logger="furnace.services.executor"):
+            result = executor._maybe_search_target_quality(job, Path("/src/movie.mkv"), tmp_path)
+
+        assert result == 30
+        assert "02:05" in caplog.text
+        assert "1:01:01" in caplog.text
+        tool_lines = [call.args[0] for call in progress.add_tool_line.call_args_list]
+        warning = next(line for line in tool_lines if "saturated" in line.lower())
+        assert warning.startswith("[furnace] WARNING:")
+        assert "02:05" in warning
+        assert "1:01:01" in warning
+
+    def test_hdr_repair_disabled_reason_reaches_warning_and_progress(
+        self,
+        executor_with_mocks: tuple[Executor, SimpleNamespace],
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        executor, _mocks = executor_with_mocks
+        progress = MagicMock()
+        executor._progress = progress
+        svc = MagicMock()
+        svc.can_search.return_value = True
+        svc.search.return_value = _tq_result(
+            unverified=(
+                UnverifiedHole(
+                    start_s=3661.0,
+                    score_before=8.0,
+                    score_after=8.0,
+                    reason="repair disabled for HDR",
+                ),
+            )
+        )
+        executor._target_quality = svc
+
+        with caplog.at_level(logging.WARNING, logger="furnace.services.executor"):
+            result = executor._maybe_search_target_quality(
+                _pipeline_job(tmp_path),
+                Path("/src/hdr.mkv"),
+                tmp_path,
+            )
+
+        assert result == 27
+        assert "1:01:01 (repair disabled for HDR)" in caplog.text
+        tool_lines = [call.args[0] for call in progress.add_tool_line.call_args_list]
+        assert any(
+            line.startswith("[furnace] WARNING:") and "1:01:01 (repair disabled for HDR)" in line
+            for line in tool_lines
+        )
+
+    def test_saturated_holes_log_without_progress(
+        self,
+        executor_with_mocks: tuple[Executor, SimpleNamespace],
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        executor, _mocks = executor_with_mocks
+        svc = MagicMock()
+        svc.can_search.return_value = True
+        svc.search.return_value = _tq_result(
+            saturated=(
+                SaturatedHole(
+                    start_s=65.0,
+                    score_before=50.0,
+                    score_after=50.1,
+                    expected_gain=2.6,
+                ),
+            )
+        )
+        executor._target_quality = svc
+        job = _pipeline_job(tmp_path)
+
+        with caplog.at_level(logging.WARNING, logger="furnace.services.executor"):
+            result = executor._maybe_search_target_quality(job, Path("/src/movie.mkv"), tmp_path)
+
+        assert result == 27
+        assert "01:05" in caplog.text
+
+    def test_skipped_shallow_holes_log_gate_reason_and_reach_progress(
+        self,
+        executor_with_mocks: tuple[Executor, SimpleNamespace],
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        executor, _mocks = executor_with_mocks
+        progress = MagicMock()
+        executor._progress = progress
+        svc = MagicMock()
+        svc.can_search.return_value = True
+        svc.search.return_value = _tq_result(
+            unverified=(
+                UnverifiedHole(
+                    start_s=185.0,
+                    score_before=65.0,
+                    score_after=65.0,
+                    reason="below repair threshold: 2 holes, none deep",
+                ),
+            )
+        )
+        executor._target_quality = svc
+
+        with caplog.at_level(logging.WARNING, logger="furnace.services.executor"):
+            result = executor._maybe_search_target_quality(
+                _pipeline_job(tmp_path),
+                Path("/src/movie.mkv"),
+                tmp_path,
+            )
+
+        assert result == 27
+        assert "03:05" in caplog.text
+        assert "below repair threshold: 2 holes, none deep" in caplog.text
+        tool_lines = [call.args[0] for call in progress.add_tool_line.call_args_list]
+        warning = next(line for line in tool_lines if line.startswith("[furnace] WARNING:"))
+        assert "03:05" in warning
+        assert "below repair threshold: 2 holes, none deep" in warning
+
+    def test_repair_lowering_logs_original_and_final_knobs(
+        self,
+        executor_with_mocks: tuple[Executor, SimpleNamespace],
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        executor, _mocks = executor_with_mocks
+        progress = MagicMock()
+        executor._progress = progress
+        svc = MagicMock()
+        svc.can_search.return_value = True
+        svc.search.return_value = _tq_result(knob=22, initial_knob=30)
+        executor._target_quality = svc
+        job = _pipeline_job(tmp_path)
+
+        with caplog.at_level(logging.INFO, logger="furnace.services.executor"):
+            result = executor._maybe_search_target_quality(job, Path("/src/movie.mkv"), tmp_path)
+
+        assert result == 22
+        assert "lowered QVBR from 30 to 22" in caplog.text
+        tool_lines = [call.args[0] for call in progress.add_tool_line.call_args_list]
+        assert any("after repair from 30" in line and "clearing threshold met" in line for line in tool_lines)
+
+    def test_repair_lowering_succeeds_without_progress(
+        self,
+        executor_with_mocks: tuple[Executor, SimpleNamespace],
+        tmp_path: Path,
+    ) -> None:
+        executor, _mocks = executor_with_mocks
+        svc = MagicMock()
+        svc.can_search.return_value = True
+        svc.search.return_value = _tq_result(knob=26, initial_knob=30)
+        executor._target_quality = svc
+
+        result = executor._maybe_search_target_quality(
+            _pipeline_job(tmp_path),
+            Path("/src/movie.mkv"),
+            tmp_path,
+        )
+
+        assert result == 26
+
+    def test_search_miss_reports_searched_knob_before_repair(
+        self,
+        executor_with_mocks: tuple[Executor, SimpleNamespace],
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        executor, _mocks = executor_with_mocks
+        progress = MagicMock()
+        executor._progress = progress
+        svc = MagicMock()
+        svc.can_search.return_value = True
+        svc.search.return_value = _tq_result(knob=26, initial_knob=30, score=79.5, hit=False)
+        executor._target_quality = svc
+
+        with caplog.at_level(logging.INFO, logger="furnace.services.executor"):
+            result = executor._maybe_search_target_quality(
+                _pipeline_job(tmp_path),
+                Path("/src/movie.mkv"),
+                tmp_path,
+            )
+
+        assert result == 26
+        band_message, repair_message = (
+            record.getMessage()
+            for record in caplog.records
+            if "band not hit" in record.getMessage() or "repair lowered" in record.getMessage()
+        )
+        assert "closest QVBR 30 (score 79.500)" in band_message
+        assert "lowered QVBR from 30 to 26" in repair_message
+        tool_lines = [call.args[0] for call in progress.add_tool_line.call_args_list]
+        band_line, repair_line = (
+            line for line in tool_lines if "band not hit" in line or "after repair" in line
+        )
+        assert "QVBR 30 (score 79.500)" in band_line
+        assert "QVBR 26 after repair from 30" in repair_line
+        executor._progress = None
+        assert (
+            executor._maybe_search_target_quality(
+                _pipeline_job(tmp_path),
+                Path("/src/movie.mkv"),
+                tmp_path,
+            )
+            == 26
+        )
+
+    def test_repair_narration_uses_the_repair_adopted_field(
+        self,
+        executor_with_mocks: tuple[Executor, SimpleNamespace],
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        executor, _mocks = executor_with_mocks
+        progress = MagicMock()
+        executor._progress = progress
+        svc = MagicMock()
+        svc.can_search.return_value = True
+        svc.search.return_value = _tq_result(
+            knob=22,
+            initial_knob=30,
+            repair_adopted=False,
+        )
+        executor._target_quality = svc
+
+        with caplog.at_level(logging.INFO, logger="furnace.services.executor"):
+            result = executor._maybe_search_target_quality(
+                _pipeline_job(tmp_path),
+                Path("/src/movie.mkv"),
+                tmp_path,
+            )
+
+        assert result == 22
+        assert "repair lowered" not in caplog.text
+        tool_lines = [call.args[0] for call in progress.add_tool_line.call_args_list]
+        assert any("QVBR 22 (score" in line for line in tool_lines)
+        assert not any("after repair" in line for line in tool_lines)
+
     def test_search_mutes_raw_output_and_wires_narration(
         self,
         executor_with_mocks: tuple[Executor, SimpleNamespace],
@@ -1928,7 +2215,7 @@ class TestRunPipelineTargetQuality:
         progress.mute_tool_output.side_effect = lambda: order.append("mute")
         progress.unmute_tool_output.side_effect = lambda: order.append("unmute")
 
-        def _search(*_a: Any, **_k: Any) -> KnobSearchResult:
+        def _search(*_a: Any, **_k: Any) -> TargetQualitySearchResult:
             order.append("search")
             return _tq_result(knob=27, hit=True)
 

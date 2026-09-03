@@ -384,11 +384,16 @@ class TestAv1anTableCases:
 
 
 class TestResolveTarget:
+    def test_deep_hole_fraction_is_pinned(self) -> None:
+        assert pytest.approx(60.0 / 81.0) == target_quality._DEEP_HOLE_FRACTION
+
     def test_hdr_pq_uses_cvvdp(self) -> None:
         vp = make_video_params(color_transfer="smpte2084", color_matrix="bt2020nc")
         spec = resolve_target(vp)
         assert spec.metric == "cvvdp"
+        assert spec.repairs_holes is False
         assert spec.target_lo < 9.5 < spec.target_hi
+        assert spec.deep_hole_threshold == pytest.approx(9.5 * 60.0 / 81.0)
         assert spec.knob_lo < spec.knob_hi
 
     def test_hlg_uses_cvvdp(self) -> None:
@@ -399,7 +404,9 @@ class TestResolveTarget:
         vp = make_video_params(source_width=1920, source_height=1080)
         spec = resolve_target(vp)
         assert spec.metric == "ssimulacra2"
+        assert spec.repairs_holes is True
         assert spec.target_lo < 81.0 < spec.target_hi
+        assert spec.deep_hole_threshold == pytest.approx(60.0)
 
     def test_sdr_720p_is_hd_bucket(self) -> None:
         vp = make_video_params(source_width=1280, source_height=720)
@@ -413,6 +420,7 @@ class TestResolveTarget:
         assert spec.metric == "ssimulacra2"
         assert spec.target_lo < 72.0 < spec.target_hi
         assert spec.target_hi < 81.0
+        assert spec.deep_hole_threshold == pytest.approx(72.0 * 60.0 / 81.0)
 
     def test_target_band_brackets_center(self) -> None:
         spec = resolve_target(make_video_params(source_width=1920, source_height=1080))
@@ -432,6 +440,7 @@ class TestResolveTarget:
         assert spec.knob_hi == 34
         assert spec.knob_lo < spec.knob_hi
         assert spec.target_lo < 70.0 < spec.target_hi
+        assert spec.deep_hole_threshold == pytest.approx(70.0 * 60.0 / 81.0)
 
     def test_grain_samples_ten_windows(self) -> None:
         spec = resolve_target(make_video_params(grain=True, source_width=720, source_height=576))
@@ -460,6 +469,25 @@ class TestResolveTarget:
         )
         for spec in specs:
             assert spec.sampling_tolerance == pytest.approx((spec.target_hi - spec.target_lo) / 2.0)
+
+    def test_quality_floor_is_seventy_eighty_firsts_of_target_centre(self) -> None:
+        specs = (
+            (resolve_target(make_video_params(source_width=1920, source_height=1080)), 70.0),
+            (resolve_target(make_video_params(source_width=720, source_height=576)), 72.0 * 70.0 / 81.0),
+            (
+                resolve_target(make_video_params(color_transfer="smpte2084", color_matrix="bt2020nc")),
+                9.5 * 70.0 / 81.0,
+            ),
+            (
+                resolve_target(make_video_params(grain=True, source_width=720, source_height=576)),
+                70.0 * 70.0 / 81.0,
+            ),
+        )
+        assert pytest.approx(70.0 / 81.0) == target_quality._FLOOR_FRACTION
+        for spec, expected in specs:
+            centre = (spec.target_lo + spec.target_hi) / 2.0
+            assert spec.floor == pytest.approx(expected)
+            assert spec.floor == pytest.approx(centre * target_quality._FLOOR_FRACTION)
 
     def test_grain_hd_is_not_resolvable_here(self) -> None:
         with pytest.raises(ValueError, match="SD-only"):

@@ -62,6 +62,15 @@ MAX_STDERR_LINES = 6
 
 _PRODUCED_AUDIO_STREAM_INDEX = 0
 
+
+def _minute_timestamp(start_s: float) -> str:
+    hours, remainder = divmod(int(start_s), 3600)
+    minutes, seconds = divmod(remainder, 60)
+    if hours:
+        return f"{hours}:{minutes:02d}:{seconds:02d}"
+    return f"{minutes:02d}:{seconds:02d}"
+
+
 _AUDIO_CODEC_EXT: dict[str, str] = {
     "aac": ".m4a",
     "ac3": ".ac3",
@@ -721,25 +730,70 @@ class Executor:
             if self._progress is not None:
                 self._progress.unmute_tool_output()
         job.chosen_cq = result.knob
-        if result.hit:
+        lowered_for_repair = result.repair_adopted
+        warning_details = [f"{_minute_timestamp(hole.start_s)} (saturated)" for hole in result.saturated]
+        warning_details.extend(f"{_minute_timestamp(hole.start_s)} ({hole.reason})" for hole in result.unverified)
+        if warning_details:
+            details = ", ".join(warning_details)
+            logger.warning(
+                "Target-quality unresolved holes for %s at %s",
+                source.name,
+                details,
+            )
+            if self._progress is not None:
+                self._progress.add_tool_line(f"[furnace] WARNING: unresolved target-quality holes at {details}")
+        if result.hit and not lowered_for_repair:
             logger.info("Target quality: %s %d (score %.3f)", knob, result.knob, result.score)
             if self._progress is not None:
                 self._progress.add_tool_line(
                     f"[furnace] Target-quality {knob} {result.knob} (score {result.score:.3f})"
+                )
+        elif result.hit:
+            logger.info(
+                "Target-quality repair lowered %s from %d to %d for %s; repair clearing threshold met",
+                knob,
+                result.initial_knob,
+                result.knob,
+                source.name,
+            )
+            logger.info(
+                "Target quality: %s %d after repair from %d (search score %.3f; repair clearing threshold met)",
+                knob,
+                result.knob,
+                result.initial_knob,
+                result.score,
+            )
+            if self._progress is not None:
+                self._progress.add_tool_line(
+                    f"[furnace] Target-quality {knob} {result.knob} after repair from {result.initial_knob} "
+                    f"(search score {result.score:.3f}; repair clearing threshold met)"
                 )
         else:
             logger.warning(
                 "Target-quality band not hit for %s; using closest %s %d (score %.3f)",
                 source.name,
                 knob,
-                result.knob,
+                result.initial_knob,
                 result.score,
             )
             if self._progress is not None:
                 self._progress.add_tool_line(
-                    f"[furnace] WARNING: target-quality band not hit; using {knob} {result.knob} "
+                    f"[furnace] WARNING: target-quality band not hit; using {knob} {result.initial_knob} "
                     f"(score {result.score:.3f})"
                 )
+            if lowered_for_repair:
+                logger.info(
+                    "Target-quality repair lowered %s from %d to %d for %s; repair clearing threshold met",
+                    knob,
+                    result.initial_knob,
+                    result.knob,
+                    source.name,
+                )
+                if self._progress is not None:
+                    self._progress.add_tool_line(
+                        f"[furnace] Target-quality {knob} {result.knob} after repair from {result.initial_knob} "
+                        f"(repair clearing threshold met)"
+                    )
         return result.knob
 
     def _narrate(self, message: str) -> None:

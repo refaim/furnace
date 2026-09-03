@@ -25,6 +25,11 @@ from furnace.core.target_quality import (
 )
 
 _BITRATE_ANALYSIS_WINDOW_SECONDS = 18.0
+_REPAIR_STEP = 4
+_REPAIR_GAIN_FRACTION = 0.25
+_MAX_REPAIR_ROUNDS = 2
+_MAX_REPAIR_HOLES = 8
+_MIN_REPAIR_HOLES = 3
 
 
 def _noop(_message: str) -> None: ...
@@ -32,6 +37,74 @@ def _noop(_message: str) -> None: ...
 
 def _windows(n: int) -> str:
     return f"{n} window" if n == 1 else f"{n} windows"
+
+
+def _holes(n: int) -> str:
+    return f"{n} hole" if n == 1 else f"{n} holes"
+
+
+@dataclass(frozen=True, slots=True)
+class QualityHole:
+    start_s: float
+    score: float
+
+
+@dataclass(frozen=True, slots=True)
+class RepairedHole:
+    start_s: float
+    score_before: float
+    score_after: float
+
+
+@dataclass(frozen=True, slots=True)
+class SaturatedHole:
+    start_s: float
+    score_before: float
+    score_after: float
+    expected_gain: float
+
+
+@dataclass(frozen=True, slots=True)
+class UnverifiedHole:
+    start_s: float
+    score_before: float
+    score_after: float
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
+class TargetQualitySearchResult(KnobSearchResult):
+    initial_knob: int
+    holes: tuple[QualityHole, ...]
+    repaired: tuple[RepairedHole, ...]
+    saturated: tuple[SaturatedHole, ...]
+    unverified: tuple[UnverifiedHole, ...]
+    repair_adopted: bool
+
+
+@dataclass(slots=True)
+class _ProbeRunner:
+    probe: Callable[[int], float]
+    repair_score_window: Callable[[int, int, Path], float]
+    score_records: dict[int, tuple[float, ...]]
+
+
+def _find_holes(
+    starts: Sequence[float],
+    scores: Sequence[float],
+    *,
+    floor: float,
+) -> tuple[QualityHole, ...]:
+    indices = _hole_indices(scores, floor=floor)
+    return tuple(QualityHole(start_s=starts[index], score=scores[index]) for index in indices)
+
+
+def _hole_indices(scores: Sequence[float], *, floor: float) -> tuple[int, ...]:
+    return tuple(index for index, score in enumerate(scores) if score < floor)
+
+
+def _is_responsive(*, gain: float, expected_gain: float) -> bool:
+    return expected_gain > 0.0 and gain >= _REPAIR_GAIN_FRACTION * expected_gain
 
 
 @dataclass(slots=True)
@@ -93,6 +166,54 @@ class _SearchNarrator:
     def seeded(self, knob: int) -> None:
         self.emit(f"Starting from {self.label} {knob} (comparable source already solved)")
 
+    def holes(self, count: int, *, worst: float, floor: float) -> None:
+        self.emit(f"{count} {'hole' if count == 1 else 'holes'} found: worst score {worst:.1f}, floor {floor:.1f}")
+
+    def repair_probe(
+        self,
+        knob: int,
+        scores: Sequence[tuple[float, float]],
+        *,
+        expected_gain: float,
+    ) -> None:
+        changes = ", ".join(f"{before:.1f} -> {after:.1f}" for before, after in scores)
+        self.emit(f"Repair probe {self.label} {knob}: {changes}; expected gain {expected_gain:.1f}")
+
+    def repair_skipped(self, reason: str) -> None:
+        self.emit(f"Repair skipped: {reason}")
+
+    def repair_decision(self, knob: int, *, cleared: int, total: int, required: int, adopted: bool) -> None:
+        decision = "adopted" if adopted else "not adopted"
+        self.emit(
+            f"Repair round {self.label} {knob} {decision}: "
+            f"{cleared}/{total} holes cleared floor; {required} required"
+        )
+
+    def verdict(
+        self,
+        initial_knob: int,
+        final_knob: int,
+        *,
+        repaired: int,
+        saturated: int,
+        unverified: int,
+    ) -> None:
+        details = []
+        if repaired:
+            details.append(f"{repaired} repaired")
+        if saturated:
+            details.append(f"{saturated} {'saturated hole' if saturated == 1 else 'saturated holes'}")
+        if unverified:
+            details.append(f"{unverified} {'unverified hole' if unverified == 1 else 'unverified holes'}")
+        summary = ", ".join(details)
+        if final_knob < initial_knob:
+            self.emit(
+                f"Repair verdict: {summary}; lowering {self.label} from {initial_knob} to {final_knob}; "
+                f"repair clearing threshold met"
+            )
+            return
+        self.emit(f"Repair verdict: {summary}; keeping {self.label} {initial_knob}")
+
 
 @dataclass(frozen=True, slots=True)
 class _ProbeOffset:
@@ -135,7 +256,7 @@ class TargetQualityService:
         work_dir: Path,
         *,
         on_event: Callable[[str], None] | None = None,
-    ) -> KnobSearchResult:
+    ) -> TargetQualitySearchResult:
         spec = resolve_target(vp)
         fps = vp.fps_num / vp.fps_den
         window_s = vp.gop / fps
@@ -180,27 +301,35 @@ class TargetQualityService:
             duration_s,
             work_dir,
         )
+        window_starts = (
+            [0.0]
+            if offset_selection.outcome is ProbeWindowOutcome.COVERAGE_LIMIT
+            else sorted(offset.start_s for offset in offset_selection.offsets)
+        )
         active_indices = {(offset.family, offset.index) for offset in offset_selection.offsets}
 
         def grow_windows(count: int) -> ProbeWindowOutcome:
             desired = _offsets_for(count)
             if desired.outcome is ProbeWindowOutcome.COVERAGE_LIMIT:
                 windows[:] = self._prepare_windows(source, vp, None, duration_s, work_dir)
+                window_starts[:] = [0.0]
                 active_indices.clear()
                 return desired.outcome
             new_offsets = tuple(
                 offset for offset in desired.offsets if (offset.family, offset.index) not in active_indices
             )
+            ordered_new_offsets = tuple(sorted(new_offsets, key=lambda offset: offset.start_s))
             windows.extend(
                 self._prepare_windows(
                     source,
                     vp,
-                    new_offsets,
+                    ordered_new_offsets,
                     duration_s,
                     work_dir,
                     start_index=len(windows),
                 )
             )
+            window_starts.extend(offset.start_s for offset in ordered_new_offsets)
             active_indices.update((offset.family, offset.index) for offset in new_offsets)
             return desired.outcome
 
@@ -219,7 +348,7 @@ class TargetQualityService:
         seed = self._seeds.suggest(key, source_bitrate=vp.source_bitrate)
         if seed is not None:
             narrator.seeded(seed)
-        probe_fn = (
+        runner = (
             self._grain_probe_fn(
                 vp,
                 spec,
@@ -240,8 +369,8 @@ class TargetQualityService:
                 initial_packing_limited=initial_packing_limited,
             )
         )
-        result = search_knob(
-            probe_fn,
+        search_result = search_knob(
+            runner.probe,
             target_lo=spec.target_lo,
             target_hi=spec.target_hi,
             lo=spec.knob_lo,
@@ -249,9 +378,308 @@ class TargetQualityService:
             max_probes=spec.max_probes,
             seed=seed,
         )
+        result = self._apply_worst_window_guard(
+            search_result,
+            spec,
+            windows,
+            window_starts,
+            runner,
+            narrator,
+        )
         if result.hit:
-            self._seeds.remember(key, source_bitrate=vp.source_bitrate, knob=result.knob)
+            self._seeds.remember(key, source_bitrate=vp.source_bitrate, knob=search_result.knob)
         return result
+
+    @staticmethod
+    def _healthy_reference_index(scores: dict[int, float], *, floor: float) -> int | None:
+        healthy = {index: score for index, score in scores.items() if score >= floor}
+        if not healthy:
+            return None
+        median = statistics.median(healthy.values())
+        return min(healthy, key=lambda index: (abs(healthy[index] - median), index))
+
+    @staticmethod
+    def _score_repair_indices(
+        knob: int,
+        indices: Sequence[int],
+        windows: Sequence[Path],
+        runner: _ProbeRunner,
+        repair_records: dict[int, dict[int, float]],
+    ) -> dict[int, float]:
+        search_scores = runner.score_records.get(knob)
+        records = repair_records.setdefault(knob, {})
+        for index in indices:
+            if search_scores is not None:
+                records[index] = search_scores[index]
+            elif index not in records:
+                records[index] = runner.repair_score_window(knob, index, windows[index])
+        return {index: records[index] for index in indices}
+
+    @classmethod
+    def _repair_round(
+        cls,
+        active: tuple[int, ...],
+        current_scores: dict[int, float],
+        repair_knob: int,
+        reference_index: int | None,
+        windows: Sequence[Path],
+        runner: _ProbeRunner,
+        repair_records: dict[int, dict[int, float]],
+        narrator: _SearchNarrator,
+    ) -> tuple[dict[int, float], float, int] | None:
+        if reference_index is None:
+            return None
+        indices = (*active, reference_index)
+        after_scores = cls._score_repair_indices(
+            repair_knob,
+            indices,
+            windows,
+            runner,
+            repair_records,
+        )
+        cached_scores = runner.score_records.get(repair_knob)
+        current_after_scores = dict(enumerate(cached_scores)) if cached_scores is not None else after_scores
+        expected_gain = after_scores[reference_index] - current_scores[reference_index]
+        narrator.repair_probe(
+            repair_knob,
+            tuple((current_scores[index], after_scores[index]) for index in active),
+            expected_gain=expected_gain,
+        )
+        return current_after_scores, expected_gain, reference_index
+
+    @classmethod
+    def _apply_worst_window_guard(
+        cls,
+        search_result: KnobSearchResult,
+        spec: TargetSpec,
+        windows: Sequence[Path],
+        window_starts: Sequence[float],
+        runner: _ProbeRunner,
+        narrator: _SearchNarrator,
+    ) -> TargetQualitySearchResult:
+        initial_knob = search_result.knob
+        initial_scores = runner.score_records[initial_knob]
+        hole_indices = _hole_indices(initial_scores, floor=spec.floor)
+        holes = tuple(QualityHole(start_s=window_starts[index], score=initial_scores[index]) for index in hole_indices)
+        if not holes:
+            return TargetQualitySearchResult(
+                knob=initial_knob,
+                score=search_result.score,
+                hit=search_result.hit,
+                probes=search_result.probes,
+                initial_knob=initial_knob,
+                holes=(),
+                repaired=(),
+                saturated=(),
+                unverified=(),
+                repair_adopted=False,
+            )
+
+        narrator.holes(len(holes), worst=min(hole.score for hole in holes), floor=spec.floor)
+        if not spec.repairs_holes:
+            unverified = tuple(
+                UnverifiedHole(
+                    start_s=hole.start_s,
+                    score_before=hole.score,
+                    score_after=hole.score,
+                    reason="repair disabled for HDR",
+                )
+                for hole in holes
+            )
+            narrator.verdict(
+                initial_knob,
+                initial_knob,
+                repaired=0,
+                saturated=0,
+                unverified=len(unverified),
+            )
+            return TargetQualitySearchResult(
+                knob=initial_knob,
+                score=search_result.score,
+                hit=search_result.hit,
+                probes=search_result.probes,
+                initial_knob=initial_knob,
+                holes=holes,
+                repaired=(),
+                saturated=(),
+                unverified=unverified,
+                repair_adopted=False,
+            )
+
+        repair_launched = len(holes) >= _MIN_REPAIR_HOLES or any(
+            hole.score < spec.deep_hole_threshold for hole in holes
+        )
+        if not repair_launched:
+            reason = f"below repair threshold: {_holes(len(holes))}, none deep"
+            unverified = tuple(
+                UnverifiedHole(
+                    start_s=hole.start_s,
+                    score_before=hole.score,
+                    score_after=hole.score,
+                    reason=reason,
+                )
+                for hole in holes
+            )
+            narrator.repair_skipped(reason)
+            narrator.verdict(
+                initial_knob,
+                initial_knob,
+                repaired=0,
+                saturated=0,
+                unverified=len(unverified),
+            )
+            return TargetQualitySearchResult(
+                knob=initial_knob,
+                score=search_result.score,
+                hit=search_result.hit,
+                probes=search_result.probes,
+                initial_knob=initial_knob,
+                holes=holes,
+                repaired=(),
+                saturated=(),
+                unverified=unverified,
+                repair_adopted=False,
+            )
+
+        repair_indices = tuple(
+            sorted(hole_indices, key=lambda index: (initial_scores[index], index))[:_MAX_REPAIR_HOLES]
+        )
+        repair_index_set = set(repair_indices)
+        active = repair_indices
+        current_scores = dict(enumerate(initial_scores))
+        reported_scores = dict(current_scores)
+        reference_index = cls._healthy_reference_index(current_scores, floor=spec.floor)
+        repair_records: dict[int, dict[int, float]] = {}
+        classification: dict[int, tuple[float, float, float]] = {}
+        unverified_reasons = {
+            index: f"not probed (cap of {_MAX_REPAIR_HOLES} holes)"
+            for index in hole_indices
+            if index not in repair_index_set
+        }
+        current_knob = initial_knob
+        final_knob = initial_knob
+        adopted_rounds = 0
+
+        for round_index in range(_MAX_REPAIR_ROUNDS):
+            repair_knob = max(spec.knob_lo, current_knob - _REPAIR_STEP)
+            if repair_knob == current_knob:
+                unverified_reasons.update(dict.fromkeys(active, "already at the knob floor"))
+                break
+            round_result = cls._repair_round(
+                active,
+                current_scores,
+                repair_knob,
+                reference_index,
+                windows,
+                runner,
+                repair_records,
+                narrator,
+            )
+            if round_result is None:
+                unverified_reasons.update(dict.fromkeys(active, "no healthy reference window"))
+                break
+            after_scores, expected_gain, measured_reference_index = round_result
+            if expected_gain <= 0.0:
+                unverified_reasons.update(dict.fromkeys(active, "healthy reference did not improve"))
+                break
+            for index in active:
+                reported_scores[index] = after_scores[index]
+                classification[index] = (current_scores[index], after_scores[index], expected_gain)
+            cleared = tuple(index for index in active if after_scores[index] >= spec.floor)
+            required = (len(active) + 1) // 2
+            adopted = len(cleared) >= required
+            narrator.repair_decision(
+                repair_knob,
+                cleared=len(cleared),
+                total=len(active),
+                required=required,
+                adopted=adopted,
+            )
+            if not adopted:
+                reason = (
+                    f"repair round not adopted: {len(cleared)}/{len(active)} holes cleared floor; "
+                    f"{required} required"
+                )
+                for index in active:
+                    before_score, after_score, reference_gain = classification[index]
+                    if after_score >= spec.floor:
+                        unverified_reasons[index] = reason
+                    elif _is_responsive(
+                        gain=after_score - before_score,
+                        expected_gain=reference_gain,
+                    ):
+                        unverified_reasons[index] = f"still below floor; {reason}"
+                break
+            final_knob = repair_knob
+            current_knob = repair_knob
+            for index in (*active, measured_reference_index):
+                current_scores[index] = after_scores[index]
+            adopted_rounds = round_index + 1
+            active = tuple(index for index in active if after_scores[index] < spec.floor)
+            if not active:
+                break
+
+        repaired = tuple(
+            RepairedHole(
+                start_s=window_starts[index],
+                score_before=initial_scores[index],
+                score_after=reported_scores[index],
+            )
+            for index in hole_indices
+            if current_scores[index] >= spec.floor
+        )
+        saturated_indices = {
+            index
+            for index, (before_score, after_score, expected_gain) in classification.items()
+            if current_scores[index] < spec.floor
+            and index not in unverified_reasons
+            and not _is_responsive(
+                gain=after_score - before_score,
+                expected_gain=expected_gain,
+            )
+        }
+        saturated_result = tuple(
+            SaturatedHole(
+                start_s=window_starts[index],
+                score_before=initial_scores[index],
+                score_after=reported_scores[index],
+                expected_gain=classification[index][2],
+            )
+            for index in hole_indices
+            if index in saturated_indices
+        )
+        unverified = tuple(
+            UnverifiedHole(
+                start_s=window_starts[index],
+                score_before=initial_scores[index],
+                score_after=reported_scores[index],
+                reason=unverified_reasons.get(
+                    index,
+                    f"still below floor after {adopted_rounds} rounds",
+                ),
+            )
+            for index in hole_indices
+            if current_scores[index] < spec.floor and index not in saturated_indices
+        )
+        narrator.verdict(
+            initial_knob,
+            final_knob,
+            repaired=len(repaired),
+            saturated=len(saturated_result),
+            unverified=len(unverified),
+        )
+        return TargetQualitySearchResult(
+            knob=final_knob,
+            score=search_result.score,
+            hit=search_result.hit,
+            probes=search_result.probes,
+            initial_knob=initial_knob,
+            holes=holes,
+            repaired=repaired,
+            saturated=saturated_result,
+            unverified=unverified,
+            repair_adopted=final_knob < initial_knob,
+        )
 
     def _grain_window_candidates(
         self,
@@ -332,7 +760,9 @@ class TargetQualityService:
         grow_windows: Callable[[int], ProbeWindowOutcome],
         *,
         initial_packing_limited: bool,
-    ) -> Callable[[int], float]:
+    ) -> _ProbeRunner:
+        score_records: dict[int, tuple[float, ...]] = {}
+
         def score_window(knob: int, index: int, window: Path) -> float:
             return self._inline_probe.probe(
                 window,
@@ -342,14 +772,28 @@ class TargetQualityService:
                 metric=spec.metric,
             )
 
-        return self._adaptive_probe_fn(
-            spec,
-            windows,
-            narrator,
-            grow_windows,
-            score_window=score_window,
-            pool_scores=statistics.fmean,
-            initial_packing_limited=initial_packing_limited,
+        def repair_score_window(knob: int, index: int, window: Path) -> float:
+            return self._inline_probe.probe(
+                window,
+                work_dir / f"tq_repair_q{knob}_w{index}.obu",
+                vp,
+                qvbr=knob,
+                metric=spec.metric,
+            )
+
+        return _ProbeRunner(
+            probe=self._adaptive_probe_fn(
+                spec,
+                windows,
+                narrator,
+                grow_windows,
+                score_window=score_window,
+                pool_scores=statistics.fmean,
+                score_records=score_records,
+                initial_packing_limited=initial_packing_limited,
+            ),
+            repair_score_window=repair_score_window,
+            score_records=score_records,
         )
 
     def _grain_probe_fn(
@@ -362,12 +806,13 @@ class TargetQualityService:
         grow_windows: Callable[[int], ProbeWindowOutcome],
         *,
         initial_packing_limited: bool,
-    ) -> Callable[[int], float]:
+    ) -> _ProbeRunner:
         if self._grain_encoder is None or self._metrics is None:
             raise RuntimeError("grain target-quality requires an SVT encoder and a metrics adapter")
         grain_encoder = self._grain_encoder
         metrics = self._metrics
         wanted = frozenset({spec.metric})
+        score_records: dict[int, tuple[float, ...]] = {}
 
         references: list[Path] = []
         self._build_grain_references(vp, windows, references, work_dir)
@@ -387,8 +832,7 @@ class TargetQualityService:
             )
             return outcome
 
-        def score_window(knob: int, index: int, window: Path) -> float:
-            obu = work_dir / f"tq_grain_q{knob}_w{index}.obu"
+        def encode_and_score(knob: int, index: int, window: Path, obu: Path) -> float:
             result = grain_encoder.encode(window, obu, vp, cq_override=knob)
             if result.return_code != 0:
                 raise RuntimeError(f"grain probe encode failed (rc={result.return_code}) at crf={knob}")
@@ -406,14 +850,30 @@ class TargetQualityService:
                 raise RuntimeError(f"grain probe could not be scored at crf={knob}")
             return float(score)
 
-        return self._adaptive_probe_fn(
-            spec,
-            windows,
-            narrator,
-            grow_with_references,
-            score_window=score_window,
-            pool_scores=pool_grain_windows,
-            initial_packing_limited=initial_packing_limited,
+        def score_window(knob: int, index: int, window: Path) -> float:
+            return encode_and_score(knob, index, window, work_dir / f"tq_grain_q{knob}_w{index}.obu")
+
+        def repair_score_window(knob: int, index: int, window: Path) -> float:
+            return encode_and_score(
+                knob,
+                index,
+                window,
+                work_dir / f"tq_repair_grain_q{knob}_w{index}.obu",
+            )
+
+        return _ProbeRunner(
+            probe=self._adaptive_probe_fn(
+                spec,
+                windows,
+                narrator,
+                grow_with_references,
+                score_window=score_window,
+                pool_scores=pool_grain_windows,
+                score_records=score_records,
+                initial_packing_limited=initial_packing_limited,
+            ),
+            repair_score_window=repair_score_window,
+            score_records=score_records,
         )
 
     def _build_grain_references(
@@ -441,6 +901,7 @@ class TargetQualityService:
         *,
         score_window: Callable[[int, int, Path], float],
         pool_scores: Callable[[list[float]], float],
+        score_records: dict[int, tuple[float, ...]] | None = None,
         initial_packing_limited: bool = False,
     ) -> Callable[[int], float]:
         sized = False
@@ -485,6 +946,8 @@ class TargetQualityService:
                     )
             sized = True
             pooled = pool_scores(scores)
+            if score_records is not None:
+                score_records[knob] = tuple(scores)
             narrator.result(knob, pooled)
             return pooled
 
