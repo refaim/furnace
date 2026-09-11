@@ -5,6 +5,7 @@ from typing import Any
 
 import pytest
 
+from furnace.adapters._geometry import DEINTERLACE_FILTERS
 from furnace.adapters.svtav1 import (
     _SVT_CRF,
     _SVT_PARAMS,
@@ -322,22 +323,27 @@ class TestSvtAv1VideoFilter:
         vf = _vf(_make_vp())
         assert "scale=" not in vf
 
-    def test_bwdif_first_when_deinterlace(self) -> None:
+    def test_idet_then_bwdif_first_when_deinterlace(self) -> None:
         parts = _vf(_make_vp(deinterlace=True)).split(",")
-        assert parts[0] == "bwdif=send_frame"
+        assert parts[0] == "idet"
+        assert parts[1].startswith("bwdif=")
 
     def test_bwdif_single_rate_send_frame(self) -> None:
         vf = _vf(_make_vp(deinterlace=True))
         parts = vf.split(",")
-        assert parts[0] == "bwdif=send_frame"
-        assert "bwdif" not in parts
+        assert "mode=send_frame" in parts[1]
         assert "send_field" not in vf
+
+    def test_bwdif_adaptive_leaves_progressive_frames_alone(self) -> None:
+        parts = _vf(_make_vp(deinterlace=True)).split(",")
+        assert "deint=interlaced" in parts[1]
 
     def test_bwdif_before_crop(self) -> None:
         vp = _make_vp(deinterlace=True, crop=CropRect(w=1920, h=800, x=0, y=140))
         parts = _vf(vp).split(",")
-        assert parts[0] == "bwdif=send_frame"
-        assert parts[1] == "crop=1920:800:0:140"
+        assert parts[0] == "idet"
+        assert parts[1].startswith("bwdif=")
+        assert parts[2] == "crop=1920:800:0:140"
 
     def test_bwdif_absent_when_not_deinterlaced(self) -> None:
         assert "bwdif" not in _vf(_make_vp(deinterlace=False))
@@ -361,6 +367,11 @@ class TestSvtAv1EncoderSettings:
     def test_settings_with_deinterlace(self) -> None:
         settings = _adapter()._build_encoder_settings(_make_vp(deinterlace=True))
         assert "bwdif" in settings
+
+    def test_settings_record_the_exact_deinterlace_chain(self) -> None:
+        # the ENCODER_SETTINGS tag must describe what actually ran, not a paraphrase
+        settings = _adapter()._build_encoder_settings(_make_vp(deinterlace=True))
+        assert ",".join(DEINTERLACE_FILTERS) in settings.split(" / ")
 
     def test_settings_without_deinterlace(self) -> None:
         settings = _adapter()._build_encoder_settings(_make_vp(deinterlace=False))

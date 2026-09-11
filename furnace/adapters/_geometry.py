@@ -3,12 +3,20 @@ from __future__ import annotations
 from furnace.core.models import VideoParams
 from furnace.core.quality import aligned_crop, final_output_dimensions
 
+# A disc can mix 25p film with 50i video inserts. idet tags every frame with
+# what it actually is (and which field leads), so bwdif reconstructs only the
+# combed frames and passes the progressive majority through untouched.
+DEINTERLACE_FILTERS: tuple[str, ...] = (
+    "idet",
+    "bwdif=mode=send_frame:parity=auto:deint=interlaced",
+)
+
 
 def geometry_filters(vp: VideoParams) -> list[str]:
     parts: list[str] = []
 
     if vp.deinterlace:
-        parts.append("bwdif=send_frame")
+        parts.extend(DEINTERLACE_FILTERS)
 
     crop = aligned_crop(vp)
     if crop is not None:

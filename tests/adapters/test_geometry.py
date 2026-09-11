@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from furnace.adapters._geometry import build_vf, geometry_filters
+from furnace.adapters._geometry import DEINTERLACE_FILTERS, build_vf, geometry_filters
 from furnace.core.models import CropRect, VideoParams
 
 
@@ -60,8 +60,24 @@ class TestGeometryFilters:
     def test_deinterlace_runs_first(self) -> None:
         vp = _make_vp(deinterlace=True, crop=CropRect(w=1920, h=800, x=0, y=140))
         geom = geometry_filters(vp)
-        assert geom[0] == "bwdif=send_frame"
-        assert geom[1].startswith("crop=")
+        assert geom[0] == "idet"
+        assert geom[1].startswith("bwdif=")
+        assert geom[2].startswith("crop=")
+
+    def test_deinterlace_only_touches_frames_idet_flags_as_interlaced(self) -> None:
+        # A DVD can be 25p film for 85 minutes and 50i video for the last ten.
+        # Blanket bwdif softens the film part; idet tags each frame and bwdif
+        # then leaves the progressive ones alone.
+        geom = geometry_filters(_make_vp(deinterlace=True))
+        assert geom == list(DEINTERLACE_FILTERS)
+        assert geom.index("idet") < next(i for i, f in enumerate(geom) if f.startswith("bwdif="))
+        bwdif = geom[-1]
+        assert "deint=interlaced" in bwdif
+        assert "mode=send_frame" in bwdif
+        assert "parity=auto" in bwdif, "field order comes from idet per frame, not from the container"
+
+    def test_deinterlace_absent_when_not_requested(self) -> None:
+        assert "idet" not in geometry_filters(_make_vp(deinterlace=False))
 
     def test_full_frame_crop_is_dropped_as_a_no_op(self) -> None:
         vp = _make_vp(crop=CropRect(w=1920, h=1080, x=0, y=0))

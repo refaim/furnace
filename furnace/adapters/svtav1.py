@@ -9,7 +9,7 @@ from furnace.core.models import EncodeResult, VideoParams
 from furnace.core.progress import ProgressSample
 from furnace.core.quality import aligned_crop
 
-from ._geometry import build_vf
+from ._geometry import DEINTERLACE_FILTERS, build_vf
 from ._subprocess import OutputCallback, run_tool
 from .ffmpeg import _make_ffmpeg_progress_handler
 
@@ -65,7 +65,7 @@ class SvtAv1Adapter:
             _SVT_PARAMS,
         ]
         if vp.deinterlace:
-            parts.append("bwdif=send_frame")
+            parts.append(",".join(DEINTERLACE_FILTERS))
         crop = aligned_crop(vp)
         if crop is not None:
             parts.append(f"crop={crop.w}:{crop.h}:{crop.x}:{crop.y}")
