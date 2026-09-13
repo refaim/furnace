@@ -92,15 +92,15 @@ class TestMuxerDtsNoise:
         seen: list[str] = []
 
         def parser(line: str) -> bool:
-            if "non monotonically" in line:
-                seen.append(line)
-                return True
-            return False
+            seen.append(line)
+            return "non monotonically" in line
 
-        rc, output = run_tool(_spammer(10), on_progress_line=parser)
+        rc, output = run_tool(_spammer(10, prefix="ordinary output"), on_progress_line=parser)
 
         assert rc == 0
-        assert len(seen) == 10, "the progress hook still sees every line"
+        assert len(seen) == 11, "the progress hook still sees every line"
+        assert "ordinary output" in seen
+        assert "ordinary output" in output
         assert "suppressed" not in output
 
 

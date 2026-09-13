@@ -6,7 +6,7 @@ import math
 import pytest
 
 from furnace.core import target_quality
-from furnace.core.models import CropRect
+from furnace.core.models import CropRect, VideoParams
 from furnace.core.target_quality import (
     GRAIN_POOL_PERCENTILE,
     KnobSearchResult,
@@ -14,6 +14,7 @@ from furnace.core.target_quality import (
     SeedKey,
     SeedMemory,
     TargetSpec,
+    final_picture_is_hd,
     fixed_grain_knob,
     grain_uses_svt,
     interior_windows,
@@ -414,6 +415,16 @@ class TestResolveTarget:
         assert spec.metric == "ssimulacra2"
         assert spec.target_lo < 81.0 < spec.target_hi
 
+    def test_sdr_letterboxed_1080p_is_hd_bucket(self) -> None:
+        vp = make_video_params(
+            source_width=1920,
+            source_height=1080,
+            crop=CropRect(w=1920, h=698, x=0, y=191),
+        )
+        spec = resolve_target(vp)
+        assert spec.metric == "ssimulacra2"
+        assert spec.target_lo < 81.0 < spec.target_hi
+
     def test_sdr_dvd_uses_ssimulacra2_low(self) -> None:
         vp = make_video_params(source_width=720, source_height=576)
         spec = resolve_target(vp)
@@ -490,7 +501,7 @@ class TestResolveTarget:
             assert spec.floor == pytest.approx(centre * target_quality._FLOOR_FRACTION)
 
     def test_grain_hd_is_not_resolvable_here(self) -> None:
-        with pytest.raises(ValueError, match="SD-only"):
+        with pytest.raises(ValueError, match="final width >= 1280 or final height >= 720"):
             resolve_target(make_video_params(grain=True, source_width=1920, source_height=1080))
 
     def test_grain_hdr_raises_loudly(self) -> None:
@@ -500,6 +511,48 @@ class TestResolveTarget:
                 resolve_target(vp)
 
 
+class TestFinalPictureClassification:
+    @pytest.mark.parametrize(
+        ("vp", "expected"),
+        [
+            (make_video_params(source_width=720, source_height=576, sar_num=16, sar_den=15), False),
+            (make_video_params(source_width=720, source_height=576, sar_num=64, sar_den=45), False),
+            (make_video_params(source_width=1024, source_height=719), False),
+            (make_video_params(source_width=1024, source_height=720), True),
+            (make_video_params(source_width=1279, source_height=712), False),
+            (make_video_params(source_width=1280, source_height=712), True),
+            (make_video_params(source_width=1920, source_height=1080), True),
+            (
+                make_video_params(
+                    source_width=1920,
+                    source_height=1080,
+                    crop=CropRect(w=1920, h=698, x=0, y=191),
+                ),
+                True,
+            ),
+            (
+                make_video_params(
+                    source_width=1920,
+                    source_height=1080,
+                    crop=CropRect(w=1440, h=1080, x=240, y=0),
+                ),
+                True,
+            ),
+            (make_video_params(source_width=3840, source_height=1396), True),
+            (
+                make_video_params(
+                    source_width=1920,
+                    source_height=1080,
+                    crop=CropRect(w=1200, h=700, x=360, y=190),
+                ),
+                False,
+            ),
+        ],
+    )
+    def test_hd_threshold_uses_final_width_or_height(self, vp: VideoParams, expected: bool) -> None:
+        assert final_picture_is_hd(vp) is expected
+
+
 class TestGrainRouting:
     def test_grain_sd_uses_svt(self) -> None:
         assert grain_uses_svt(make_video_params(grain=True, source_width=720, source_height=576)) is True
@@ -507,8 +560,9 @@ class TestGrainRouting:
     def test_grain_hd_does_not_use_svt(self) -> None:
         assert grain_uses_svt(make_video_params(grain=True, source_width=1920, source_height=1080)) is False
 
-    def test_height_720_counts_as_hd(self) -> None:
+    def test_hd_threshold_counts_either_dimension(self) -> None:
         assert grain_uses_svt(make_video_params(grain=True, source_width=1280, source_height=720)) is False
+        assert grain_uses_svt(make_video_params(grain=True, source_width=1024, source_height=720)) is False
         assert grain_uses_svt(make_video_params(grain=True, source_width=1024, source_height=719)) is True
 
     def test_non_grain_never_uses_svt(self) -> None:
@@ -530,12 +584,22 @@ class TestGrainRouting:
             vp = make_video_params(grain=True, source_width=w, source_height=h)
             assert grain_uses_svt(vp) == (fixed_grain_knob(vp) is None)
 
-    def test_routing_uses_final_not_source_height(self) -> None:
+    def test_letterboxed_hd_uses_fixed_knob(self) -> None:
         vp = make_video_params(
             grain=True,
             source_width=1920,
             source_height=1080,
-            crop=CropRect(w=1920, h=704, x=0, y=188),
+            crop=CropRect(w=1920, h=698, x=0, y=191),
+        )
+        assert grain_uses_svt(vp) is False
+        assert fixed_grain_knob(vp) == 32
+
+    def test_routing_uses_final_not_source_dimensions(self) -> None:
+        vp = make_video_params(
+            grain=True,
+            source_width=1920,
+            source_height=1080,
+            crop=CropRect(w=1200, h=700, x=360, y=190),
         )
         assert grain_uses_svt(vp) is True
         assert fixed_grain_knob(vp) is None

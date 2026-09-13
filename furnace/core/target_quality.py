@@ -237,7 +237,8 @@ def search_knob(
     return _select(history, target_lo, target_hi)
 
 
-_SD_MAX_HEIGHT = 720
+_HD_MIN_WIDTH = 1280
+_HD_MIN_HEIGHT = 720
 
 _HDR_TARGET = 9.5
 _HD_SDR_TARGET = 81.0
@@ -253,7 +254,6 @@ _MAX_PROBES = 4
 _CRF_HI = 34
 _GRAIN_TARGET = 70.0
 _GRAIN_SD_CRF_FLOOR = 26
-_GRAIN_HD_MIN_HEIGHT = 720
 _GRAIN_HD_QVBR = 32
 
 _FULL_PASS_FRACTION = 0.85
@@ -321,7 +321,8 @@ def resolve_target(vp: VideoParams) -> TargetSpec:
         if not grain_uses_svt(vp):
             raise ValueError(
                 f"grain target-quality search is SD-only; HD grain "
-                f"(final height >= {_GRAIN_HD_MIN_HEIGHT}) encodes at a fixed NVENC QVBR "
+                f"(final width >= {_HD_MIN_WIDTH} or final height >= {_HD_MIN_HEIGHT}) "
+                f"encodes at a fixed NVENC QVBR "
                 f"and must not reach resolve_target"
             )
         return _spec(
@@ -335,10 +336,9 @@ def resolve_target(vp: VideoParams) -> TargetSpec:
             max_window_count=_MAX_WINDOW_COUNT,
         )
 
-    _, final_h = final_output_dimensions(vp)
     if is_hdr_transfer(vp.color_transfer):
         metric, centre, repairs_holes = "cvvdp", _HDR_TARGET, False
-    elif final_h < _SD_MAX_HEIGHT:
+    elif not final_picture_is_hd(vp):
         metric, centre, repairs_holes = "ssimulacra2", _SD_SDR_TARGET, True
     else:
         metric, centre, repairs_holes = "ssimulacra2", _HD_SDR_TARGET, True
@@ -354,11 +354,13 @@ def resolve_target(vp: VideoParams) -> TargetSpec:
     )
 
 
+def final_picture_is_hd(vp: VideoParams) -> bool:
+    final_w, final_h = final_output_dimensions(vp)
+    return final_w >= _HD_MIN_WIDTH or final_h >= _HD_MIN_HEIGHT
+
+
 def grain_uses_svt(vp: VideoParams) -> bool:
-    if not vp.grain:
-        return False
-    _, final_h = final_output_dimensions(vp)
-    return final_h < _GRAIN_HD_MIN_HEIGHT
+    return vp.grain and not final_picture_is_hd(vp)
 
 
 def fixed_grain_knob(vp: VideoParams) -> int | None:

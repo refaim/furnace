@@ -102,7 +102,7 @@ class TestPlannerHdr10Plus:
     def test_grainy_sd_hdr10_plus_is_rerouted_off_svt(self) -> None:
         video = make_video_info(
             codec_name="hevc",
-            width=1440,
+            width=720,
             height=576,
             fps_num=25,
             fps_den=1,
